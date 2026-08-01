@@ -1,17 +1,21 @@
 import {
   ConnectorEnvelopeSchema,
   makeEnvelope,
+  type Approval,
   type ConnectorEnvelope,
+  type ToolActivity,
 } from "@aicl/protocol";
 import { z } from "zod";
 
 import {
   ProviderLostError,
+  type ApprovalResolveCommand,
   type ConnectorEmit,
   type ConnectorProvider,
   type TurnInterruptCommand,
   type TurnStartCommand,
 } from "../provider.js";
+import { OutputBatcher } from "../output-batcher.js";
 import { CodexRpcProcess } from "./rpc-process.js";
 
 const ThreadResponseSchema = z.object({ thread: z.object({ id: z.string().min(1) }) });
@@ -51,6 +55,95 @@ const TurnCompletedSchema = z.object({
     }),
   }),
 });
+const RequestIdSchema = z.union([z.string(), z.number().int()]);
+const ActivityItemSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("commandExecution"),
+    id: z.string(),
+    command: z.string(),
+    cwd: z.string(),
+    status: z.enum(["inProgress", "completed", "failed", "declined"]),
+    aggregatedOutput: z.string().nullable().optional(),
+    exitCode: z.number().int().nullable().optional(),
+    durationMs: z.number().int().nonnegative().nullable().optional(),
+  }),
+  z.object({
+    type: z.literal("mcpToolCall"),
+    id: z.string(),
+    server: z.string(),
+    tool: z.string(),
+    status: z.enum(["inProgress", "completed", "failed"]),
+    durationMs: z.number().int().nonnegative().nullable().optional(),
+  }),
+  z.object({
+    type: z.literal("dynamicToolCall"),
+    id: z.string(),
+    namespace: z.string().nullable().optional(),
+    tool: z.string(),
+    status: z.enum(["inProgress", "completed", "failed"]),
+    durationMs: z.number().int().nonnegative().nullable().optional(),
+  }),
+]);
+const FileUpdateChangeSchema = z.object({
+  path: z.string(),
+  diff: z.string(),
+  kind: z.object({
+    type: z.enum(["add", "update", "delete"]),
+  }),
+});
+const FileChangeItemSchema = z.object({
+  type: z.literal("fileChange"),
+  id: z.string(),
+  status: z.enum(["inProgress", "completed", "failed", "declined"]),
+  changes: z.array(FileUpdateChangeSchema),
+});
+const ItemLifecycleSchema = z.object({
+  method: z.enum(["item/started", "item/completed"]),
+  params: z.object({
+    threadId: z.string(),
+    turnId: z.string(),
+    item: z.union([ActivityItemSchema, FileChangeItemSchema]),
+  }),
+});
+const CommandOutputSchema = z.object({
+  method: z.literal("item/commandExecution/outputDelta"),
+  params: z.object({
+    threadId: z.string(),
+    turnId: z.string(),
+    itemId: z.string(),
+    delta: z.string(),
+  }),
+});
+const TurnDiffSchema = z.object({
+  method: z.literal("turn/diff/updated"),
+  params: z.object({
+    threadId: z.string(),
+    turnId: z.string(),
+    diff: z.string(),
+  }),
+});
+const CommandApprovalRequestSchema = z.object({
+  id: RequestIdSchema,
+  method: z.literal("item/commandExecution/requestApproval"),
+  params: z.object({
+    threadId: z.string(),
+    turnId: z.string(),
+    itemId: z.string(),
+    command: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    reason: z.string().nullable().optional(),
+  }),
+});
+const FileApprovalRequestSchema = z.object({
+  id: RequestIdSchema,
+  method: z.literal("item/fileChange/requestApproval"),
+  params: z.object({
+    threadId: z.string(),
+    turnId: z.string(),
+    itemId: z.string(),
+    reason: z.string().nullable().optional(),
+  }),
+});
 
 interface ActiveTurn {
   command: TurnStartCommand;
@@ -60,16 +153,30 @@ interface ActiveTurn {
   streamSeq: number;
   contentByMessage: Map<string, string>;
   completedMessages: Set<string>;
+  activityIds: Map<string, string>;
+  fileChangeIds: Map<string, string>;
+  turnDiff: string;
+  outputBatcher: OutputBatcher;
   lost: boolean;
   resolve(): void;
   reject(error: Error): void;
   done: Promise<void>;
 }
 
+interface PendingApproval {
+  requestId: string | number;
+  approvalId: string;
+  sessionId: string;
+  turnId: string;
+  runtimeId: string;
+  runtimeGeneration: number;
+}
+
 export interface CodexProviderOptions {
   cwd: string;
   command?: string;
   timeoutMs?: number;
+  approvalTimeoutMs?: number;
 }
 
 export class CodexProvider implements ConnectorProvider {
@@ -78,6 +185,7 @@ export class CodexProvider implements ConnectorProvider {
   #rpc: CodexRpcProcess | undefined;
   #active: ActiveTurn | undefined;
   #earlyNotifications: Array<Record<string, unknown>> = [];
+  readonly #pendingApprovals = new Map<string, PendingApproval>();
   #closing = false;
 
   constructor(options: CodexProviderOptions) {
@@ -103,7 +211,7 @@ export class CodexProvider implements ConnectorProvider {
       : ThreadResponseSchema.parse(
           await rpc.request("thread/start", {
             cwd: this.#options.cwd,
-            approvalPolicy: "never",
+            approvalPolicy: "on-request",
             sandbox: "read-only",
             personality: "none",
           }),
@@ -123,6 +231,21 @@ export class CodexProvider implements ConnectorProvider {
       rejectDone = reject;
     });
     void done.catch(() => undefined);
+    const outputBatcher = new OutputBatcher({
+      emit: (activityId, streamSeq, output) => {
+        const current = this.#active;
+        if (current?.command.payload.turnId !== command.payload.turnId) return;
+        current.emit(
+          this.#envelope("connector.command.output.batch", {
+            sessionId: current.command.payload.sessionId,
+            turnId: current.command.payload.turnId,
+            activityId,
+            streamSeq,
+            output,
+          }),
+        );
+      },
+    });
     const active: ActiveTurn = {
       command,
       emit,
@@ -131,6 +254,10 @@ export class CodexProvider implements ConnectorProvider {
       streamSeq: 0,
       contentByMessage: new Map(),
       completedMessages: new Set(),
+      activityIds: new Map(),
+      fileChangeIds: new Map(),
+      turnDiff: "",
+      outputBatcher,
       lost: false,
       resolve: resolveDone,
       reject: rejectDone,
@@ -182,8 +309,38 @@ export class CodexProvider implements ConnectorProvider {
     });
   }
 
+  async resolveApproval(command: ApprovalResolveCommand) {
+    const pending = this.#pendingApprovals.get(
+      command.payload.providerCorrelationId,
+    );
+    const rpc = this.#rpc;
+    if (
+      pending === undefined ||
+      rpc === undefined ||
+      pending.approvalId !== command.payload.approvalId ||
+      pending.sessionId !== command.payload.sessionId ||
+      pending.turnId !== command.payload.turnId ||
+      pending.runtimeId !== command.payload.runtimeId ||
+      pending.runtimeGeneration !== command.payload.runtimeGeneration
+    ) {
+      throw new Error("Codex provider has no matching pending approval");
+    }
+    this.#pendingApprovals.delete(command.payload.providerCorrelationId);
+    rpc.respond(pending.requestId, {
+      decision: command.payload.decision === "approved_once" ? "accept" : "decline",
+    });
+  }
+
   async close() {
     this.#closing = true;
+    const active = this.#active;
+    if (active !== undefined) {
+      active.lost = true;
+      active.outputBatcher.flushAll();
+      this.#clearPendingApprovals(active);
+      this.#active = undefined;
+      active.reject(new ProviderLostError("Codex provider closed"));
+    }
     await this.#rpc?.stop();
     this.#rpc = undefined;
   }
@@ -205,6 +362,7 @@ export class CodexProvider implements ConnectorProvider {
         : { timeoutMs: this.#options.timeoutMs }),
     });
     rpc.onNotification((message) => this.#handleNotification(message));
+    rpc.onServerRequest((message) => this.#handleServerRequest(message, rpc));
     rpc.onProtocolFault((error) => this.#handleProtocolFault(error));
     rpc.onExit(() => this.#handleExit(rpc));
     await rpc.start();
@@ -243,6 +401,35 @@ export class CodexProvider implements ConnectorProvider {
       return;
     }
 
+    if (message.method === "item/commandExecution/outputDelta") {
+      const parsed = CommandOutputSchema.safeParse(message);
+      if (!parsed.success) return this.#handleProtocolFault(parsed.error);
+      if (!this.#matches(active, parsed.data.params)) return;
+      const activityId = this.#activityId(active, parsed.data.params.itemId);
+      active.outputBatcher.push(activityId, parsed.data.params.delta);
+      return;
+    }
+
+    if (message.method === "turn/diff/updated") {
+      const parsed = TurnDiffSchema.safeParse(message);
+      if (!parsed.success) return this.#handleProtocolFault(parsed.error);
+      if (!this.#matches(active, parsed.data.params)) return;
+      active.turnDiff = parsed.data.params.diff;
+      return;
+    }
+
+    if (message.method === "item/started" || message.method === "item/completed") {
+      const parsed = ItemLifecycleSchema.safeParse(message);
+      if (parsed.success && this.#matches(active, parsed.data.params)) {
+        if (parsed.data.params.item.type === "fileChange") {
+          this.#emitFileChange(active, parsed.data.method, parsed.data.params.item);
+        } else {
+          this.#emitActivity(active, parsed.data.method, parsed.data.params.item);
+        }
+        return;
+      }
+    }
+
     if (message.method === "item/completed") {
       const parsed = AgentItemCompletedSchema.safeParse(message);
       if (!parsed.success) return;
@@ -270,6 +457,7 @@ export class CodexProvider implements ConnectorProvider {
     active: ActiveTurn,
     turn: z.infer<typeof TurnCompletedSchema>["params"]["turn"],
   ) {
+    active.outputBatcher.flushAll();
     const finalItem = turn.items
       ?.map((item) =>
         z
@@ -304,7 +492,102 @@ export class CodexProvider implements ConnectorProvider {
       active.emit(this.#envelope("connector.turn.outcome_unknown", base));
     }
     if (this.#active === active) this.#active = undefined;
+    this.#clearPendingApprovals(active);
     active.resolve();
+  }
+
+  #emitActivity(
+    active: ActiveTurn,
+    method: "item/started" | "item/completed",
+    item: z.infer<typeof ActivityItemSchema>,
+  ) {
+    const activityId = this.#activityId(active, item.id);
+    if (method === "item/completed") active.outputBatcher.flush(activityId);
+    const isCommand = item.type === "commandExecution";
+    const status = method === "item/started" ? "running" : activityStatus(item.status);
+    const activity: ToolActivity = {
+      activityId,
+      turnId: active.command.payload.turnId,
+      kind: isCommand ? "command" : "tool",
+      title: isCommand
+        ? item.command
+        : item.type === "mcpToolCall"
+          ? `${item.server}/${item.tool}`
+          : `${item.namespace ?? "dynamic"}/${item.tool}`,
+      cwd: isCommand ? item.cwd : null,
+      status,
+      revision: method === "item/started" ? 0 : 1,
+      exitCode: isCommand ? (item.exitCode ?? null) : null,
+      durationMs: item.durationMs ?? null,
+      outputPreview:
+        isCommand && method === "item/completed"
+          ? (item.aggregatedOutput ?? "").slice(-(32 * 1024))
+          : "",
+    };
+    active.emit(
+      this.#envelope(
+        method === "item/started"
+          ? "connector.activity.started"
+          : "connector.activity.completed",
+        { sessionId: active.command.payload.sessionId, activity },
+      ),
+    );
+  }
+
+  #emitFileChange(
+    active: ActiveTurn,
+    method: "item/started" | "item/completed",
+    item: z.infer<typeof FileChangeItemSchema>,
+  ) {
+    const fileChangeId = this.#fileChangeId(active, item.id);
+    const diff = item.changes.map((change) => change.diff).join("\n") || active.turnDiff;
+    const counts = countDiffLines(diff);
+    const common = {
+      fileChangeId,
+      turnId: active.command.payload.turnId,
+      status:
+        method === "item/started" ? ("running" as const) : activityStatus(item.status),
+      revision: method === "item/started" ? 0 : 1,
+      files: item.changes.map((change) => ({
+        path: change.path,
+        kind: change.kind.type,
+      })),
+      additions: counts.additions,
+      deletions: counts.deletions,
+    };
+    if (method === "item/started") {
+      active.emit(
+        this.#envelope("connector.file.change.started", {
+          sessionId: active.command.payload.sessionId,
+          fileChange: { ...common, diff: null },
+        }),
+      );
+      return;
+    }
+    active.emit(
+      this.#envelope("connector.file.change.completed", {
+        sessionId: active.command.payload.sessionId,
+        fileChange: { ...common, inlineDiff: diff, artifact: null },
+      }),
+    );
+  }
+
+  #activityId(active: ActiveTurn, providerItemId: string) {
+    let activityId = active.activityIds.get(providerItemId);
+    if (activityId === undefined) {
+      activityId = `activity-${crypto.randomUUID()}`;
+      active.activityIds.set(providerItemId, activityId);
+    }
+    return activityId;
+  }
+
+  #fileChangeId(active: ActiveTurn, providerItemId: string) {
+    let fileChangeId = active.fileChangeIds.get(providerItemId);
+    if (fileChangeId === undefined) {
+      fileChangeId = `file-change-${crypto.randomUUID()}`;
+      active.fileChangeIds.set(providerItemId, fileChangeId);
+    }
+    return fileChangeId;
   }
 
   #emitCompletedMessage(active: ActiveTurn, messageId: string, content: string) {
@@ -330,6 +613,94 @@ export class CodexProvider implements ConnectorProvider {
     );
   }
 
+  #handleServerRequest(
+    message: Record<string, unknown>,
+    rpc: CodexRpcProcess,
+  ) {
+    if (
+      message.method !== "item/commandExecution/requestApproval" &&
+      message.method !== "item/fileChange/requestApproval"
+    ) {
+      return false;
+    }
+    const active = this.#active;
+    const parsed =
+      message.method === "item/commandExecution/requestApproval"
+        ? CommandApprovalRequestSchema.parse(message)
+        : FileApprovalRequestSchema.parse(message);
+    if (
+      active === undefined ||
+      active.providerTurnId === null ||
+      !this.#matches(active, parsed.params)
+    ) {
+      rpc.respond(parsed.id, { decision: "decline" });
+      return true;
+    }
+    const approvalId = `approval-${crypto.randomUUID()}`;
+    const providerCorrelationId = `approval-correlation-${crypto.randomUUID()}`;
+    const isCommand = parsed.method === "item/commandExecution/requestApproval";
+    const activityId = isCommand
+      ? this.#activityId(active, parsed.params.itemId)
+      : null;
+    const fileChangeId = isCommand
+      ? null
+      : this.#fileChangeId(active, parsed.params.itemId);
+    const command = isCommand ? (parsed.params.command ?? null) : null;
+    const reason = parsed.params.reason ?? null;
+    const approval: Approval = {
+      approvalId,
+      sessionId: active.command.payload.sessionId,
+      runtimeId: active.command.payload.runtimeId,
+      runtimeGeneration: active.command.payload.runtimeGeneration,
+      turnId: active.command.payload.turnId,
+      actionType: isCommand ? "command" : "file_change",
+      state: "pending",
+      revision: 0,
+      expiresAt: new Date(
+        Date.now() + (this.#options.approvalTimeoutMs ?? 120_000),
+      ).toISOString(),
+      payload: {
+        summary: isCommand
+          ? command ?? "Command execution requires approval"
+          : "File changes require approval",
+        command,
+        cwd: isCommand ? (parsed.params.cwd ?? null) : null,
+        reason,
+        activityId,
+        fileChangeId,
+      },
+      resolvedAt: null,
+      resolvedByDeviceId: null,
+    };
+    this.#pendingApprovals.set(providerCorrelationId, {
+      requestId: parsed.id,
+      approvalId,
+      sessionId: approval.sessionId,
+      turnId: approval.turnId,
+      runtimeId: approval.runtimeId,
+      runtimeGeneration: approval.runtimeGeneration,
+    });
+    active.emit(
+      this.#envelope("connector.approval.requested", {
+        sessionId: approval.sessionId,
+        approval,
+        providerCorrelationId,
+      }),
+    );
+    return true;
+  }
+
+  #clearPendingApprovals(active: ActiveTurn) {
+    for (const [correlationId, pending] of this.#pendingApprovals) {
+      if (
+        pending.sessionId === active.command.payload.sessionId &&
+        pending.turnId === active.command.payload.turnId
+      ) {
+        this.#pendingApprovals.delete(correlationId);
+      }
+    }
+  }
+
   #handleProtocolFault(error: unknown) {
     const active = this.#active;
     if (active !== undefined) {
@@ -340,6 +711,8 @@ export class CodexProvider implements ConnectorProvider {
         }),
       );
       active.lost = true;
+      active.outputBatcher.flushAll();
+      this.#clearPendingApprovals(active);
       if (this.#active === active) this.#active = undefined;
       active.reject(
         new ProviderLostError(
@@ -362,6 +735,8 @@ export class CodexProvider implements ConnectorProvider {
         }),
       );
       active.lost = true;
+      active.outputBatcher.flushAll();
+      this.#clearPendingApprovals(active);
       if (this.#active === active) this.#active = undefined;
       active.reject(new ProviderLostError());
     }
@@ -377,4 +752,21 @@ export class CodexProvider implements ConnectorProvider {
       { type: T }
     >;
   }
+}
+
+function activityStatus(
+  status: "inProgress" | "completed" | "failed" | "declined",
+): ToolActivity["status"] {
+  if (status === "inProgress") return "running";
+  return status;
+}
+
+function countDiffLines(diff: string) {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+    if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+  }
+  return { additions, deletions };
 }

@@ -1,13 +1,20 @@
 import { createServer, type Server } from "node:http";
+import { createHash } from "node:crypto";
 
 import {
   ConnectorEnvelopeSchema,
   CoreToConnectorEnvelopeSchema,
+  ARTIFACT_CHUNK_BYTES,
+  MAX_INLINE_DIFF_BYTES,
+  MAX_INLINE_ENVELOPE_BYTES,
+  MAX_WEBSOCKET_MESSAGE_BYTES,
   RuntimeSchema,
   decodeJson,
   makeEnvelope,
+  utf8ByteLength,
   type ConnectorEnvelope,
   type CoreToConnectorEnvelope,
+  type Runtime,
 } from "@aicl/protocol";
 import WebSocket from "ws";
 
@@ -62,6 +69,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
   let socket: WebSocket | undefined;
   let reconnectTimer: NodeJS.Timeout | undefined;
   let healthServer: Server | undefined;
+  const inFlightCommands = new Set<Promise<void>>();
   let readyResolved = false;
   let resolveReady: () => void = () => undefined;
   const ready = new Promise<void>((resolve) => {
@@ -76,7 +84,11 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
 
   const sendRaw = (envelope: ConnectorEnvelope) => {
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(envelope));
+      const json = JSON.stringify(envelope);
+      if (utf8ByteLength(json) > MAX_WEBSOCKET_MESSAGE_BYTES) {
+        throw new Error("Connector envelope exceeds the WebSocket message limit");
+      }
+      socket.send(json);
     }
   };
 
@@ -89,8 +101,87 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       runtimeGeneration: journal.runtimeGeneration,
     });
 
+  const enqueueDurable = (envelope: ConnectorEnvelope, status: Runtime) => {
+    sendRaw(journal.enqueue(envelope, status));
+  };
+
+  const emitFileChange = (
+    envelope: Extract<
+      ConnectorEnvelope,
+      { type: "connector.file.change.completed" }
+    >,
+    status: Runtime,
+  ) => {
+    const inlineDiff = envelope.payload.fileChange.inlineDiff;
+    if (
+      inlineDiff === null ||
+      (Buffer.byteLength(inlineDiff, "utf8") <= MAX_INLINE_DIFF_BYTES &&
+        utf8ByteLength(JSON.stringify(envelope)) <=
+          MAX_INLINE_ENVELOPE_BYTES - 4 * 1024)
+    ) {
+      enqueueDurable(envelope, status);
+      return;
+    }
+    const content = Buffer.from(inlineDiff, "utf8");
+    const artifactId = `artifact-${crypto.randomUUID()}`;
+    const artifact = {
+      artifactId,
+      mediaType: "text/x-diff; charset=utf-8",
+      byteLength: content.byteLength,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      downloadPath: `/artifacts/${artifactId}`,
+    };
+    const chunkCount = Math.ceil(content.byteLength / ARTIFACT_CHUNK_BYTES);
+    enqueueDurable(
+      makeEnvelope("connector.artifact.begin", {
+        sessionId: envelope.payload.sessionId,
+        turnId: envelope.payload.fileChange.turnId,
+        artifact,
+        chunkCount,
+      }),
+      status,
+    );
+    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+      const start = chunkIndex * ARTIFACT_CHUNK_BYTES;
+      enqueueDurable(
+        makeEnvelope("connector.artifact.chunk", {
+          sessionId: envelope.payload.sessionId,
+          turnId: envelope.payload.fileChange.turnId,
+          artifactId,
+          chunkIndex,
+          contentBase64: content
+            .subarray(start, start + ARTIFACT_CHUNK_BYTES)
+            .toString("base64"),
+        }),
+        status,
+      );
+    }
+    enqueueDurable(
+      makeEnvelope("connector.artifact.complete", {
+        sessionId: envelope.payload.sessionId,
+        turnId: envelope.payload.fileChange.turnId,
+        artifactId,
+      }),
+      status,
+    );
+    enqueueDurable(
+      makeEnvelope("connector.file.change.completed", {
+        sessionId: envelope.payload.sessionId,
+        fileChange: {
+          ...envelope.payload.fileChange,
+          inlineDiff: null,
+          artifact,
+        },
+      }),
+      status,
+    );
+  };
+
   const emit = (envelope: ConnectorEnvelope) => {
-    if (envelope.type === "connector.turn.delta") {
+    if (
+      envelope.type === "connector.turn.delta" ||
+      envelope.type === "connector.command.output.batch"
+    ) {
       sendRaw(decorateEphemeral(envelope));
       return;
     }
@@ -105,7 +196,11 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     if (envelope.type === "connector.session.bound") {
       journal.checkpoint(status, envelope.payload.providerSessionId);
     }
-    sendRaw(journal.enqueue(envelope, status));
+    if (envelope.type === "connector.file.change.completed") {
+      emitFileChange(envelope, status);
+      return;
+    }
+    enqueueDurable(envelope, status);
   };
 
   const emitRuntime = (status: "ready" | "busy" | "lost") => {
@@ -147,6 +242,14 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       try {
         await options.provider.interrupt(command);
         journal.markCommand(command.payload.commandId, "completed");
+        emit(
+          makeEnvelope("connector.interrupt.result", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
+            status: "accepted" as const,
+          }),
+        );
       } catch (error) {
         journal.markCommand(command.payload.commandId, "outcome_unknown");
         emit(
@@ -156,6 +259,43 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
             code: "INTERRUPT_FAILED",
             message: error instanceof Error ? error.message : String(error),
             retryable: true,
+          }),
+        );
+      }
+      return;
+    }
+
+    if (command.type === "connector.approval.resolve") {
+      if (
+        command.payload.runtimeId !== journal.runtimeId ||
+        command.payload.runtimeGeneration !== journal.runtimeGeneration
+      ) {
+        journal.markCommand(command.payload.commandId, "completed", {
+          failureCode: "STALE_RUNTIME_GENERATION",
+        });
+        emit(
+          makeEnvelope("connector.command.error", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            code: "STALE_RUNTIME_GENERATION",
+            message: "Approval belongs to a different runtime generation.",
+            retryable: false,
+          }),
+        );
+        return;
+      }
+      try {
+        await options.provider.resolveApproval(command);
+        journal.markCommand(command.payload.commandId, "completed");
+      } catch (error) {
+        journal.markCommand(command.payload.commandId, "outcome_unknown");
+        emit(
+          makeEnvelope("connector.command.error", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            code: "APPROVAL_DELIVERY_FAILED",
+            message: error instanceof Error ? error.message : String(error),
+            retryable: false,
           }),
         );
       }
@@ -212,7 +352,11 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         const command = CoreToConnectorEnvelopeSchema.parse(
           decodeJson(data.toString()),
         );
-        void handleCommand(command);
+        const inFlight = handleCommand(command);
+        inFlightCommands.add(inFlight);
+        void inFlight
+          .catch((error) => console.error("Connector command failed", error))
+          .finally(() => inFlightCommands.delete(inFlight));
       } catch (error) {
         console.error("Connector rejected an invalid Core envelope", error);
       }
@@ -268,6 +412,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
       socket?.close();
       await options.provider.close();
+      await Promise.allSettled([...inFlightCommands]);
       if (healthServer !== undefined) {
         await new Promise<void>((resolve, reject) => {
           healthServer?.close((error) => (error ? reject(error) : resolve()));

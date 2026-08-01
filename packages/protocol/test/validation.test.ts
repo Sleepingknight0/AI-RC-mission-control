@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   ClientEnvelopeSchema,
+  MAX_WEBSOCKET_MESSAGE_BYTES,
   PROTOCOL_VERSION,
   ServerEnvelopeSchema,
+  decodeJson,
   makeEnvelope,
 } from "../src/index.js";
 
@@ -32,6 +34,46 @@ describe("normalized protocol validation", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it("rejects raw provider correlation fields in an approval envelope", () => {
+    const result = ServerEnvelopeSchema.safeParse({
+      ...makeEnvelope("approval.requested", {
+        sessionId: "session-1",
+        eventId: "event-1",
+        seq: 1,
+        approval: {
+          approvalId: "approval-1",
+          sessionId: "session-1",
+          runtimeId: "runtime-1",
+          runtimeGeneration: 1,
+          turnId: "turn-1",
+          actionType: "command",
+          state: "pending",
+          revision: 0,
+          expiresAt: "2026-08-02T01:02:00.000Z",
+          payload: {
+            summary: "Run tests",
+            command: "pnpm test",
+            cwd: null,
+            reason: null,
+            activityId: null,
+            fileChangeId: null,
+          },
+          resolvedAt: null,
+          resolvedByDeviceId: null,
+        },
+      }),
+      providerRequestId: 42,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects WebSocket messages above the transport ceiling", () => {
+    const oversized = "x".repeat(MAX_WEBSOCKET_MESSAGE_BYTES + 1);
+
+    expect(() => decodeJson(oversized)).toThrow(RangeError);
   });
 
   it("rejects unsupported envelope versions", () => {

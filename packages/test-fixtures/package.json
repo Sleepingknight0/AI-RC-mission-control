@@ -12,5 +12,8 @@
     "test": "vitest run --passWithNoTests",
     "lint": "eslint src --max-warnings 0",
     "check": "pnpm run typecheck && pnpm run test && pnpm run lint"
+  },
+  "dependencies": {
+    "@aicl/protocol": "workspace:*"
   }
 }

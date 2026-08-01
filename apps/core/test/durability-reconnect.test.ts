@@ -8,6 +8,7 @@ import type {
   ConnectorProvider,
   TurnStartCommand,
 } from "@aicl/connector/provider";
+import { ProviderLostError } from "@aicl/connector/provider";
 import {
   ConnectorEnvelopeSchema,
   ServerEnvelopeSchema,
@@ -249,6 +250,7 @@ describe("durability and reconnect", () => {
 
 class HeldProvider implements ConnectorProvider {
   startCalls = 0;
+  #closed = false;
   #release: () => void = () => undefined;
   readonly #releasePromise = new Promise<void>((resolve) => {
     this.#release = resolve;
@@ -295,6 +297,7 @@ class HeldProvider implements ConnectorProvider {
     );
     this.#deltaReady();
     await this.#releasePromise;
+    if (this.#closed) throw new ProviderLostError("Held provider closed");
     const content = `Authoritative response: ${command.payload.prompt}`;
     emitNormalized(
       emit,
@@ -316,7 +319,12 @@ class HeldProvider implements ConnectorProvider {
 
   async interrupt() {}
 
-  async close() {}
+  async resolveApproval() {}
+
+  async close() {
+    this.#closed = true;
+    this.#release();
+  }
 
   release() {
     this.#release();

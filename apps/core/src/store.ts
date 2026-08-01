@@ -55,6 +55,7 @@ export type ApprovalResolutionResult =
       dispatch?: {
         approval: Approval;
         providerCorrelationId: string;
+        decision: "approved_once" | "declined";
       };
     };
 
@@ -594,6 +595,616 @@ export class CoreDatabase {
     });
   }
 
+  async recordActivity(
+    message: Extract<
+      ConnectorEnvelope,
+      { type: "connector.activity.started" | "connector.activity.completed" }
+    >,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const { activity } = message.payload;
+      if (
+        !this.#matchesRuntimeEvent(
+          message.payload.sessionId,
+          activity.turnId,
+          source.runtimeId,
+          source.runtimeGeneration,
+          ["running", "outcome_unknown"],
+        )
+      ) {
+        return undefined;
+      }
+      const now = new Date().toISOString();
+      this.#database
+        .prepare(
+          `INSERT INTO tool_activities (
+             id, session_id, turn_id, kind, title, cwd, state, revision,
+             exit_code, duration_ms, output_preview, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             state = excluded.state,
+             revision = tool_activities.revision + 1,
+             exit_code = excluded.exit_code,
+             duration_ms = excluded.duration_ms,
+             output_preview = excluded.output_preview,
+             updated_at = excluded.updated_at`,
+        )
+        .run(
+          activity.activityId,
+          message.payload.sessionId,
+          activity.turnId,
+          activity.kind,
+          activity.title,
+          activity.cwd,
+          activity.status,
+          activity.revision,
+          activity.exitCode,
+          activity.durationMs,
+          activity.outputPreview,
+          now,
+          now,
+        );
+      const stored = this.#activity(activity.activityId);
+      return this.#appendVisibleEvent({
+        sessionId: message.payload.sessionId,
+        origin: "connector",
+        runtime: runtimeFromSource(source),
+        turnId: activity.turnId,
+        source,
+        type:
+          message.type === "connector.activity.started"
+            ? "activity.started"
+            : "activity.completed",
+        payload: (identity) => ({
+          sessionId: message.payload.sessionId,
+          activity: stored,
+          ...identity,
+        }),
+        now,
+      });
+    });
+  }
+
+  async recordFileChange(
+    message: Extract<
+      ConnectorEnvelope,
+      {
+        type:
+          | "connector.file.change.started"
+          | "connector.file.change.completed";
+      }
+    >,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const fileChange = message.payload.fileChange;
+      if (
+        !this.#matchesRuntimeEvent(
+          message.payload.sessionId,
+          fileChange.turnId,
+          source.runtimeId,
+          source.runtimeGeneration,
+          ["running", "outcome_unknown"],
+        )
+      ) {
+        return undefined;
+      }
+      const now = new Date().toISOString();
+      let diff: FileChange["diff"] = null;
+      if (message.type === "connector.file.change.completed") {
+        if (message.payload.fileChange.inlineDiff !== null) {
+          const content = message.payload.fileChange.inlineDiff;
+          const byteLength = utf8ByteLength(content);
+          if (byteLength > MAX_INLINE_DIFF_BYTES) {
+            throw new Error("Inline diff exceeds the configured threshold");
+          }
+          diff = {
+            kind: "inline",
+            content,
+            byteLength,
+            sha256: createHash("sha256").update(content).digest("hex"),
+          };
+        } else if (message.payload.fileChange.artifact !== null) {
+          this.#assertArtifact(message.payload.fileChange.artifact, {
+            sessionId: message.payload.sessionId,
+            turnId: fileChange.turnId,
+          });
+          diff = {
+            kind: "artifact",
+            artifact: message.payload.fileChange.artifact,
+          };
+        }
+      }
+      this.#database
+        .prepare(
+          `INSERT INTO file_changes (
+             id, session_id, turn_id, state, revision, files_json, additions,
+             deletions, diff_json, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             state = excluded.state,
+             revision = file_changes.revision + 1,
+             files_json = excluded.files_json,
+             additions = excluded.additions,
+             deletions = excluded.deletions,
+             diff_json = excluded.diff_json,
+             updated_at = excluded.updated_at`,
+        )
+        .run(
+          fileChange.fileChangeId,
+          message.payload.sessionId,
+          fileChange.turnId,
+          fileChange.status,
+          fileChange.revision,
+          JSON.stringify(fileChange.files),
+          fileChange.additions,
+          fileChange.deletions,
+          diff === null ? null : JSON.stringify(diff),
+          now,
+          now,
+        );
+      const stored = this.#fileChange(fileChange.fileChangeId);
+      return this.#appendVisibleEvent({
+        sessionId: message.payload.sessionId,
+        origin: "connector",
+        runtime: runtimeFromSource(source),
+        turnId: fileChange.turnId,
+        source,
+        type:
+          message.type === "connector.file.change.started"
+            ? "file.change.started"
+            : "file.change.completed",
+        payload: (identity) => ({
+          sessionId: message.payload.sessionId,
+          fileChange: stored,
+          ...identity,
+        }),
+        now,
+      });
+    });
+  }
+
+  async requestApproval(
+    message: Extract<ConnectorEnvelope, { type: "connector.approval.requested" }>,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const { approval, providerCorrelationId } = message.payload;
+      if (
+        approval.runtimeId !== source.runtimeId ||
+        approval.runtimeGeneration !== source.runtimeGeneration ||
+        !this.#matchesRuntimeEvent(
+          approval.sessionId,
+          approval.turnId,
+          source.runtimeId,
+          source.runtimeGeneration,
+          ["running"],
+        )
+      ) {
+        return undefined;
+      }
+      const now = new Date().toISOString();
+      this.#database
+        .prepare(
+          `INSERT INTO approval_requests (
+             id, session_id, runtime_id, runtime_generation, turn_id,
+             provider_correlation_id, action_type, state, revision, payload_json,
+             expires_at, resolved_by_device_id, resolved_at, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, NULL, NULL, ?, ?)`,
+        )
+        .run(
+          approval.approvalId,
+          approval.sessionId,
+          approval.runtimeId,
+          approval.runtimeGeneration,
+          approval.turnId,
+          providerCorrelationId,
+          approval.actionType,
+          JSON.stringify(approval.payload),
+          approval.expiresAt,
+          now,
+          now,
+        );
+      const stored = this.#approval(approval.approvalId);
+      return this.#appendVisibleEvent({
+        sessionId: approval.sessionId,
+        origin: "connector",
+        runtime: runtimeFromSource(source),
+        turnId: approval.turnId,
+        source,
+        type: "approval.requested",
+        payload: (identity) => ({
+          sessionId: approval.sessionId,
+          approval: approvalFromRow(stored),
+          ...identity,
+        }),
+        now,
+      });
+    });
+  }
+
+  async resolveApproval(input: {
+    message: Extract<ClientEnvelope, { type: "approval.resolve" }>;
+    accepted: ServerEnvelope;
+    runtime: Runtime;
+    rejection: (code: string, message: string) => ServerEnvelope;
+  }): Promise<ApprovalResolutionResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(input.message);
+      const prior = this.#command(input.message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const now = new Date().toISOString();
+      this.#ensureSession(input.message.payload.sessionId, now);
+      const approval = this.#approvalOptional(input.message.payload.approvalId);
+      const reject = (code: string, message: string, durableEvent?: ServerEnvelope) => {
+        const result = input.rejection(code, message);
+        this.#insertCommand(input.message, payloadHash, "rejected", result, now);
+        return {
+          kind: "new" as const,
+          result,
+          ...(durableEvent === undefined ? {} : { durableEvent }),
+        };
+      };
+      if (
+        approval === undefined ||
+        approval.session_id !== input.message.payload.sessionId
+      ) {
+        return reject("APPROVAL_NOT_FOUND", "Approval was not found in this Session.");
+      }
+      if (approval.state !== "pending") {
+        return reject("APPROVAL_NOT_PENDING", `Approval is already ${approval.state}.`);
+      }
+      if (approval.revision !== input.message.payload.expectedRevision) {
+        return reject("STALE_CLIENT_STATE", "Approval revision no longer matches.");
+      }
+      if (approval.expires_at <= now) {
+        this.#database
+          .prepare(
+            `UPDATE approval_requests SET state = 'expired', revision = revision + 1,
+               resolved_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
+          )
+          .run(now, now, approval.id);
+        const expired = approvalFromRow(this.#approval(approval.id));
+        const event = this.#appendVisibleEvent({
+          sessionId: approval.session_id,
+          origin: "core",
+          runtime: runtimeFromApproval(expired),
+          turnId: approval.turn_id,
+          type: "approval.expired",
+          payload: (identity) => ({
+            sessionId: approval.session_id,
+            approval: expired,
+            ...identity,
+          }),
+          now,
+        });
+        const result = input.rejection("APPROVAL_EXPIRED", "Approval has expired.");
+        this.#insertCommand(input.message, payloadHash, "rejected", result, now);
+        return {
+          kind: "new",
+          result,
+          durableEvent: event,
+          dispatch: {
+            approval: expired,
+            providerCorrelationId: approval.provider_correlation_id,
+            decision: "declined",
+          },
+        };
+      }
+      const scopeIsCurrent = this.#database
+        .prepare(
+          `SELECT 1 AS ok
+             FROM approval_requests a
+             JOIN runtimes r ON r.id = a.runtime_id
+               AND r.generation = a.runtime_generation
+             JOIN turns t ON t.id = a.turn_id
+            WHERE a.id = ? AND a.state = 'pending'
+              AND r.state IN ('ready', 'busy')
+              AND t.state = 'running'
+              AND t.runtime_id = a.runtime_id
+              AND t.runtime_generation = a.runtime_generation`,
+        )
+        .get(approval.id);
+      if (
+        scopeIsCurrent === undefined ||
+        approval.runtime_id !== input.runtime.runtimeId ||
+        approval.runtime_generation !== input.runtime.generation
+      ) {
+        const event = this.#invalidateApproval(approval, now);
+        return reject(
+          "APPROVAL_INVALIDATED",
+          "Approval no longer belongs to the active runtime and Turn.",
+          event,
+        );
+      }
+      const updated = this.#database
+        .prepare(
+          `UPDATE approval_requests
+              SET state = ?, revision = revision + 1,
+                  resolved_by_device_id = ?, resolved_at = ?, updated_at = ?
+            WHERE id = ? AND state = 'pending' AND revision = ?
+              AND runtime_id = ? AND runtime_generation = ? AND turn_id = ?
+              AND provider_correlation_id = ? AND expires_at > ?
+              AND EXISTS (
+                SELECT 1 FROM runtimes r
+                 WHERE r.id = approval_requests.runtime_id
+                   AND r.generation = approval_requests.runtime_generation
+                   AND r.state IN ('ready', 'busy')
+              )
+              AND EXISTS (
+                SELECT 1 FROM turns t
+                 WHERE t.id = approval_requests.turn_id
+                   AND t.state = 'running'
+                   AND t.runtime_id = approval_requests.runtime_id
+                   AND t.runtime_generation = approval_requests.runtime_generation
+              )`,
+        )
+        .run(
+          input.message.payload.decision,
+          input.message.payload.deviceId,
+          now,
+          now,
+          approval.id,
+          input.message.payload.expectedRevision,
+          approval.runtime_id,
+          approval.runtime_generation,
+          approval.turn_id,
+          approval.provider_correlation_id,
+          now,
+        );
+      if (Number(updated.changes) !== 1) {
+        return reject("STALE_CLIENT_STATE", "Approval changed before resolution.");
+      }
+      this.#insertCommand(input.message, payloadHash, "committed", input.accepted, now);
+      const resolved = approvalFromRow(this.#approval(approval.id));
+      const durableEvent = this.#appendVisibleEvent({
+        sessionId: approval.session_id,
+        origin: "core",
+        runtime: runtimeFromApproval(resolved),
+        turnId: approval.turn_id,
+        type: "approval.resolved",
+        payload: (identity) => ({
+          sessionId: approval.session_id,
+          approval: resolved,
+          ...identity,
+        }),
+        now,
+      });
+      return {
+        kind: "new",
+        result: input.accepted,
+        durableEvent,
+        dispatch: {
+          approval: resolved,
+          providerCorrelationId: approval.provider_correlation_id,
+          decision: input.message.payload.decision,
+        },
+      };
+    });
+  }
+
+  async recordInterruptResult(
+    message: Extract<ConnectorEnvelope, { type: "connector.interrupt.result" }>,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      if (
+        !this.#matchesRuntimeEvent(
+          message.payload.sessionId,
+          message.payload.turnId,
+          source.runtimeId,
+          source.runtimeGeneration,
+          ["running", "interrupted"],
+        )
+      ) {
+        return undefined;
+      }
+      const now = new Date().toISOString();
+      return this.#appendVisibleEvent({
+        sessionId: message.payload.sessionId,
+        origin: "connector",
+        runtime: runtimeFromSource(source),
+        turnId: message.payload.turnId,
+        source,
+        type: "interrupt.result",
+        payload: (identity) => ({ ...message.payload, ...identity }),
+        now,
+      });
+    });
+  }
+
+  async beginArtifact(
+    message: Extract<ConnectorEnvelope, { type: "connector.artifact.begin" }>,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const { artifact, chunkCount, sessionId, turnId } = message.payload;
+      if (
+        !this.#matchesRuntimeEvent(
+          sessionId,
+          turnId,
+          source.runtimeId,
+          source.runtimeGeneration,
+          ["running", "outcome_unknown"],
+        )
+      ) {
+        return false;
+      }
+      this.#database
+        .prepare(
+          `INSERT INTO artifact_ingests (
+             id, session_id, turn_id, media_type, byte_length, sha256,
+             chunk_count, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .run(
+          artifact.artifactId,
+          sessionId,
+          turnId,
+          artifact.mediaType,
+          artifact.byteLength,
+          artifact.sha256,
+          chunkCount,
+          new Date().toISOString(),
+        );
+      return true;
+    });
+  }
+
+  async appendArtifactChunk(
+    message: Extract<ConnectorEnvelope, { type: "connector.artifact.chunk" }>,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const { artifactId, chunkIndex, contentBase64, sessionId, turnId } =
+        message.payload;
+      if (
+        !this.#matchesRuntimeEvent(
+          sessionId,
+          turnId,
+          source.runtimeId,
+          source.runtimeGeneration,
+          ["running", "outcome_unknown"],
+        )
+      ) {
+        return false;
+      }
+      const ingest = this.#database
+        .prepare(
+          `SELECT session_id, turn_id, chunk_count FROM artifact_ingests WHERE id = ?`,
+        )
+        .get(artifactId) as
+        | { session_id: string; turn_id: string; chunk_count: number }
+        | undefined;
+      if (
+        ingest === undefined ||
+        ingest.session_id !== sessionId ||
+        ingest.turn_id !== turnId ||
+        chunkIndex >= ingest.chunk_count
+      ) {
+        throw new Error("Artifact chunk does not match an active ingest");
+      }
+      const content = decodeBase64(contentBase64);
+      this.#database
+        .prepare(
+          `INSERT INTO artifact_ingest_chunks (artifact_id, chunk_index, content)
+           VALUES (?, ?, ?) ON CONFLICT(artifact_id, chunk_index) DO NOTHING`,
+        )
+        .run(artifactId, chunkIndex, content);
+      return true;
+    });
+  }
+
+  async completeArtifact(
+    message: Extract<ConnectorEnvelope, { type: "connector.artifact.complete" }>,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const { artifactId, sessionId, turnId } = message.payload;
+      if (
+        !this.#matchesRuntimeEvent(
+          sessionId,
+          turnId,
+          source.runtimeId,
+          source.runtimeGeneration,
+          ["running", "outcome_unknown"],
+        )
+      ) {
+        return false;
+      }
+      const ingest = this.#database
+        .prepare(
+          `SELECT id, session_id, turn_id, media_type, byte_length, sha256,
+                  chunk_count
+             FROM artifact_ingests WHERE id = ?`,
+        )
+        .get(artifactId) as
+        | {
+            id: string;
+            session_id: string;
+            turn_id: string;
+            media_type: string;
+            byte_length: number;
+            sha256: string;
+            chunk_count: number;
+          }
+        | undefined;
+      if (
+        ingest === undefined ||
+        ingest.session_id !== sessionId ||
+        ingest.turn_id !== turnId
+      ) {
+        throw new Error("Artifact completion does not match an active ingest");
+      }
+      const chunks = this.#database
+        .prepare(
+          `SELECT chunk_index, content FROM artifact_ingest_chunks
+            WHERE artifact_id = ? ORDER BY chunk_index`,
+        )
+        .all(artifactId) as unknown as Array<{
+        chunk_index: number;
+        content: Uint8Array;
+      }>;
+      if (
+        chunks.length !== ingest.chunk_count ||
+        chunks.some((chunk, index) => chunk.chunk_index !== index)
+      ) {
+        throw new Error("Artifact is missing one or more chunks");
+      }
+      const content = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.content)));
+      const sha256 = createHash("sha256").update(content).digest("hex");
+      if (content.byteLength !== ingest.byte_length || sha256 !== ingest.sha256) {
+        throw new Error("Artifact integrity check failed");
+      }
+      this.#database
+        .prepare(
+          `INSERT INTO artifacts (
+             id, session_id, turn_id, media_type, byte_length, sha256, content,
+             created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .run(
+          artifactId,
+          sessionId,
+          turnId,
+          ingest.media_type,
+          content.byteLength,
+          sha256,
+          content,
+          new Date().toISOString(),
+        );
+      this.#database.prepare("DELETE FROM artifact_ingests WHERE id = ?").run(artifactId);
+      return true;
+    });
+  }
+
+  artifact(artifactId: string) {
+    const row = this.#database
+      .prepare(
+        `SELECT id, session_id, turn_id, media_type, byte_length, sha256, content
+           FROM artifacts WHERE id = ?`,
+      )
+      .get(artifactId) as ArtifactRow | undefined;
+    return row === undefined
+      ? undefined
+      : {
+          artifactId: row.id,
+          sessionId: row.session_id,
+          turnId: row.turn_id,
+          mediaType: row.media_type,
+          byteLength: row.byte_length,
+          sha256: row.sha256,
+          content: Buffer.from(row.content),
+        };
+  }
+
   async finishTurn(
     message: Extract<
       ConnectorEnvelope,
@@ -620,6 +1231,10 @@ export class CoreDatabase {
         return undefined;
       }
       const now = new Date().toISOString();
+      const events = this.#invalidateApprovalsForTurn(
+        message.payload.turnId,
+        now,
+      );
       const status = terminalStatus(message.type);
       const failureCode =
         message.type === "connector.turn.failed"
@@ -646,25 +1261,24 @@ export class CoreDatabase {
         )
         .run(now, message.payload.turnId);
       const serverType = terminalServerType(status);
-      return this.#appendVisibleEvent({
-        sessionId: message.payload.sessionId,
-        origin: "connector",
-        runtime: {
-          runtimeId: source.runtimeId,
-          generation: source.runtimeGeneration,
-          status: "busy",
-        },
-        turnId: message.payload.turnId,
-        source,
-        type: serverType,
-        payload: (identity) => ({
+      events.push(
+        this.#appendVisibleEvent({
           sessionId: message.payload.sessionId,
+          origin: "connector",
+          runtime: runtimeFromSource(source),
           turnId: message.payload.turnId,
-          ...(failureCode === null ? {} : { failureCode }),
-          ...identity,
+          source,
+          type: serverType,
+          payload: (identity) => ({
+            sessionId: message.payload.sessionId,
+            turnId: message.payload.turnId,
+            ...(failureCode === null ? {} : { failureCode }),
+            ...identity,
+          }),
+          now,
         }),
-        now,
-      });
+      );
+      return events;
     });
   }
 
@@ -823,6 +1437,112 @@ export class CoreDatabase {
     return this.#database
       .prepare("SELECT payload_hash, result_json FROM commands WHERE command_id = ?")
       .get(commandId) as CommandRow | undefined;
+  }
+
+  #activity(activityId: string) {
+    const row = this.#database
+      .prepare(
+        `SELECT id, turn_id, kind, title, cwd, state, revision, exit_code,
+                duration_ms, output_preview FROM tool_activities WHERE id = ?`,
+      )
+      .get(activityId) as ActivityRow | undefined;
+    if (row === undefined) throw new Error(`Activity not found: ${activityId}`);
+    return activityFromRow(row);
+  }
+
+  #fileChange(fileChangeId: string) {
+    const row = this.#database
+      .prepare(
+        `SELECT id, turn_id, state, revision, files_json, additions, deletions,
+                diff_json FROM file_changes WHERE id = ?`,
+      )
+      .get(fileChangeId) as FileChangeRow | undefined;
+    if (row === undefined) throw new Error(`File change not found: ${fileChangeId}`);
+    return fileChangeFromRow(row);
+  }
+
+  #approvalOptional(approvalId: string) {
+    return this.#database
+      .prepare(
+        `SELECT id, session_id, runtime_id, runtime_generation, turn_id,
+                provider_correlation_id, action_type, state, revision,
+                payload_json, expires_at, resolved_by_device_id, resolved_at
+           FROM approval_requests WHERE id = ?`,
+      )
+      .get(approvalId) as ApprovalRow | undefined;
+  }
+
+  #approval(approvalId: string) {
+    const row = this.#approvalOptional(approvalId);
+    if (row === undefined) throw new Error(`Approval not found: ${approvalId}`);
+    return row;
+  }
+
+  #invalidateApproval(approval: ApprovalRow, now: string) {
+    this.#database
+      .prepare(
+        `UPDATE approval_requests SET state = 'invalidated', revision = revision + 1,
+           resolved_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
+      )
+      .run(now, now, approval.id);
+    const invalidated = approvalFromRow(this.#approval(approval.id));
+    return this.#appendVisibleEvent({
+      sessionId: approval.session_id,
+      origin: "core",
+      runtime: runtimeFromApproval(invalidated),
+      turnId: approval.turn_id,
+      type: "approval.invalidated",
+      payload: (identity) => ({
+        sessionId: approval.session_id,
+        approval: invalidated,
+        ...identity,
+      }),
+      now,
+    });
+  }
+
+  #invalidateApprovalsForTurn(turnId: string, now: string): ServerEnvelope[] {
+    const pending = this.#database
+      .prepare(
+        `SELECT id, session_id, runtime_id, runtime_generation, turn_id,
+                provider_correlation_id, action_type, state, revision,
+                payload_json, expires_at, resolved_by_device_id, resolved_at
+           FROM approval_requests WHERE turn_id = ? AND state = 'pending'
+           ORDER BY created_at, id`,
+      )
+      .all(turnId) as unknown as ApprovalRow[];
+    return pending.map((approval) => this.#invalidateApproval(approval, now));
+  }
+
+  #assertArtifact(
+    reference: ArtifactReference,
+    scope: { sessionId: string; turnId: string },
+  ) {
+    const parsed = ArtifactReferenceSchema.parse(reference);
+    const row = this.#database
+      .prepare(
+        `SELECT session_id, turn_id, media_type, byte_length, sha256
+           FROM artifacts WHERE id = ?`,
+      )
+      .get(parsed.artifactId) as
+      | {
+          session_id: string;
+          turn_id: string;
+          media_type: string;
+          byte_length: number;
+          sha256: string;
+        }
+      | undefined;
+    if (
+      row === undefined ||
+      row.session_id !== scope.sessionId ||
+      row.turn_id !== scope.turnId ||
+      row.media_type !== parsed.mediaType ||
+      row.byte_length !== parsed.byteLength ||
+      row.sha256 !== parsed.sha256
+    ) {
+      throw new Error("Artifact reference failed integrity or scope validation");
+    }
   }
 
   #matchesRuntimeEvent(
@@ -1069,6 +1789,7 @@ export class CoreDatabase {
     const events: ServerEnvelope[] = [];
     const now = new Date().toISOString();
     for (const row of rows) {
+      events.push(...this.#invalidateApprovalsForTurn(row.turn_id, now));
       this.#database
         .prepare(
           `UPDATE turns SET state = 'outcome_unknown', revision = revision + 1,
@@ -1111,6 +1832,80 @@ export class CoreDatabase {
     }
     return events;
   }
+}
+
+function activityFromRow(row: ActivityRow) {
+  return ToolActivitySchema.parse({
+    activityId: row.id,
+    turnId: row.turn_id,
+    kind: row.kind,
+    title: row.title,
+    cwd: row.cwd,
+    status: row.state,
+    revision: row.revision,
+    exitCode: row.exit_code,
+    durationMs: row.duration_ms,
+    outputPreview: row.output_preview,
+  });
+}
+
+function fileChangeFromRow(row: FileChangeRow) {
+  return FileChangeSchema.parse({
+    fileChangeId: row.id,
+    turnId: row.turn_id,
+    status: row.state,
+    revision: row.revision,
+    files: JSON.parse(row.files_json),
+    additions: row.additions,
+    deletions: row.deletions,
+    diff: row.diff_json === null ? null : JSON.parse(row.diff_json),
+  });
+}
+
+function approvalFromRow(row: ApprovalRow) {
+  return ApprovalSchema.parse({
+    approvalId: row.id,
+    sessionId: row.session_id,
+    runtimeId: row.runtime_id,
+    runtimeGeneration: row.runtime_generation,
+    turnId: row.turn_id,
+    actionType: row.action_type,
+    state: row.state,
+    revision: row.revision,
+    expiresAt: row.expires_at,
+    payload: JSON.parse(row.payload_json),
+    resolvedAt: row.resolved_at,
+    resolvedByDeviceId: row.resolved_by_device_id,
+  });
+}
+
+function runtimeFromSource(source: ConnectorSource): Runtime {
+  return {
+    runtimeId: source.runtimeId,
+    generation: source.runtimeGeneration,
+    status: "busy",
+  };
+}
+
+function runtimeFromApproval(approval: Approval): Runtime {
+  return {
+    runtimeId: approval.runtimeId,
+    generation: approval.runtimeGeneration,
+    status: "busy",
+  };
+}
+
+function decodeBase64(value: string) {
+  if (
+    value.length === 0 ||
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value,
+    )
+  ) {
+    throw new Error("Artifact chunk is not canonical base64");
+  }
+  return Buffer.from(value, "base64");
 }
 
 export function commandHash(message: ClientEnvelope) {

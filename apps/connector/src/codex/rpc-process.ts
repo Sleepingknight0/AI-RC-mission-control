@@ -10,6 +10,7 @@ import { platformCommand } from "./command.js";
 
 type JsonRecord = Record<string, unknown>;
 type NotificationListener = (message: JsonRecord) => void;
+type ServerRequestListener = (message: JsonRecord) => boolean;
 type ExitListener = (exit: { code: number | null; signal: NodeJS.Signals | null }) => void;
 type FaultListener = (error: Error) => void;
 
@@ -86,6 +87,7 @@ export interface CodexRpcProcessOptions {
 export class CodexRpcProcess {
   readonly #broker = new RpcRequestBroker();
   readonly #notifications = new Set<NotificationListener>();
+  readonly #serverRequests = new Set<ServerRequestListener>();
   readonly #exits = new Set<ExitListener>();
   readonly #faults = new Set<FaultListener>();
   readonly #stderr: string[] = [];
@@ -113,6 +115,11 @@ export class CodexRpcProcess {
   onNotification(listener: NotificationListener) {
     this.#notifications.add(listener);
     return () => this.#notifications.delete(listener);
+  }
+
+  onServerRequest(listener: ServerRequestListener) {
+    this.#serverRequests.add(listener);
+    return () => this.#serverRequests.delete(listener);
   }
 
   onExit(listener: ExitListener) {
@@ -224,6 +231,10 @@ export class CodexRpcProcess {
     this.#write(params === undefined ? { method } : { method, params });
   }
 
+  respond(id: string | number, result: unknown) {
+    this.#write({ id, result });
+  }
+
   async stop() {
     const child = this.#child;
     if (child === undefined || child.exitCode !== null) return;
@@ -278,6 +289,18 @@ export class CodexRpcProcess {
   #handleServerRequest(message: JsonRecord) {
     const id = message.id;
     const method = String(message.method);
+    for (const listener of this.#serverRequests) {
+      try {
+        if (listener(message)) return;
+      } catch (error) {
+        this.#reportFault(error);
+        this.#write({
+          id,
+          error: { code: -32602, message: "Invalid provider approval request" },
+        });
+        return;
+      }
+    }
     if (method === "currentTime/read") {
       this.#write({ id, result: { currentTimeAt: Math.floor(Date.now() / 1000) } });
       return;

@@ -179,5 +179,8 @@ export function toSnapshot(state: SessionState): SessionSnapshot {
     providerSessionId: state.providerSessionId,
     turns: state.turns,
     messages: state.messages,
+    activities: [],
+    fileChanges: [],
+    approvals: [],
   };
 }

@@ -2,7 +2,9 @@ import { resolve } from "node:path";
 
 import {
   CoreToConnectorEnvelopeSchema,
+  MAX_OUTPUT_BATCH_BYTES,
   makeEnvelope,
+  utf8ByteLength,
   type ConnectorEnvelope,
 } from "@aicl/protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CodexProvider } from "../src/codex/adapter.js";
 import {
   ProviderLostError,
+  type ApprovalResolveCommand,
   type TurnInterruptCommand,
   type TurnStartCommand,
 } from "../src/provider.js";
@@ -38,6 +41,8 @@ function startCommand(
       commandId: `command-${prompt}`,
       prompt,
       providerSessionId,
+      runtimeId: "runtime-1",
+      runtimeGeneration: 1,
     }),
   ) as TurnStartCommand;
 }
@@ -110,6 +115,93 @@ describe("Codex adapter normalization", () => {
     expect(lost).toBe(1);
     expect(events.filter((event) => event.type === "connector.turn.bound")).toHaveLength(1);
     expect(events.at(-1)?.type).toBe("connector.turn.outcome_unknown");
+  });
+
+  it("normalizes command output and file changes without provider identifiers", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+    await adapter.startTurn(startCommand("activity"), (event) => events.push(event));
+
+    expect(events.map((event) => event.type)).toEqual([
+      "connector.session.bound",
+      "connector.turn.bound",
+      "connector.activity.started",
+      "connector.command.output.batch",
+      "connector.activity.completed",
+      "connector.file.change.started",
+      "connector.file.change.completed",
+      "connector.turn.delta",
+      "connector.turn.message.completed",
+      "connector.turn.completed",
+    ]);
+    const output = events.find(
+      (event) => event.type === "connector.command.output.batch",
+    );
+    expect(output?.type).toBe("connector.command.output.batch");
+    if (output?.type === "connector.command.output.batch") {
+      expect(output.payload.output).toBe("tests passed");
+      expect(utf8ByteLength(output.payload.output)).toBeLessThanOrEqual(
+        MAX_OUTPUT_BATCH_BYTES,
+      );
+    }
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toMatch(/provider-command-item|provider-file-item/);
+    expect(serialized).not.toMatch(/item\/commandExecution|item\/fileChange/);
+  });
+
+  it("keeps provider request IDs internal and resolves an opaque approval once", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+    const running = adapter.startTurn(startCommand("approval"), (event) =>
+      events.push(event),
+    );
+    await waitUntil(() =>
+      events.some((event) => event.type === "connector.approval.requested"),
+    );
+    const requested = events.find(
+      (event) => event.type === "connector.approval.requested",
+    );
+    expect(requested?.type).toBe("connector.approval.requested");
+    if (requested?.type !== "connector.approval.requested") return;
+    expect(JSON.stringify(requested)).not.toContain("raw-provider-request-id");
+    await adapter.resolveApproval(
+      CoreToConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.approval.resolve", {
+          commandId: "approval-command",
+          sessionId: requested.payload.sessionId,
+          turnId: requested.payload.approval.turnId,
+          approvalId: requested.payload.approval.approvalId,
+          providerCorrelationId: requested.payload.providerCorrelationId,
+          runtimeId: "runtime-1",
+          runtimeGeneration: 1,
+          decision: "approved_once",
+        }),
+      ) as ApprovalResolveCommand,
+    );
+    await running;
+    const completed = events.find(
+      (event) => event.type === "connector.activity.completed",
+    );
+    expect(completed?.type).toBe("connector.activity.completed");
+    if (completed?.type === "connector.activity.completed") {
+      expect(completed.payload.activity.status).toBe("completed");
+      expect(completed.payload.activity.outputPreview).toBe("decision:accept");
+    }
+  });
+
+  it("settles an active Turn when the provider closes", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+    const running = adapter.startTurn(startCommand("wait"), (event) =>
+      events.push(event),
+    );
+    await waitUntil(() =>
+      events.some((event) => event.type === "connector.turn.bound"),
+    );
+
+    const rejection = expect(running).rejects.toBeInstanceOf(ProviderLostError);
+    await adapter.close();
+    await rejection;
   });
 });
 

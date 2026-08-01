@@ -8,6 +8,30 @@ let active;
 
 lines.on("line", (line) => {
   const message = JSON.parse(line);
+  if (message.method === undefined && active?.approvalRequestId === message.id) {
+    const decision = message.result?.decision;
+    send({
+      method: "item/completed",
+      params: {
+        threadId: active.threadId,
+        turnId: active.turnId,
+        completedAtMs: Date.now(),
+        item: {
+          type: "commandExecution",
+          id: "provider-command-item",
+          command: "pnpm test",
+          commandActions: [],
+          cwd: process.cwd(),
+          status: decision === "accept" ? "completed" : "declined",
+          aggregatedOutput: `decision:${decision}`,
+          exitCode: decision === "accept" ? 0 : null,
+          durationMs: 10,
+        },
+      },
+    });
+    finishTurn(`Approval ${decision}`);
+    return;
+  }
   switch (message.method) {
     case "initialize":
       send({ id: message.id, result: { userAgent: "fake-codex/0.146.0" } });
@@ -45,6 +69,132 @@ lines.on("line", (line) => {
               turnId,
               itemId: "fake-message",
               delta: ".",
+            },
+          });
+        }, 15);
+      } else if (text === "activity") {
+        setTimeout(() => {
+          send({
+            method: "item/started",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              startedAtMs: Date.now(),
+              item: {
+                type: "commandExecution",
+                id: "provider-command-item",
+                command: "pnpm test",
+                commandActions: [],
+                cwd: process.cwd(),
+                status: "inProgress",
+                aggregatedOutput: null,
+                exitCode: null,
+                durationMs: null,
+              },
+            },
+          });
+          send({
+            method: "item/commandExecution/outputDelta",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              itemId: "provider-command-item",
+              delta: "tests ",
+            },
+          });
+          send({
+            method: "item/commandExecution/outputDelta",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              itemId: "provider-command-item",
+              delta: "passed",
+            },
+          });
+          send({
+            method: "item/completed",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              completedAtMs: Date.now(),
+              item: {
+                type: "commandExecution",
+                id: "provider-command-item",
+                command: "pnpm test",
+                commandActions: [],
+                cwd: process.cwd(),
+                status: "completed",
+                aggregatedOutput: "tests passed",
+                exitCode: 0,
+                durationMs: 12,
+              },
+            },
+          });
+          const diff = "--- a/demo.txt\n+++ b/demo.txt\n@@ -0,0 +1 @@\n+hello\n";
+          send({
+            method: "item/started",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              startedAtMs: Date.now(),
+              item: {
+                type: "fileChange",
+                id: "provider-file-item",
+                status: "inProgress",
+                changes: [{ path: "demo.txt", kind: { type: "add" }, diff }],
+              },
+            },
+          });
+          send({
+            method: "item/completed",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              completedAtMs: Date.now(),
+              item: {
+                type: "fileChange",
+                id: "provider-file-item",
+                status: "completed",
+                changes: [{ path: "demo.txt", kind: { type: "add" }, diff }],
+              },
+            },
+          });
+          finishTurn("Activity complete");
+        }, 15);
+      } else if (text === "approval") {
+        setTimeout(() => {
+          send({
+            method: "item/started",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              startedAtMs: Date.now(),
+              item: {
+                type: "commandExecution",
+                id: "provider-command-item",
+                command: "pnpm test",
+                commandActions: [],
+                cwd: process.cwd(),
+                status: "inProgress",
+                aggregatedOutput: null,
+                exitCode: null,
+                durationMs: null,
+              },
+            },
+          });
+          active.approvalRequestId = "raw-provider-request-id";
+          send({
+            id: active.approvalRequestId,
+            method: "item/commandExecution/requestApproval",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              itemId: "provider-command-item",
+              startedAtMs: Date.now(),
+              command: "pnpm test",
+              commandActions: [],
+              cwd: process.cwd(),
+              reason: "test approval",
             },
           });
         }, 15);
@@ -99,3 +249,33 @@ lines.on("line", (line) => {
       }
   }
 });
+
+function finishTurn(answer) {
+  const current = active;
+  send({
+    method: "item/agentMessage/delta",
+    params: {
+      threadId: current.threadId,
+      turnId: current.turnId,
+      itemId: "fake-message",
+      delta: answer,
+    },
+  });
+  send({
+    method: "item/completed",
+    params: {
+      threadId: current.threadId,
+      turnId: current.turnId,
+      completedAtMs: Date.now(),
+      item: { type: "agentMessage", id: "fake-message", text: answer },
+    },
+  });
+  send({
+    method: "turn/completed",
+    params: {
+      threadId: current.threadId,
+      turn: { id: current.turnId, status: "completed", items: [] },
+    },
+  });
+  active = undefined;
+}

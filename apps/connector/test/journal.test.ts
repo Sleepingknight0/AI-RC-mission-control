@@ -35,6 +35,8 @@ describe("Connector SQLite journal", () => {
         commandId: "journal-command",
         prompt: "only once",
         providerSessionId: null,
+        runtimeId: first.runtimeId,
+        runtimeGeneration: first.runtimeGeneration,
       }),
     );
     if (command.type !== "connector.turn.start") {
@@ -80,6 +82,8 @@ describe("Connector SQLite journal", () => {
         commandId: "journal-command",
         prompt: "first",
         providerSessionId: null,
+        runtimeId: journal.runtimeId,
+        runtimeGeneration: journal.runtimeGeneration,
       }),
     );
     const changed = CoreToConnectorEnvelopeSchema.parse(
@@ -89,6 +93,8 @@ describe("Connector SQLite journal", () => {
         commandId: "journal-command",
         prompt: "changed",
         providerSessionId: null,
+        runtimeId: journal.runtimeId,
+        runtimeGeneration: journal.runtimeGeneration,
       }),
     );
     if (first.type !== "connector.turn.start" || changed.type !== "connector.turn.start") {

@@ -370,6 +370,8 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       commandId: id,
       prompt: z.string().min(1),
       providerSessionId: id.nullable(),
+      runtimeId: id,
+      runtimeGeneration: z.number().int().positive(),
     }),
   ),
   envelope(

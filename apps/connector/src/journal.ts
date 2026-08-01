@@ -84,7 +84,12 @@ export class ConnectorJournal {
   recordCommand(
     command: Extract<
       CoreToConnectorEnvelope,
-      { type: "connector.turn.start" | "connector.turn.interrupt" }
+      {
+        type:
+          | "connector.turn.start"
+          | "connector.turn.interrupt"
+          | "connector.approval.resolve";
+      }
     >,
   ): InboxDecision {
     const hash = envelopeHash(command);

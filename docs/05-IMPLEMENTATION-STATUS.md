@@ -16,9 +16,9 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M3.1 Core SQLite WAL and Connector journal implemented
 - [x] M3.2 command idempotency and event replay implemented
 - [x] M3.3 browser refresh during active Turn tested
-- [ ] M4.1 command output and file-change normalization implemented
-- [ ] M4.2 approval compare-and-set implemented and race-tested
-- [ ] M4.3 artifact-backed large diff flow implemented
+- [x] M4.1 command output and file-change normalization implemented
+- [x] M4.2 approval compare-and-set implemented and race-tested
+- [x] M4.3 artifact-backed large diff flow implemented
 - [ ] M5.1 Grok frontend implementation pass completed
 - [ ] M5.2 Codex integrated and verified frontend pass
 - [ ] M6.1 Claude correctness review completed
@@ -28,7 +28,8 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current blocker
 
-None. Next milestone: **M4.1** — normalize command output and file changes (`prompts/codex/05-APPROVAL-INTERRUPT-AND-DIFF.md`).
+External AI gate reached. Next milestone: **M5.1** — run the Grok frontend pass
+with `prompts/grok/01-BUILD-MISSION-CONTROL-FRONTEND.md`; Codex must stop here.
 
 ## Last verified demo
 
@@ -37,8 +38,9 @@ None. Next milestone: **M4.1** — normalize command output and file changes (`p
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core and Connector schema version 1; `pnpm migrate` is idempotent and reports both database paths. Core uses WAL/foreign keys/a serialized writer; Connector owns a separate durable inbox/outbox journal.
-- Repository checks: `pnpm check` — strict typecheck, 26 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
-- Real Codex E2E: opt-in test passed in 70.33 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, new-process resume, and no command replay.
+- Database schema: Core schema version 2 and Connector schema version 1; `pnpm migrate` is idempotent. Core adds durable activity/file-change/approval/artifact projections while Connector retains its separate inbox/outbox journal.
+- Repository checks: `pnpm check` — strict typecheck, 41 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
+- Real Codex E2E: opt-in test passed in 73.64 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, new-process resume, no command replay, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
-- Browser recovery demo: Playwright reloaded React during a real 600-line Codex Turn. The active Turn restored at durable sequence 4, streaming resumed, and the authoritative final reconstructed all lines at sequence 6 with 0 console errors and 0 warnings.
+- M4 race/fault tests: exactly one of two tabs wins approval CAS; duplicate command IDs replay; expiry/provider loss/runtime restart reject stale decisions; interrupt, UTF-8 batching, inline/large diff thresholds, artifact integrity/auth/range/traversal all pass.
+- Mobile approval demo: Playwright at 390×844 used real Codex command approvals. Approve-once created only `output/playwright/provider-approval-proof.txt`; decline produced activity state `declined` and did not create its target file.

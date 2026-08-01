@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   ClientEnvelopeSchema,
+  ConnectorEnvelopeSchema,
   ServerEnvelopeSchema,
   makeEnvelope,
   type Runtime,
@@ -24,10 +25,10 @@ afterEach(async () => {
 });
 
 describe("Core SQLite contract", () => {
-  it("applies migration v1 idempotently with required pragmas and indexes", async () => {
+  it("applies schema v2 idempotently with required pragmas and indexes", async () => {
     const path = databasePath();
     const first = open(path);
-    expect(first.schemaVersion).toBe(1);
+    expect(first.schemaVersion).toBe(2);
     expect(Object.values(first.pragma("journal_mode"))).toContain("wal");
     expect(Object.values(first.pragma("foreign_keys"))).toContain(1);
     expect(Object.values(first.pragma("busy_timeout"))).toContain(5000);
@@ -35,7 +36,7 @@ describe("Core SQLite contract", () => {
     openDatabases.splice(openDatabases.indexOf(first), 1);
 
     const second = open(path);
-    expect(second.schemaVersion).toBe(1);
+    expect(second.schemaVersion).toBe(2);
     await second.close();
     openDatabases.splice(openDatabases.indexOf(second), 1);
 
@@ -132,6 +133,87 @@ describe("Core SQLite contract", () => {
     );
     if (changed.type !== "turn.submit") throw new Error("Expected turn.submit");
     expect(database.priorCommand(changed)?.kind).toBe("conflict");
+  });
+
+  it("rejects artifact assembly when byte length or SHA-256 does not match", async () => {
+    const database = open(databasePath());
+    const runtime: Runtime = {
+      runtimeId: "runtime-artifact",
+      generation: 1,
+      status: "ready",
+    };
+    const turn = ClientEnvelopeSchema.parse(
+      makeEnvelope("turn.submit", {
+        commandId: "artifact-turn-command",
+        sessionId: "artifact-session",
+        prompt: "produce artifact",
+      }),
+    );
+    if (turn.type !== "turn.submit") throw new Error("Expected turn.submit");
+    await database.acceptTurn({
+      message: turn,
+      turnId: "artifact-turn",
+      runtime,
+      connectorId: "artifact-connector",
+      bootId: "artifact-boot",
+      activeRejection: ServerEnvelopeSchema.parse(
+        makeEnvelope("command.rejected", {
+          commandId: turn.payload.commandId,
+          sessionId: turn.payload.sessionId,
+          error: { code: "TURN_ALREADY_ACTIVE", message: "active", retryable: false },
+        }),
+      ),
+    });
+    const artifact = {
+      artifactId: "artifact-corrupt",
+      mediaType: "text/x-diff",
+      byteLength: 7,
+      sha256: "0".repeat(64),
+      downloadPath: "/artifacts/artifact-corrupt",
+    };
+    const source = (sourceEventId: string) => ({
+      connectorId: "artifact-connector",
+      sourceEventId,
+      runtimeId: runtime.runtimeId,
+      runtimeGeneration: runtime.generation,
+    });
+    const begin = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.artifact.begin", {
+        sessionId: "artifact-session",
+        turnId: "artifact-turn",
+        artifact,
+        chunkCount: 1,
+      }),
+    );
+    const chunk = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.artifact.chunk", {
+        sessionId: "artifact-session",
+        turnId: "artifact-turn",
+        artifactId: artifact.artifactId,
+        chunkIndex: 0,
+        contentBase64: Buffer.from("content").toString("base64"),
+      }),
+    );
+    const complete = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.artifact.complete", {
+        sessionId: "artifact-session",
+        turnId: "artifact-turn",
+        artifactId: artifact.artifactId,
+      }),
+    );
+    if (
+      begin.type !== "connector.artifact.begin" ||
+      chunk.type !== "connector.artifact.chunk" ||
+      complete.type !== "connector.artifact.complete"
+    ) {
+      throw new Error("Expected artifact envelopes");
+    }
+    await database.beginArtifact(begin, source("artifact-begin"));
+    await database.appendArtifactChunk(chunk, source("artifact-chunk"));
+    await expect(
+      database.completeArtifact(complete, source("artifact-complete")),
+    ).rejects.toThrow("Artifact integrity check failed");
+    expect(database.artifact(artifact.artifactId)).toBeUndefined();
   });
 });
 

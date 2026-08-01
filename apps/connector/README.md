@@ -7,6 +7,9 @@ Prototype responsibilities:
 - Codex version/schema probe
 - app-server stdio lifecycle
 - provider event normalization
+- bounded command-output coalescing and file-change normalization
+- provider-local approval correlation and one-shot resolution
+- journaled artifact chunk delivery
 - Connector journal
 - runtime generation ownership
 - project-root allowlist

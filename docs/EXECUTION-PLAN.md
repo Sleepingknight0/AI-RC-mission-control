@@ -3,9 +3,9 @@
 ## Purpose and observable outcome
 
 M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
-and M3 (durability/reconnect) are complete on the target Windows host. The next
-observable outcome is normalized command output, approval CAS, and artifact-
-backed diff delivery (M4.1–M4.3).
+M3 (durability/reconnect), and M4 (approval/activity/diff safety) are complete
+on the target Windows host. The next observable outcome is the Grok-owned
+mission-control frontend pass (M5.1); Codex stops at this external gate.
 
 ## Scope
 
@@ -15,7 +15,8 @@ backed diff delivery (M4.1–M4.3).
 - M1.1–M1.3 walking skeleton — **done**
 - M2.1–M2.3 real Codex vertical slice and fault semantics — **done**
 - M3.1–M3.3 SQLite durability, idempotency, replay, and refresh — **done**
-- Next: M4.1 command output and file-change normalization (Codex-owned)
+- M4.1–M4.3 normalized activity, approval CAS, interrupt, and artifacts — **done**
+- Next: M5.1 mission-control frontend implementation (Grok-owned external gate)
 
 ## Non-goals
 
@@ -39,6 +40,9 @@ backed diff delivery (M4.1–M4.3).
 - Core owns authoritative SQLite projections and events under `.data/aicl-core.db`
 - Connector owns a separate inbox/outbox journal under `.data/aicl-connector.db`
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
+- Core schema v2 projects tool activities, file changes, approvals, and artifacts
+- Connector batches ephemeral UTF-8 command output and journals large-diff chunks
+- Web exposes an approval dock, command activity, and unified/side-by-side diffs
 
 ## Implementation sequence
 
@@ -57,14 +61,17 @@ backed diff delivery (M4.1–M4.3).
 - [x] Add Core SQLite WAL and Connector journal (M3.1)
 - [x] Add durable command idempotency and event replay (M3.2)
 - [x] Test browser refresh during an active Turn (M3.3)
+- [x] Normalize bounded command/tool output and file changes (M4.1)
+- [x] Implement approval CAS, expiry, invalidation, and race tests (M4.2)
+- [x] Implement authenticated artifact-backed large diffs (M4.3)
 
 ## Protocol or schema changes
 
-`@aicl/protocol` version 1 now includes provider bindings, interrupt commands,
-Connector source identity, runtime generations, journal acknowledgements, and
-browser replay boundaries. Durable event envelopes carry Session-local sequence;
-assistant deltas remain ephemeral. Generated Codex types and raw events stay
-under the adapter boundary; the Web imports only normalized protocol types.
+`@aicl/protocol` version 1 now also includes normalized tool activities, bounded
+command-output batches, file changes, approval lifecycle events, interrupt
+results, and artifact references. Durable event envelopes carry Session-local
+sequence; assistant/command deltas remain ephemeral. Generated Codex types, raw
+events, and raw provider request IDs stay under the adapter boundary.
 
 ## Tests and fault scenarios
 
@@ -72,11 +79,11 @@ under the adapter boundary; the Web imports only normalized protocol types.
 - Mock spike passed after harness fix.
 - Three real spikes: first-delta 4.5–6.3 s; ~55 deltas/s avg; peak 1 s up to 154;
   mid-turn kill reconstructed as `interrupted` via `thread/read` + `thread/resume`.
-- `pnpm check`: strict typecheck, 26 unit/integration tests, ESLint, a real
+- `pnpm check`: strict typecheck, 41 unit/integration tests, ESLint, a real
   Windows child-tree termination test, and Vite production build passed.
 - Live compatibility probe: Codex 0.146.0, 275 schema files, canonical SHA-256
   `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`.
-- Opt-in real Codex E2E passed in 70.33 s: first delta/final, active rejection,
+- Opt-in real Codex E2E passed in 73.64 s: first delta/final, active rejection,
   interrupt, provider death, `outcome_unknown`, new-process resume, no replay.
 - Database tests cover schema v1 migration/idempotence, WAL/foreign keys/busy
   timeout, active-Turn and Connector-source partial uniqueness, and revisions
@@ -87,6 +94,12 @@ under the adapter boundary; the Web imports only normalized protocol types.
 - Playwright reloaded the real React UI during a 600-line Codex stream. The
   active Turn restored at sequence 4, then the authoritative final reconstructed
   lines 001–600 at sequence 6 with 0 errors/0 warnings.
+- Approval race tests cover two tabs, duplicate command replay, expiry, provider
+  death, runtime-generation changes, and interrupt during command execution.
+- Diff tests cover the 512 KiB inline threshold, sub-1 MiB WebSocket ceiling,
+  SHA-256/length verification, authorization, byte range, and traversal denial.
+- Playwright at 390×844 approved and declined real Codex command requests; only
+  the approved command created its ignored proof artifact.
 - Process cleanup verified no listeners on 5173/8787/8788 and no project Codex
   process remained.
 
@@ -97,6 +110,8 @@ under the adapter boundary; the Web imports only normalized protocol types.
   recursive canonical JSON produces a stable fingerprint across generations.
 - Kill recovery is terminal `interrupted` on this CLI (not silent loss-only).
 - Steady agent-delta payload ~253–263 bytes; ephemeral batching is mandatory.
+- Closing a provider while a final Turn notification was still in flight could
+  strand Connector shutdown; close now rejects the active waiter before RPC stop.
 
 ## Decision log
 
@@ -119,10 +134,17 @@ under the adapter boundary; the Web imports only normalized protocol types.
 - Fence provider events by Connector/runtime generation. A Connector restart
   creates a new generation and unresolved work becomes `outcome_unknown`; never
   redispatch it automatically.
+- Compare approval state with approval revision plus Turn/runtime/provider/expiry
+  identity; Session revision is deliberately excluded from approval CAS.
+- Keep a diff inline only when content is at most 512 KiB and its serialized
+  envelope at most 768 KiB. Otherwise journal it in 128 KiB chunks and expose it
+  only by opaque artifact ID with ephemeral bearer authorization.
+- Represent pending approval on the Approval projection while Prototype 0 keeps
+  the owning Turn in `running`; the one-active-Turn invariant stays unchanged.
 
 ## Final outcome
 
-M0 through M3 complete. Reproduce the normal and opt-in gates with:
+M0 through M4 complete. Reproduce the normal and opt-in gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
@@ -134,4 +156,4 @@ $env:AICL_REAL_CODEX = '1'
 pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
 ```
 
-Next: `prompts/codex/05-APPROVAL-INTERRUPT-AND-DIFF.md` for M4.1–M4.3.
+Next: stop the Codex loop and run `.\scripts\Invoke-GrokFrontend.ps1` for M5.1.

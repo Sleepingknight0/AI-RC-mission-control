@@ -108,7 +108,11 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
 
-  packages/test-fixtures: {}
+  packages/test-fixtures:
+    dependencies:
+      '@aicl/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
 packages:
 

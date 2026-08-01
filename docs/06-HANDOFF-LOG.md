@@ -318,3 +318,85 @@ the unresolved old Turn becomes `outcome_unknown` without redispatch.
 Execute `prompts/codex/05-APPROVAL-INTERRUPT-AND-DIFF.md` for M4.1–M4.3. Do not
 start Grok M5 until normalized command/file changes, approval CAS, and artifact-
 backed large diffs pass their race and fault-path tests.
+
+---
+
+### 2026-08-02 01:20 — Codex — M4.1–M4.3
+
+**Scope**
+
+Normalize verified command/tool/file-change events, coalesce bounded ephemeral
+output, implement approval CAS and interrupt results, persist artifact-backed
+large diffs, and expose the minimal typed Web surfaces required before Grok M5.
+
+**Files changed or reviewed**
+
+- `apps/connector/src/` — installed-schema adapter mapping, output batcher,
+  opaque approval correlation, artifact chunking, and deterministic shutdown
+- `apps/core/src/`, `apps/core/migrations/002_approval_activity_artifacts.sql`
+  — schema v2 projections, approval CAS/invalidation, artifact assembly/HTTP
+- `apps/web/src/` — activity panel, sticky approval dock, diff modes, authenticated
+  artifact download with SHA-256 verification, and selectable demo Session IDs
+- `packages/protocol`, `packages/domain`, `packages/test-fixtures` — normalized
+  contracts, snapshot state, transport limits, and typed M5 state fixtures
+- Core/Connector protocol, race, artifact, batching, and lifecycle tests
+
+**Commands and tests**
+
+```text
+pnpm --filter @aicl/connector codex:compatibility
+→ compatible=true; Codex 0.146.0; canonical SHA b767c116...df03
+
+pnpm migrate
+→ Core schemaVersion=2; Connector schemaVersion=1
+
+pnpm check
+→ exit 0; strict typecheck; 41 tests; ESLint; Web production build
+
+$env:AICL_REAL_CODEX='1'; pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
+→ 1 passed in 73.64 s
+
+git diff --check
+→ exit 0
+```
+
+**Observable result and exact mobile/browser demo**
+
+Run `pnpm dev`, create `output/playwright`, then open
+`http://127.0.0.1:5173/?session=m4-approval-demo` at 390×844. Submit:
+
+```text
+Use the shell exactly once to run PowerShell command Set-Content -LiteralPath 'output/playwright/approval-proof.txt' -Value 'approved'. Do not use any other tool and do not modify other files.
+```
+
+The real Codex request appears in the bottom approval dock with command, cwd,
+and expiry. **Approve once** completes the activity and creates only that proof
+file. Repeat with a different filename and choose **Decline**; the activity becomes
+`declined` and no file is created. The verified Playwright run used viewport
+390×844 and produced 0 browser automation failures.
+
+**Protocol/schema assumptions**
+
+- Verified Codex 0.146.0 methods include command/file approval requests,
+  item lifecycle, command output delta, file patch/diff, and Turn completion.
+- Provider request IDs never cross Connector; Core/Web see an opaque correlation.
+- Approval CAS uses approval revision and runtime/Turn/provider/expiry identity,
+  never Session revision. Exactly one concurrent tab can dispatch a decision.
+- Diffs stay inline only when content is at most 512 KiB and the serialized
+  envelope at most 768 KiB. Otherwise they use 128 KiB journaled chunks and an
+  opaque authenticated, range-capable artifact endpoint with SHA-256/length.
+
+**Known limitations or uncertain outcomes**
+
+- Artifact bearer tokens are process-ephemeral and distributed over the local
+  browser WebSocket; this is a loopback Prototype 0 mechanism, not cloud auth.
+- Command-output batches are intentionally ephemeral; completed activity keeps
+  only a bounded preview, not an authoritative full transcript.
+- Pending state lives on the Approval projection while the owning Turn remains
+  `running` in schema v2; a richer Turn state machine is deferred beyond M4.
+
+**Requested next action**
+
+External AI gate reached: stop the Codex loop and run
+`.\scripts\Invoke-GrokFrontend.ps1` for M5.1. After Grok writes its handoff, run
+the Codex integration prompt; do not start Claude M6 before M5.2 passes.

@@ -1,13 +1,20 @@
-import { createServer, type Server as HttpServer } from "node:http";
+import {
+  createServer,
+  type Server as HttpServer,
+  type ServerResponse,
+} from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
+  MAX_OUTPUT_BATCH_BYTES,
+  MAX_WEBSOCKET_MESSAGE_BYTES,
   ServerEnvelopeSchema,
   decodeJson,
   makeEnvelope,
+  utf8ByteLength,
   type ClientEnvelope,
   type ConnectorEnvelope,
   type ProtocolError,
@@ -28,6 +35,7 @@ export interface CoreServerOptions {
   port?: number;
   dbPath?: string;
   connectorLossGraceMs?: number;
+  artifactAccessToken?: string;
   beforeDurableBroadcast?: (event: ServerEnvelope) => void;
   onBroadcastError?: (error: unknown, event: ServerEnvelope) => void;
 }
@@ -72,6 +80,8 @@ export async function startCoreServer(
   const host = options.host ?? "127.0.0.1";
   const dbPath = options.dbPath ?? process.env.AICL_CORE_DB_PATH ?? DEFAULT_CORE_DB_PATH;
   const store = new CoreDatabase({ path: dbPath });
+  const artifactAccessToken =
+    options.artifactAccessToken ?? `artifact-token-${crypto.randomUUID()}`;
   const clients = new Map<WebSocket, string | null>();
   let connector: WebSocket | undefined;
   let connectorConnection: ConnectorConnection | undefined;
@@ -80,6 +90,7 @@ export async function startCoreServer(
   let closing = false;
 
   const httpServer: HttpServer = createServer((request, response) => {
+    const requestUrl = new URL(request.url ?? "/", "http://localhost");
     if (request.url === "/health") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
@@ -93,24 +104,86 @@ export async function startCoreServer(
       );
       return;
     }
+    const artifactMatch = /^\/artifacts\/([A-Za-z0-9-]+)$/.exec(
+      requestUrl.pathname,
+    );
+    if (artifactMatch !== null) {
+      applyArtifactCors(request.headers.origin, response);
+      if (request.method === "OPTIONS") {
+        response.writeHead(204).end();
+        return;
+      }
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        response.writeHead(405, { allow: "GET, HEAD, OPTIONS" }).end();
+        return;
+      }
+      if (request.headers.authorization !== `Bearer ${artifactAccessToken}`) {
+        response.writeHead(401, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "AUTH_REQUIRED" }));
+        return;
+      }
+      const artifact = store.artifact(artifactMatch[1]!);
+      if (artifact === undefined) {
+        response.writeHead(404).end();
+        return;
+      }
+      const range = parseByteRange(request.headers.range, artifact.byteLength);
+      if (range === "invalid") {
+        response.writeHead(416, {
+          "content-range": `bytes */${artifact.byteLength}`,
+        });
+        response.end();
+        return;
+      }
+      const start = range?.start ?? 0;
+      const end = range?.end ?? artifact.byteLength - 1;
+      const body = artifact.content.subarray(start, end + 1);
+      response.writeHead(range === null ? 200 : 206, {
+        "accept-ranges": "bytes",
+        "content-type": artifact.mediaType,
+        "content-length": String(body.byteLength),
+        etag: `"sha256-${artifact.sha256}"`,
+        ...(range === null
+          ? {}
+          : { "content-range": `bytes ${start}-${end}/${artifact.byteLength}` }),
+      });
+      response.end(request.method === "HEAD" ? undefined : body);
+      return;
+    }
     response.writeHead(404).end();
   });
-  const socketServer = new WebSocketServer({ noServer: true });
+  const socketServer = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES,
+  });
 
   const send = (socket: WebSocket, value: unknown) => {
     const envelope = validatedServerEnvelope(value);
     if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(envelope));
+      const json = JSON.stringify(envelope);
+      if (utf8ByteLength(json) > MAX_WEBSOCKET_MESSAGE_BYTES) {
+        throw new Error("Server envelope exceeds the WebSocket message limit");
+      }
+      socket.send(json);
     }
   };
 
   const sendConnector = (socket: WebSocket, value: unknown) => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value));
+    if (socket.readyState === WebSocket.OPEN) {
+      const json = JSON.stringify(value);
+      if (utf8ByteLength(json) > MAX_WEBSOCKET_MESSAGE_BYTES) {
+        throw new Error("Connector envelope exceeds the WebSocket message limit");
+      }
+      socket.send(json);
+    }
   };
 
   const broadcast = (sessionId: string | null, value: unknown) => {
     const envelope = validatedServerEnvelope(value);
     const json = JSON.stringify(envelope);
+    if (utf8ByteLength(json) > MAX_WEBSOCKET_MESSAGE_BYTES) {
+      throw new Error("Broadcast envelope exceeds the WebSocket message limit");
+    }
     for (const [client, subscribedSession] of clients) {
       if (
         client.readyState === WebSocket.OPEN &&
@@ -155,7 +228,10 @@ export async function startCoreServer(
 
   const sendConflict = (
     socket: WebSocket,
-    message: Extract<ClientEnvelope, { type: "turn.submit" | "turn.interrupt" }>,
+    message: Extract<
+      ClientEnvelope,
+      { type: "turn.submit" | "turn.interrupt" | "approval.resolve" }
+    >,
   ) => {
     send(
       socket,
@@ -170,7 +246,10 @@ export async function startCoreServer(
 
   const recordOfflineRejection = async (
     socket: WebSocket,
-    message: Extract<ClientEnvelope, { type: "turn.submit" | "turn.interrupt" }>,
+    message: Extract<
+      ClientEnvelope,
+      { type: "turn.submit" | "turn.interrupt" | "approval.resolve" }
+    >,
   ) => {
     const result = await store.recordRejectedCommand(
       message,
@@ -263,6 +342,8 @@ export async function startCoreServer(
             commandId: message.payload.commandId,
             prompt: message.payload.prompt,
             providerSessionId: store.snapshot(message.payload.sessionId).providerSessionId,
+            runtimeId: connection.runtime.runtimeId,
+            runtimeGeneration: connection.runtime.generation,
           }),
         );
         return;
@@ -329,6 +410,86 @@ export async function startCoreServer(
             providerTurnId: turn.providerTurnId,
           }),
         );
+        return;
+      }
+      case "approval.resolve": {
+        const prior = store.priorCommand(message);
+        if (prior?.kind === "same") {
+          send(socket, prior.result);
+          return;
+        }
+        if (prior?.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        const connection = connectorConnection;
+        if (connection?.socket.readyState !== WebSocket.OPEN) {
+          await recordOfflineRejection(socket, message);
+          return;
+        }
+        const approval = store
+          .snapshot(message.payload.sessionId)
+          .approvals.find(
+            (candidate) => candidate.approvalId === message.payload.approvalId,
+          );
+        if (approval === undefined) {
+          const missing = await store.recordRejectedCommand(
+            message,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "APPROVAL_NOT_FOUND",
+              message: "Approval was not found in this Session.",
+            }),
+          );
+          if (missing.kind === "conflict") sendConflict(socket, message);
+          else send(socket, missing.result);
+          return;
+        }
+        const accepted = validatedServerEnvelope(
+          makeEnvelope("command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            turnId: approval.turnId,
+          }),
+        );
+        const result = await store.resolveApproval({
+          message,
+          accepted,
+          runtime: connection.runtime,
+          rejection: (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        if (result.kind !== "new") return;
+        if (result.durableEvent !== undefined) {
+          broadcastDurable(result.durableEvent);
+        }
+        if (result.dispatch === undefined) return;
+        await store.markDispatched(message.payload.commandId);
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.approval.resolve", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            turnId: result.dispatch.approval.turnId,
+            approvalId: result.dispatch.approval.approvalId,
+            providerCorrelationId: result.dispatch.providerCorrelationId,
+            runtimeId: result.dispatch.approval.runtimeId,
+            runtimeGeneration: result.dispatch.approval.runtimeGeneration,
+            decision: result.dispatch.decision,
+          }),
+        );
+        return;
       }
     }
   };
@@ -382,6 +543,27 @@ export async function startCoreServer(
       return;
     }
 
+    if (message.type === "connector.command.output.batch") {
+      if (
+        utf8ByteLength(message.payload.output) <= MAX_OUTPUT_BATCH_BYTES &&
+        connectorConnection?.connectorId === message.connectorId &&
+        message.runtimeId !== undefined &&
+        message.runtimeGeneration !== undefined &&
+        store.acceptsRuntimeEvent(
+          message.payload.sessionId,
+          message.payload.turnId,
+          message.runtimeId,
+          message.runtimeGeneration,
+        )
+      ) {
+        broadcast(
+          message.payload.sessionId,
+          makeEnvelope("command.output.batch", message.payload),
+        );
+      }
+      return;
+    }
+
     const source = sourceOf(message);
     if (
       source === undefined ||
@@ -390,7 +572,7 @@ export async function startCoreServer(
       return;
     }
 
-    let durableEvent: ServerEnvelope | undefined;
+    const durableEvents: ServerEnvelope[] = [];
     switch (message.type) {
       case "connector.runtime.status":
         await store.updateRuntime(message.payload.runtime, source);
@@ -435,21 +617,66 @@ export async function startCoreServer(
         );
         break;
       case "connector.turn.message.completed":
-        durableEvent = await store.completeMessage(message, source);
+        {
+          const event = await store.completeMessage(message, source);
+          if (event !== undefined) durableEvents.push(event);
+        }
+        break;
+      case "connector.activity.started":
+      case "connector.activity.completed":
+        {
+          const event = await store.recordActivity(message, source);
+          if (event !== undefined) durableEvents.push(event);
+        }
+        break;
+      case "connector.file.change.started":
+      case "connector.file.change.completed":
+        {
+          const event = await store.recordFileChange(message, source);
+          if (event !== undefined) durableEvents.push(event);
+        }
+        break;
+      case "connector.approval.requested":
+        {
+          const event = await store.requestApproval(message, source);
+          if (event !== undefined) durableEvents.push(event);
+        }
+        break;
+      case "connector.interrupt.result":
+        {
+          const event = await store.recordInterruptResult(message, source);
+          if (event !== undefined) durableEvents.push(event);
+        }
+        break;
+      case "connector.artifact.begin":
+        await store.beginArtifact(message, source);
+        break;
+      case "connector.artifact.chunk":
+        await store.appendArtifactChunk(message, source);
+        break;
+      case "connector.artifact.complete":
+        await store.completeArtifact(message, source);
         break;
       case "connector.turn.completed":
       case "connector.turn.interrupted":
       case "connector.turn.failed":
       case "connector.turn.outcome_unknown":
-        durableEvent = await store.finishTurn(message, source);
+        {
+          const events = await store.finishTurn(message, source);
+          if (events !== undefined) durableEvents.push(...events);
+        }
         break;
     }
     acknowledge(socket, source.sourceEventId);
-    if (durableEvent !== undefined) broadcastDurable(durableEvent);
+    for (const event of durableEvents) broadcastDurable(event);
   };
 
   const attachBrowser = (socket: WebSocket) => {
     clients.set(socket, null);
+    send(
+      socket,
+      makeEnvelope("server.hello", { artifactAccessToken }),
+    );
     if (lastRuntime !== undefined) {
       send(socket, makeEnvelope("runtime.status", { runtime: lastRuntime }));
     }
@@ -583,9 +810,54 @@ function sessionIdOf(event: ServerEnvelope) {
     event.type === "turn.interrupted" ||
     event.type === "turn.failed" ||
     event.type === "turn.outcome_unknown" ||
-    event.type === "assistant.message.completed"
+    event.type === "assistant.message.completed" ||
+    event.type === "activity.started" ||
+    event.type === "activity.completed" ||
+    event.type === "file.change.started" ||
+    event.type === "file.change.completed" ||
+    event.type === "approval.requested" ||
+    event.type === "approval.resolved" ||
+    event.type === "approval.expired" ||
+    event.type === "approval.invalidated" ||
+    event.type === "interrupt.result"
   ) {
     return event.payload.sessionId;
   }
   return null;
+}
+
+function applyArtifactCors(
+  origin: string | undefined,
+  response: ServerResponse,
+) {
+  if (
+    origin !== undefined &&
+    /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(origin)
+  ) {
+    response.setHeader("access-control-allow-origin", origin);
+    response.setHeader("vary", "Origin");
+    response.setHeader("access-control-allow-headers", "Authorization, Range");
+    response.setHeader("access-control-allow-methods", "GET, HEAD, OPTIONS");
+  }
+}
+
+function parseByteRange(
+  header: string | undefined,
+  byteLength: number,
+): { start: number; end: number } | null | "invalid" {
+  if (header === undefined) return null;
+  const match = /^bytes=(\d+)-(\d*)$/.exec(header);
+  if (match === null || byteLength === 0) return "invalid";
+  const start = Number(match[1]);
+  const requestedEnd = match[2] === "" ? byteLength - 1 : Number(match[2]);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(requestedEnd) ||
+    start < 0 ||
+    start >= byteLength ||
+    requestedEnd < start
+  ) {
+    return "invalid";
+  }
+  return { start, end: Math.min(requestedEnd, byteLength - 1) };
 }

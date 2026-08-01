@@ -153,6 +153,8 @@ export class MockProvider implements ConnectorProvider {
     this.#active.interrupted = true;
   }
 
+  async resolveApproval() {}
+
   async close() {
     if (this.#active !== undefined) this.#active.interrupted = true;
   }
