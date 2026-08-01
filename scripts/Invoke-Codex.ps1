@@ -18,7 +18,16 @@ Set-StrictMode -Version Latest
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
-$codex = Get-Command codex -ErrorAction SilentlyContinue
+$codex = if ($env:OS -eq 'Windows_NT') {
+    Get-Command codex.cmd -ErrorAction SilentlyContinue
+} else {
+    Get-Command codex -ErrorAction SilentlyContinue
+}
+
+if ($null -eq $codex) {
+    $codex = Get-Command codex -ErrorAction SilentlyContinue
+}
+
 if ($null -eq $codex) {
     throw 'Codex CLI was not found on PATH. Install/login first and run scripts/Check-Toolchain.ps1.'
 }
@@ -65,8 +74,16 @@ Write-Host "Sandbox: $Sandbox"
 Write-Host "Output: $outputPath"
 Write-Host ''
 
-$prompt | & codex @arguments 2>&1 | Tee-Object -FilePath $outputPath
-$exitCode = $LASTEXITCODE
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    # Windows PowerShell 5 wraps native stderr as NativeCommandError. Codex writes
+    # progress to stderr, so let the process finish and trust its exit code.
+    $ErrorActionPreference = 'Continue'
+    $prompt | & $codex.Source @arguments 2>&1 | Tee-Object -FilePath $outputPath
+    $exitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
 
 if ($exitCode -ne 0) {
     throw "Codex exited with code $exitCode. See $outputPath"

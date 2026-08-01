@@ -2,17 +2,18 @@
 
 ## Purpose and observable outcome
 
-M0 (toolchain + empirical spike + measurements) is complete on the target
-Windows host. Product scaffolding has not started. Next observable outcome is
-a walking skeleton monorepo with Core and Connector as separate processes and a
-mock normalized WebSocket path (M1.1–M1.3).
+M0 (toolchain + empirical spike + measurements) and the M1 walking skeleton are
+complete on the target Windows host. The next observable outcome is the real
+browser-to-Codex first-token path, starting with the installed-schema
+compatibility gate (M2.1–M2.3).
 
 ## Scope
 
 - M0.1 target-Windows toolchain verification — **done**
 - M0.2 three real Codex app-server spikes — **done**
 - M0.3 measurement document and compatibility notes — **done**
-- Next: M1.1–M1.3 walking skeleton (Codex-owned)
+- M1.1–M1.3 walking skeleton — **done**
+- Next: M2.1 installed Codex schema compatibility gate (Codex-owned)
 
 ## Non-goals
 
@@ -27,7 +28,10 @@ mock normalized WebSocket path (M1.1–M1.3).
 - Windows spawn fix in `spikes/codex-app-server/spike.mjs`
 - Real batch artifacts: `spikes/codex-app-server/artifacts/real-20260801-091022/`
 - Measurements recorded in `docs/measurements/CODEX-SPIKE-RESULTS.md`
-- Product packages (`apps/*`, `packages/*`) still README stubs only
+- Strict-TypeScript workspaces implemented under `apps/*` and `packages/*`
+- Core and Connector run as separate Node processes with independent health endpoints
+- Web consumes only `@aicl/protocol` normalized envelopes
+- Deterministic mock Connector streams through Core to WebSocket subscribers
 
 ## Implementation sequence
 
@@ -37,14 +41,20 @@ mock normalized WebSocket path (M1.1–M1.3).
 - [x] Verify mock spike harness
 - [x] Run three real Codex app-server spikes
 - [x] Fill CODEX-SPIKE-RESULTS and mark M0 complete
-- [ ] Scaffold pnpm strict-TypeScript monorepo (M1.1)
-- [ ] Run Core and Connector as separate processes (M1.2)
-- [ ] Demonstrate mock normalized WebSocket flow (M1.3)
+- [x] Scaffold pnpm strict-TypeScript monorepo (M1.1)
+- [x] Run Core and Connector as separate processes (M1.2)
+- [x] Demonstrate mock normalized WebSocket flow (M1.3)
+- [ ] Add installed Codex schema compatibility gate (M2.1)
+- [ ] Demonstrate real browser-to-Codex first token (M2.2)
+- [ ] Test interrupt, active-Turn rejection, and provider-loss semantics (M2.3)
 
 ## Protocol or schema changes
 
-None in product code yet. Installed Codex 0.146.0 schemas generated under each
-spike run `schema/` directory (275 files). Required method strings present.
+`@aicl/protocol` now defines protocol version 1 client, server, Core-to-Connector,
+and Connector-to-Core envelopes. Every WebSocket boundary parses strict Zod
+schemas. Provider-specific mock fields terminate in `apps/connector`; frontend
+messages contain normalized fields only. Installed Codex 0.146.0 schemas remain
+spike artifacts and are not yet wired into product code.
 
 ## Tests and fault scenarios
 
@@ -52,6 +62,13 @@ spike run `schema/` directory (275 files). Required method strings present.
 - Mock spike passed after harness fix.
 - Three real spikes: first-delta 4.5–6.3 s; ~55 deltas/s avg; peak 1 s up to 154;
   mid-turn kill reconstructed as `interrupted` via `thread/read` + `thread/resume`.
+- `pnpm check`: strict typecheck, 6 unit/integration tests, ESLint, and Vite
+  production build passed.
+- Core integration test: normalized mock streaming passed; concurrent submit
+  returned `TURN_ALREADY_ACTIVE`; fresh WebSocket subscription restored the
+  completed snapshot; no raw-provider keys reached browser output.
+- `pnpm dev` smoke: Web 5173, Core 8787, Connector 8788; both health endpoints
+  ready and Core observed the Connector.
 
 ## Surprises and measurements
 
@@ -63,18 +80,22 @@ spike run `schema/` directory (275 files). Required method strings present.
 ## Decision log
 
 - Apply Windows spawn fix in the spike harness so M0 can complete on this host.
+- Make `Invoke-Codex.ps1` select `codex.cmd` on Windows and judge native CLI
+  completion by exit code because Windows PowerShell 5 wraps stderr as errors.
 - Treat kill→`interrupted` as mappable terminal status; never auto-resubmit.
-- Defer monorepo scaffold to M1 under Codex ownership per `AGENTS.md`.
+- Keep M1 persistence in memory; SQLite remains M3 scope.
+- Keep provider-specific mock payloads inside the Connector adapter.
 - Use measured rates for future batching defaults (see measurement doc table).
 
 ## Final outcome
 
-M0 complete. Reproduce with:
+M0 and M1 complete. Reproduce with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
 pnpm run spike:mock
-# optional re-run: .\scripts\Run-CodexSpike.ps1 -Runs 3
+pnpm check
+pnpm dev
 ```
 
-Next: `prompts/codex/02-SCAFFOLD-WALKING-SKELETON.md` for M1.1–M1.3.
+Next: `prompts/codex/03-FIRST-TOKEN-VERTICAL-SLICE.md` for M2.1–M2.3.

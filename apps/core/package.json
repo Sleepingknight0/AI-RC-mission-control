@@ -1,0 +1,28 @@
+{
+  "name": "@aicl/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/server.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run lint"
+  },
+  "dependencies": {
+    "@aicl/domain": "workspace:*",
+    "@aicl/protocol": "workspace:*",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@aicl/connector": "workspace:*",
+    "@aicl/test-fixtures": "workspace:*",
+    "@types/ws": "^8.18.1"
+  }
+}

@@ -28,6 +28,25 @@
 .\scripts\Invoke-ClaudeReview.ps1
 ```
 
+## รัน Walking Skeleton
+
+```powershell
+pnpm install
+pnpm dev
+```
+
+คำสั่งเดียวจะเปิด Web (`http://127.0.0.1:5173`), Core
+(`http://127.0.0.1:8787/health`) และ Connector
+(`http://127.0.0.1:8788/health`) เป็น process แยกกัน หน้าเว็บส่ง prompt ผ่าน
+normalized WebSocket flow และกดส่งซ้ำระหว่าง streaming เพื่อดู
+`TURN_ALREADY_ACTIVE` ได้
+
+ตรวจทั้ง repository ด้วย:
+
+```powershell
+pnpm check
+```
+
 ## ลำดับอำนาจของเอกสาร
 
 เมื่อเอกสารขัดกัน ให้ยึดตามลำดับนี้:

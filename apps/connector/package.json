@@ -1,0 +1,26 @@
+{
+  "name": "@aicl/connector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/client.ts",
+    "./mock-provider": "./src/mock-provider.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run lint"
+  },
+  "dependencies": {
+    "@aicl/protocol": "workspace:*",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

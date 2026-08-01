@@ -97,3 +97,64 @@ Get-Content .\spikes\codex-app-server\artifacts\real-20260801-091022\run-01\REPO
 **Requested next action**
 
 Execute **M1.1–M1.3** walking skeleton via `prompts/codex/02-SCAFFOLD-WALKING-SKELETON.md` (Codex primary owner): pnpm monorepo, separate Core/Connector processes, mock normalized WebSocket flow.
+
+---
+
+### 2026-08-01 10:00 — Codex — M1.1–M1.3
+
+**Scope**
+
+Build the strict-TypeScript walking skeleton: versioned normalized protocol,
+pure Session/Turn domain state, separate Core and Connector processes,
+diagnostic React Web client, deterministic mock streaming, and refresh snapshot.
+
+**Files changed or reviewed**
+
+- `packages/protocol/src/index.ts` — strict Zod schemas for all M1 envelope families
+- `packages/domain/src/index.ts` — pure active-Turn guard and snapshot transitions
+- `apps/core/src/` — HTTP health endpoint, browser/Connector WebSocket boundaries, in-memory store
+- `apps/connector/src/` — separate client process and raw mock-provider adapter
+- `apps/web/src/` — normalized-protocol-only diagnostic console
+- `apps/*/test`, `packages/*/test` — validation, guard, adapter, and end-to-end WebSocket tests
+- `scripts/Invoke-Codex.ps1` — Windows native stderr compatibility
+
+**Commands and tests**
+
+```text
+pnpm install
+→ 7 workspace projects installed; lockfile updated
+
+pnpm check
+→ exit 0; strict typecheck, 6 tests, ESLint, Vite production build
+
+pnpm dev
+→ Web 5173 HTTP 200
+→ Core 8787 {component:"core", status:"ready", connectorConnected:true}
+→ Connector 8788 {component:"connector", status:"ready"}
+
+git diff --check
+→ exit 0
+```
+
+**Observable result**
+
+Run `pnpm dev`, open `http://127.0.0.1:5173`, and dispatch the default prompt.
+The timeline streams normalized mock deltas. Dispatch again while streaming to
+observe `TURN_ALREADY_ACTIVE`; refresh to restore the completed snapshot.
+
+**Protocol/schema assumptions**
+
+- Protocol version 1 is the only accepted WebSocket version in M1.
+- Core allocates durable sequence numbers; stream sequence remains ephemeral.
+- Raw mock fields (`providerMethod`, `providerPayload`) terminate in the Connector adapter.
+- M1 state is intentionally in memory; no SQLite durability claim is made.
+
+**Known limitations or uncertain outcomes**
+
+- Nested `codex exec` was clamped to read-only by the host, so the active Codex turn implemented Prompt 02 directly.
+- `pnpm install` reported that the optional esbuild install script was ignored; Vitest and Vite build nevertheless passed.
+- Real Codex App Server integration, interrupt, provider loss, and durable replay remain M2/M3 work.
+
+**Requested next action**
+
+Execute `prompts/codex/03-FIRST-TOKEN-VERTICAL-SLICE.md` for M2.1–M2.3, beginning with schema compatibility validation.

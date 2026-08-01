@@ -13,6 +13,7 @@
     "skipLibCheck": true,
     "declaration": true,
     "sourceMap": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true
   }
 }
