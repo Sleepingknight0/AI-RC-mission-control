@@ -2,9 +2,10 @@
 
 ## Purpose and observable outcome
 
-M0 (measurements), M1 (walking skeleton), and M2 (real first-token vertical
-slice) are complete on the target Windows host. The next observable outcome is
-durable Core/Connector recovery across process and browser restarts (M3.1–M3.3).
+M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
+and M3 (durability/reconnect) are complete on the target Windows host. The next
+observable outcome is normalized command output, approval CAS, and artifact-
+backed diff delivery (M4.1–M4.3).
 
 ## Scope
 
@@ -13,7 +14,8 @@ durable Core/Connector recovery across process and browser restarts (M3.1–M3.3
 - M0.3 measurement document and compatibility notes — **done**
 - M1.1–M1.3 walking skeleton — **done**
 - M2.1–M2.3 real Codex vertical slice and fault semantics — **done**
-- Next: M3.1 Core SQLite WAL and Connector journal (Codex-owned)
+- M3.1–M3.3 SQLite durability, idempotency, replay, and refresh — **done**
+- Next: M4.1 command output and file-change normalization (Codex-owned)
 
 ## Non-goals
 
@@ -34,7 +36,9 @@ durable Core/Connector recovery across process and browser restarts (M3.1–M3.3
 - Real Codex adapter owns stdio transport, normalization, supervision, and resume
 - Installed Codex 0.146.0 schema is pinned by a canonical compatibility gate
 - Deterministic mock remains available with `AICL_PROVIDER=mock`
-- Core memory state and command ledger remain intentionally non-durable until M3
+- Core owns authoritative SQLite projections and events under `.data/aicl-core.db`
+- Connector owns a separate inbox/outbox journal under `.data/aicl-connector.db`
+- Browser reconnect uses durable sequence replay plus a current projection snapshot
 
 ## Implementation sequence
 
@@ -50,17 +54,17 @@ durable Core/Connector recovery across process and browser restarts (M3.1–M3.3
 - [x] Add installed Codex schema compatibility gate (M2.1)
 - [x] Demonstrate real browser-to-Codex first token (M2.2)
 - [x] Test interrupt, active-Turn rejection, and provider-loss semantics (M2.3)
-- [ ] Add Core SQLite WAL and Connector journal (M3.1)
-- [ ] Add durable command idempotency and event replay (M3.2)
-- [ ] Test browser refresh during an active Turn (M3.3)
+- [x] Add Core SQLite WAL and Connector journal (M3.1)
+- [x] Add durable command idempotency and event replay (M3.2)
+- [x] Test browser refresh during an active Turn (M3.3)
 
 ## Protocol or schema changes
 
 `@aicl/protocol` version 1 now includes provider bindings, interrupt commands,
-`interrupted`, `lost`, `incompatible`, and `outcome_unknown`. The Connector maps
-only `item/agentMessage/delta`, `item/completed`, and terminal Turn notifications
-from Codex. Generated Codex types and raw events stay under the adapter boundary;
-the Web imports only normalized protocol types.
+Connector source identity, runtime generations, journal acknowledgements, and
+browser replay boundaries. Durable event envelopes carry Session-local sequence;
+assistant deltas remain ephemeral. Generated Codex types and raw events stay
+under the adapter boundary; the Web imports only normalized protocol types.
 
 ## Tests and fault scenarios
 
@@ -68,14 +72,21 @@ the Web imports only normalized protocol types.
 - Mock spike passed after harness fix.
 - Three real spikes: first-delta 4.5–6.3 s; ~55 deltas/s avg; peak 1 s up to 154;
   mid-turn kill reconstructed as `interrupted` via `thread/read` + `thread/resume`.
-- `pnpm check`: strict typecheck, 19 unit/integration tests, ESLint, a real
+- `pnpm check`: strict typecheck, 26 unit/integration tests, ESLint, a real
   Windows child-tree termination test, and Vite production build passed.
 - Live compatibility probe: Codex 0.146.0, 275 schema files, canonical SHA-256
   `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`.
-- Opt-in real Codex E2E passed in 71.39 s: first delta/final, active rejection,
+- Opt-in real Codex E2E passed in 70.33 s: first delta/final, active rejection,
   interrupt, provider death, `outcome_unknown`, new-process resume, no replay.
-- Playwright drove the real React UI and rendered 80 streamed response lines;
-  a fresh browser restored the completed timeline with 0 errors/0 warnings.
+- Database tests cover schema v1 migration/idempotence, WAL/foreign keys/busy
+  timeout, active-Turn and Connector-source partial uniqueness, and revisions
+  independent from Session event sequence.
+- Recovery tests cover duplicate command races, Core restart during an active
+  Turn, Connector restart/runtime fencing, replay ordering/deduplication, and a
+  deliberate failure between durable commit and live broadcast.
+- Playwright reloaded the real React UI during a 600-line Codex stream. The
+  active Turn restored at sequence 4, then the authoritative final reconstructed
+  lines 001–600 at sequence 6 with 0 errors/0 warnings.
 - Process cleanup verified no listeners on 5173/8787/8788 and no project Codex
   process remained.
 
@@ -100,18 +111,27 @@ the Web imports only normalized protocol types.
 - Treat provider process/protocol loss as terminal `outcome_unknown`; never
   auto-resubmit an accepted command.
 - Keep command idempotency in memory for M2; durable replay remains M3 scope.
+- Use Node's built-in SQLite 3.53.0 with strict schema v1, WAL, foreign keys,
+  `BEGIN IMMEDIATE`, and a single promise-serialized Core writer.
+- Commit durable events before broadcast; do not transact per assistant delta.
+- Persist Connector inbox/outbox before dispatch/send and acknowledge an outbox
+  event only after Core commits it.
+- Fence provider events by Connector/runtime generation. A Connector restart
+  creates a new generation and unresolved work becomes `outcome_unknown`; never
+  redispatch it automatically.
 
 ## Final outcome
 
-M0 through M2 complete. Reproduce the normal and opt-in gates with:
+M0 through M3 complete. Reproduce the normal and opt-in gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
 pnpm --filter @aicl/connector codex:compatibility
+pnpm migrate
 pnpm check
 pnpm dev
 $env:AICL_REAL_CODEX = '1'
 pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
 ```
 
-Next: `prompts/codex/04-DURABILITY-AND-RECONNECT.md` for M3.1–M3.3.
+Next: `prompts/codex/05-APPROVAL-INTERRUPT-AND-DIFF.md` for M4.1–M4.3.

@@ -233,3 +233,88 @@ process without replaying the lost command.
 Execute `prompts/codex/04-DURABILITY-AND-RECONNECT.md` for M3.1–M3.3. Do not
 advance to M4 until SQLite WAL, Connector journal, durable idempotency/replay,
 and active-Turn browser refresh are verified.
+
+---
+
+### 2026-08-01 23:31 — Codex — M3.1–M3.3
+
+**Scope**
+
+Replace the in-memory Core ledger with authoritative SQLite projections/events,
+add a separate Connector SQLite inbox/outbox journal, implement durable command
+idempotency and gap-free browser replay, and verify Core/Connector/browser
+recovery without replaying an uncertain provider command.
+
+**Files changed or reviewed**
+
+- `apps/core/migrations/001_initial.sql`, `apps/core/src/migrate.ts`,
+  `apps/core/src/store.ts` — schema v1, migrations, WAL configuration, serialized
+  transactions, projections, durable events, and Connector-source deduplication
+- `apps/core/src/server.ts` — commit-before-broadcast, replay barrier, runtime
+  generation fencing, channel-loss grace, and reconnect behavior
+- `apps/connector/migrations/001_initial.sql`, `apps/connector/src/journal.ts`,
+  `apps/connector/src/client.ts` — durable inbox/outbox, identities, generations,
+  acknowledgements, and unacknowledged-event replay
+- `packages/protocol/src/index.ts`, `apps/web/src/App.tsx` — source metadata,
+  replay boundaries, durable cursor tracking, reconnect, and projection dedupe
+- Core/Connector database, journal, durability, reconnect, and regression tests
+
+**Commands and tests**
+
+```text
+pnpm migrate
+→ Core .data/aicl-core.db schemaVersion=1
+→ Connector .data/aicl-connector.db schemaVersion=1; repeated run exit 0
+
+pnpm check
+→ exit 0; strict typecheck; 26 tests; ESLint; Web production build
+
+pnpm --filter @aicl/connector codex:compatibility
+→ compatible=true; Codex 0.146.0; canonical SHA b767c116...df03
+
+$env:AICL_REAL_CODEX='1'; pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
+→ 1 passed in 70.33 s
+
+git diff --check
+→ exit 0
+```
+
+**Observable result**
+
+With real Codex, dispatch a prompt that emits 600 numbered lines and reload the
+browser while the Turn is active. The refreshed tab restores the same running
+Turn at durable sequence 4, resumes live delivery without a second provider
+dispatch, then reconstructs the complete authoritative message (001–600) at
+sequence 6. Browser console: 0 errors, 0 warnings.
+
+Automated recovery additionally restarts Core while Connector/provider remain
+alive, reconnects two tabs using the same `commandId`, injects a failure after a
+durable commit but before broadcast, and restarts Connector. Missing committed
+events replay once; a new Connector runtime generation fences stale events and
+the unresolved old Turn becomes `outcome_unknown` without redispatch.
+
+**Protocol/schema assumptions**
+
+- Node 24.16.0 supplies SQLite 3.53.0; schema v1 requires SQLite strict tables
+  and JSON validation support.
+- Session `last_event_seq` advances only for durable visible events; resource
+  revisions are independent. Assistant deltas are ephemeral.
+- Connector source identity is `(connectorId, sourceEventId)` and is protected by
+  a partial unique index only when both values are present.
+- Same command ID plus same payload returns the stored result; changed payload is
+  rejected. One running Turn per Session is enforced by a partial unique index.
+
+**Known limitations or uncertain outcomes**
+
+- SQLite access uses synchronous `DatabaseSync` behind a promise-serialized
+  writer, suitable for this local prototype but not yet load/backpressure tested.
+- Browser cursors live in `sessionStorage`; server-side cursor retention/garbage
+  collection and bounded stream checkpoints are not implemented.
+- Partial assistant text can disappear during a disconnect by design; only the
+  completed assistant message is authoritative and durable.
+
+**Requested next action**
+
+Execute `prompts/codex/05-APPROVAL-INTERRUPT-AND-DIFF.md` for M4.1–M4.3. Do not
+start Grok M5 until normalized command/file changes, approval CAS, and artifact-
+backed large diffs pass their race and fault-path tests.

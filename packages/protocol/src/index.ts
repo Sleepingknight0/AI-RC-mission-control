@@ -18,6 +18,23 @@ const envelope = <T extends string, S extends z.ZodTypeAny>(
     payload,
   }).strict();
 
+const connectorEnvelope = <T extends string, S extends z.ZodTypeAny>(
+  type: T,
+  payload: S,
+) =>
+  envelope(type, payload).extend({
+    connectorId: id.optional(),
+    bootId: id.optional(),
+    sourceEventId: id.optional(),
+    runtimeId: id.optional(),
+    runtimeGeneration: z.number().int().positive().optional(),
+  });
+
+const durableEventIdentity = {
+  eventId: id,
+  seq: z.number().int().positive(),
+};
+
 export const ProtocolErrorSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
@@ -122,15 +139,15 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
   envelope("runtime.status", z.object({ runtime: RuntimeSchema })),
   envelope(
     "turn.started",
-    z.object({ sessionId: id, turn: TurnSchema, seq: z.number().int().positive() }),
+    z.object({ sessionId: id, turn: TurnSchema, ...durableEventIdentity }),
   ),
   envelope(
     "turn.completed",
-    z.object({ sessionId: id, turnId: id, seq: z.number().int().positive() }),
+    z.object({ sessionId: id, turnId: id, ...durableEventIdentity }),
   ),
   envelope(
     "turn.interrupted",
-    z.object({ sessionId: id, turnId: id, seq: z.number().int().positive() }),
+    z.object({ sessionId: id, turnId: id, ...durableEventIdentity }),
   ),
   envelope(
     "turn.failed",
@@ -138,12 +155,12 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
       sessionId: id,
       turnId: id,
       failureCode: z.string().min(1),
-      seq: z.number().int().positive(),
+      ...durableEventIdentity,
     }),
   ),
   envelope(
     "turn.outcome_unknown",
-    z.object({ sessionId: id, turnId: id, seq: z.number().int().positive() }),
+    z.object({ sessionId: id, turnId: id, ...durableEventIdentity }),
   ),
   envelope(
     "assistant.message.delta",
@@ -162,7 +179,7 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
       turnId: id,
       messageId: id,
       content: z.string(),
-      seq: z.number().int().positive(),
+      ...durableEventIdentity,
     }),
   ),
   envelope(
@@ -198,12 +215,19 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       providerTurnId: id,
     }),
   ),
+  envelope(
+    "connector.journal.ack",
+    z.object({ sourceEventId: id }),
+  ),
 ]);
 
 export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
-  envelope("connector.hello", z.object({ runtime: RuntimeSchema })),
-  envelope("connector.runtime.status", z.object({ runtime: RuntimeSchema })),
-  envelope(
+  connectorEnvelope(
+    "connector.hello",
+    z.object({ connectorId: id, bootId: id, runtime: RuntimeSchema }),
+  ),
+  connectorEnvelope("connector.runtime.status", z.object({ runtime: RuntimeSchema })),
+  connectorEnvelope(
     "connector.command.error",
     z.object({
       commandId: id,
@@ -213,15 +237,15 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       retryable: z.boolean(),
     }),
   ),
-  envelope(
+  connectorEnvelope(
     "connector.session.bound",
     z.object({ sessionId: id, providerSessionId: id }),
   ),
-  envelope(
+  connectorEnvelope(
     "connector.turn.bound",
     z.object({ sessionId: id, turnId: id, providerTurnId: id }),
   ),
-  envelope(
+  connectorEnvelope(
     "connector.turn.delta",
     z.object({
       sessionId: id,
@@ -231,7 +255,7 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       text: z.string(),
     }),
   ),
-  envelope(
+  connectorEnvelope(
     "connector.turn.message.completed",
     z.object({
       sessionId: id,
@@ -240,19 +264,19 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       content: z.string(),
     }),
   ),
-  envelope(
+  connectorEnvelope(
     "connector.turn.completed",
     z.object({ sessionId: id, turnId: id }),
   ),
-  envelope(
+  connectorEnvelope(
     "connector.turn.interrupted",
     z.object({ sessionId: id, turnId: id }),
   ),
-  envelope(
+  connectorEnvelope(
     "connector.turn.failed",
     z.object({ sessionId: id, turnId: id, failureCode: z.string().min(1) }),
   ),
-  envelope(
+  connectorEnvelope(
     "connector.turn.outcome_unknown",
     z.object({ sessionId: id, turnId: id }),
   ),

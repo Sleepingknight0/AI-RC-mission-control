@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { startConnector } from "./client.js";
 import { CodexProvider } from "./codex/adapter.js";
 import { probeInstalledCodex } from "./codex/compatibility.js";
+import { DEFAULT_CONNECTOR_JOURNAL_PATH } from "./journal.js";
 import { MockProvider } from "./mock-provider.js";
 
 const coreUrl = process.env.AICL_CORE_CONNECTOR_URL ?? "ws://127.0.0.1:8787/connector";
@@ -11,6 +12,8 @@ const healthPort = Number(process.env.AICL_CONNECTOR_PORT ?? "8788");
 const providerName = process.env.AICL_PROVIDER ?? "codex";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const projectPath = process.env.AICL_PROJECT_PATH ?? repositoryRoot;
+const journalPath =
+  process.env.AICL_CONNECTOR_DB_PATH ?? DEFAULT_CONNECTOR_JOURNAL_PATH;
 
 const compatibility = providerName === "codex" ? probeInstalledCodex() : null;
 if (compatibility !== null && !compatibility.compatible) {
@@ -28,6 +31,7 @@ const connector = startConnector({
   healthPort,
   provider,
   providerName,
+  journalPath,
   healthDetails:
     compatibility === null
       ? {}

@@ -1,6 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { type SessionState } from "@aicl/domain";
 import {
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
@@ -15,11 +16,20 @@ import {
 } from "@aicl/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 
-import { InMemorySessionStore } from "./store.js";
+import { CoreDatabase, type ConnectorSource } from "./store.js";
+
+export const DEFAULT_CORE_DB_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../.data/aicl-core.db",
+);
 
 export interface CoreServerOptions {
   host?: string;
   port?: number;
+  dbPath?: string;
+  connectorLossGraceMs?: number;
+  beforeDurableBroadcast?: (event: ServerEnvelope) => void;
+  onBroadcastError?: (error: unknown, event: ServerEnvelope) => void;
 }
 
 export interface CoreServerHandle {
@@ -27,7 +37,15 @@ export interface CoreServerHandle {
   port: number;
   browserUrl: string;
   connectorUrl: string;
+  dbPath: string;
   close(): Promise<void>;
+}
+
+interface ConnectorConnection {
+  socket: WebSocket;
+  connectorId: string;
+  bootId: string;
+  runtime: Runtime;
 }
 
 function validatedServerEnvelope(value: unknown): ServerEnvelope {
@@ -52,14 +70,14 @@ export async function startCoreServer(
   options: CoreServerOptions = {},
 ): Promise<CoreServerHandle> {
   const host = options.host ?? "127.0.0.1";
-  const store = new InMemorySessionStore();
+  const dbPath = options.dbPath ?? process.env.AICL_CORE_DB_PATH ?? DEFAULT_CORE_DB_PATH;
+  const store = new CoreDatabase({ path: dbPath });
   const clients = new Map<WebSocket, string | null>();
-  const commandLedger = new Map<
-    string,
-    { signature: string; result: ServerEnvelope }
-  >();
   let connector: WebSocket | undefined;
-  let lastRuntime: Runtime | undefined;
+  let connectorConnection: ConnectorConnection | undefined;
+  let connectorLossTimer: NodeJS.Timeout | undefined;
+  let lastRuntime: Runtime | undefined = store.latestRuntime();
+  let closing = false;
 
   const httpServer: HttpServer = createServer((request, response) => {
     if (request.url === "/health") {
@@ -68,7 +86,9 @@ export async function startCoreServer(
         JSON.stringify({
           component: "core",
           status: "ready",
-          connectorConnected: connector?.readyState === WebSocket.OPEN,
+          connectorConnected:
+            connectorConnection?.socket.readyState === WebSocket.OPEN,
+          databaseSchemaVersion: store.schemaVersion,
         }),
       );
       return;
@@ -84,6 +104,10 @@ export async function startCoreServer(
     }
   };
 
+  const sendConnector = (socket: WebSocket, value: unknown) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value));
+  };
+
   const broadcast = (sessionId: string | null, value: unknown) => {
     const envelope = validatedServerEnvelope(value);
     const json = JSON.stringify(envelope);
@@ -97,9 +121,27 @@ export async function startCoreServer(
     }
   };
 
-  const rejection = (
-    input: { commandId: string; sessionId: string; code: string; message: string },
-  ) =>
+  // Durable envelopes arrive here only after the writer transaction commits.
+  // Ephemeral deltas deliberately bypass this hook and never create token rows.
+  const broadcastDurable = (event: ServerEnvelope) => {
+    try {
+      options.beforeDurableBroadcast?.(event);
+      const sessionId = sessionIdOf(event);
+      broadcast(sessionId, event);
+    } catch (error) {
+      options.onBroadcastError?.(error, event);
+      if (options.onBroadcastError === undefined) {
+        console.error("Durable event committed but broadcast failed", error);
+      }
+    }
+  };
+
+  const rejection = (input: {
+    commandId: string;
+    sessionId: string;
+    code: string;
+    message: string;
+  }) =>
     validatedServerEnvelope(
       makeEnvelope("command.rejected", {
         commandId: input.commandId,
@@ -111,70 +153,58 @@ export async function startCoreServer(
       }),
     );
 
-  const commandSignature = (message: ClientEnvelope) =>
-    JSON.stringify({ type: message.type, payload: message.payload });
-
-  const replayCommand = (socket: WebSocket, message: ClientEnvelope) => {
-    if (
-      message.type !== "turn.submit" &&
-      message.type !== "turn.interrupt"
-    ) {
-      return false;
-    }
-    const { commandId, sessionId } = message.payload;
-    const previous = commandLedger.get(commandId);
-    if (previous === undefined) return false;
-    if (previous.signature === commandSignature(message)) {
-      send(socket, previous.result);
-    } else {
-      send(
-        socket,
-        rejection({
-          commandId,
-          sessionId,
-          code: "IDEMPOTENCY_KEY_REUSE",
-          message: "This commandId was already used with a different command.",
-        }),
-      );
-    }
-    return true;
-  };
-
-  const recordCommand = (
+  const sendConflict = (
     socket: WebSocket,
-    message: ClientEnvelope,
-    result: ServerEnvelope,
+    message: Extract<ClientEnvelope, { type: "turn.submit" | "turn.interrupt" }>,
   ) => {
-    if (
-      message.type === "turn.submit" ||
-      message.type === "turn.interrupt"
-    ) {
-      commandLedger.set(message.payload.commandId, {
-        signature: commandSignature(message),
-        result,
-      });
-    }
-    send(socket, result);
+    send(
+      socket,
+      rejection({
+        commandId: message.payload.commandId,
+        sessionId: message.payload.sessionId,
+        code: "IDEMPOTENCY_KEY_REUSE",
+        message: "This commandId was already used with a different command.",
+      }),
+    );
   };
 
-  const handleClient = (socket: WebSocket, message: ClientEnvelope) => {
-    if (replayCommand(socket, message)) return;
+  const recordOfflineRejection = async (
+    socket: WebSocket,
+    message: Extract<ClientEnvelope, { type: "turn.submit" | "turn.interrupt" }>,
+  ) => {
+    const result = await store.recordRejectedCommand(
+      message,
+      rejection({
+        commandId: message.payload.commandId,
+        sessionId: message.payload.sessionId,
+        code: "CONNECTOR_OFFLINE",
+        message: "No Connector is currently available.",
+      }),
+    );
+    if (result.kind === "conflict") sendConflict(socket, message);
+    else send(socket, result.result);
+  };
+
+  const handleClient = async (socket: WebSocket, message: ClientEnvelope) => {
     switch (message.type) {
       case "client.hello":
         return;
       case "session.subscribe": {
         const { sessionId, afterSeq } = message.payload;
-        clients.set(socket, sessionId);
+        await store.ensureSession(sessionId);
         const snapshot = store.snapshot(sessionId);
+        const upperBoundSeq = snapshot.lastEventSeq;
+        const replay = store.replay(sessionId, afterSeq, upperBoundSeq);
         send(
           socket,
           makeEnvelope("replay.boundary", {
             sessionId,
             phase: "begin",
             afterSeq,
-            upperBoundSeq: snapshot.lastEventSeq,
+            upperBoundSeq,
           }),
         );
+        for (const event of replay) send(socket, event);
         send(socket, makeEnvelope("session.snapshot", { snapshot }));
         send(
           socket,
@@ -182,262 +212,240 @@ export async function startCoreServer(
             sessionId,
             phase: "end",
             afterSeq,
-            upperBoundSeq: snapshot.lastEventSeq,
+            upperBoundSeq,
           }),
         );
+        clients.set(socket, sessionId);
         return;
       }
       case "turn.submit": {
-        const { commandId, sessionId, prompt } = message.payload;
-        if (connector?.readyState !== WebSocket.OPEN) {
-          recordCommand(
-            socket,
-            message,
-            rejection({
-              commandId,
-              sessionId,
-              code: "CONNECTOR_OFFLINE",
-              message: "No Connector is currently available.",
-            }),
-          );
+        const prior = store.priorCommand(message);
+        if (prior?.kind === "same") {
+          send(socket, prior.result);
           return;
         }
-
+        if (prior?.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        const connection = connectorConnection;
+        if (connection?.socket.readyState !== WebSocket.OPEN) {
+          await recordOfflineRejection(socket, message);
+          return;
+        }
         const turnId = `turn-${crypto.randomUUID()}`;
-        const started = store.beginTurn(sessionId, {
+        const result = await store.acceptTurn({
+          message,
           turnId,
-          commandId,
-          prompt,
-          startedAt: new Date().toISOString(),
+          runtime: connection.runtime,
+          connectorId: connection.connectorId,
+          bootId: connection.bootId,
+          activeRejection: rejection({
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            code: "TURN_ALREADY_ACTIVE",
+            message: "This Session already has an active Turn.",
+          }),
         });
-        if (!started.ok) {
-          recordCommand(
-            socket,
-            message,
-            rejection({
-              commandId,
-              sessionId,
-              code: started.code,
-              message: "This Session already has an active Turn.",
-            }),
-          );
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
           return;
         }
-
-        recordCommand(
-          socket,
-          message,
-          validatedServerEnvelope(
-            makeEnvelope("command.accepted", { commandId, sessionId, turnId }),
-          ),
-        );
-        broadcast(
-          sessionId,
-          makeEnvelope("turn.started", {
-            sessionId,
-            turn: started.turn,
-            seq: started.state.lastEventSeq,
+        send(socket, result.result);
+        if (result.kind !== "new" || result.result.type !== "command.accepted") return;
+        if (result.durableEvent !== undefined) broadcastDurable(result.durableEvent);
+        await store.markDispatched(message.payload.commandId);
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.turn.start", {
+            sessionId: message.payload.sessionId,
+            turnId,
+            commandId: message.payload.commandId,
+            prompt: message.payload.prompt,
+            providerSessionId: store.snapshot(message.payload.sessionId).providerSessionId,
           }),
-        );
-        connector.send(
-          JSON.stringify(
-            makeEnvelope("connector.turn.start", {
-              sessionId,
-              turnId,
-              commandId,
-              prompt,
-              providerSessionId: store.snapshot(sessionId).providerSessionId,
-            }),
-          ),
         );
         return;
       }
       case "turn.interrupt": {
-        const { commandId, sessionId, turnId } = message.payload;
-        if (connector?.readyState !== WebSocket.OPEN) {
-          recordCommand(
-            socket,
-            message,
-            rejection({
-              commandId,
-              sessionId,
-              code: "CONNECTOR_OFFLINE",
-              message: "No Connector is currently available.",
-            }),
-          );
+        const prior = store.priorCommand(message);
+        if (prior?.kind === "same") {
+          send(socket, prior.result);
           return;
         }
-        const snapshot = store.snapshot(sessionId);
-        const turn = snapshot.turns.find((candidate) => candidate.turnId === turnId);
+        if (prior?.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        const connection = connectorConnection;
+        if (connection?.socket.readyState !== WebSocket.OPEN) {
+          await recordOfflineRejection(socket, message);
+          return;
+        }
+        const snapshot = store.snapshot(message.payload.sessionId);
+        const turn = snapshot.turns.find(
+          (candidate) => candidate.turnId === message.payload.turnId,
+        );
         if (
-          snapshot.activeTurnId !== turnId ||
+          snapshot.activeTurnId !== message.payload.turnId ||
           snapshot.providerSessionId === null ||
           turn?.providerTurnId == null
         ) {
-          recordCommand(
-            socket,
+          const invalid = await store.recordRejectedCommand(
             message,
             rejection({
-              commandId,
-              sessionId,
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
               code: "TURN_NOT_ACCEPTING_INPUT",
               message: "The Turn is not bound to an active provider runtime.",
             }),
           );
+          if (invalid.kind === "conflict") sendConflict(socket, message);
+          else send(socket, invalid.result);
           return;
         }
-        recordCommand(
-          socket,
-          message,
-          validatedServerEnvelope(
-            makeEnvelope("command.accepted", { commandId, sessionId, turnId }),
-          ),
+        const accepted = validatedServerEnvelope(
+          makeEnvelope("command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            turnId: message.payload.turnId,
+          }),
         );
-        connector.send(
-          JSON.stringify(
-            makeEnvelope("connector.turn.interrupt", {
-              commandId,
-              sessionId,
-              turnId,
-              providerSessionId: snapshot.providerSessionId,
-              providerTurnId: turn.providerTurnId,
-            }),
-          ),
+        const result = await store.acceptInterrupt({ message, accepted });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        if (result.kind !== "new" || result.result.type !== "command.accepted") return;
+        await store.markDispatched(message.payload.commandId);
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.turn.interrupt", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            turnId: message.payload.turnId,
+            providerSessionId: snapshot.providerSessionId,
+            providerTurnId: turn.providerTurnId,
+          }),
         );
       }
     }
   };
 
-  const broadcastTerminalTurn = (
-    message: ConnectorEnvelope,
-    status: "interrupted" | "completed" | "failed" | "outcome_unknown",
-  ) => {
-    if (
-      message.type !== "connector.turn.completed" &&
-      message.type !== "connector.turn.interrupted" &&
-      message.type !== "connector.turn.failed" &&
-      message.type !== "connector.turn.outcome_unknown"
-    ) {
-      return;
-    }
-    const { sessionId, turnId } = message.payload;
-    const failureCode =
-      message.type === "connector.turn.failed"
-        ? message.payload.failureCode
-        : undefined;
-    const input = {
-      turnId,
-      status,
-      completedAt: new Date().toISOString(),
-      ...(failureCode === undefined ? {} : { failureCode }),
-    };
-    const state: SessionState = store.finishTurn(sessionId, input);
-    if (status === "completed") {
-      broadcast(
-        sessionId,
-        makeEnvelope("turn.completed", {
-          sessionId,
-          turnId,
-          seq: state.lastEventSeq,
-        }),
-      );
-    } else if (status === "interrupted") {
-      broadcast(
-        sessionId,
-        makeEnvelope("turn.interrupted", {
-          sessionId,
-          turnId,
-          seq: state.lastEventSeq,
-        }),
-      );
-    } else if (status === "failed") {
-      broadcast(
-        sessionId,
-        makeEnvelope("turn.failed", {
-          sessionId,
-          turnId,
-          failureCode: failureCode ?? "PROVIDER_REJECTED",
-          seq: state.lastEventSeq,
-        }),
-      );
-    } else {
-      broadcast(
-        sessionId,
-        makeEnvelope("turn.outcome_unknown", {
-          sessionId,
-          turnId,
-          seq: state.lastEventSeq,
-        }),
-      );
-    }
+  const acknowledge = (socket: WebSocket, sourceEventId: string) => {
+    sendConnector(
+      socket,
+      makeEnvelope("connector.journal.ack", { sourceEventId }),
+    );
   };
 
-  const handleConnector = (message: ConnectorEnvelope) => {
-    switch (message.type) {
-      case "connector.hello":
-      case "connector.runtime.status":
-        lastRuntime = message.payload.runtime;
-        broadcast(null, makeEnvelope("runtime.status", message.payload));
-        return;
-      case "connector.command.error":
-        broadcast(
-          message.payload.sessionId,
-          makeEnvelope("protocol.error", {
-            error: protocolError(message.payload.code, message.payload.message, {
-              commandId: message.payload.commandId,
-              sessionId: message.payload.sessionId,
-              retryable: message.payload.retryable,
-            }),
-          }),
-        );
-        return;
-      case "connector.session.bound":
-        store.bindProviderSession(
-          message.payload.sessionId,
-          message.payload.providerSessionId,
-        );
-        return;
-      case "connector.turn.bound":
-        store.bindProviderTurn(
+  const handleConnector = async (
+    socket: WebSocket,
+    message: ConnectorEnvelope,
+  ) => {
+    if (message.type === "connector.hello") {
+      if (connectorLossTimer !== undefined) {
+        clearTimeout(connectorLossTimer);
+        connectorLossTimer = undefined;
+      }
+      connectorConnection = {
+        socket,
+        connectorId: message.payload.connectorId,
+        bootId: message.payload.bootId,
+        runtime: message.payload.runtime,
+      };
+      lastRuntime = message.payload.runtime;
+      const recovered = await store.reconcileRuntime(message.payload.runtime);
+      for (const event of recovered) broadcastDurable(event);
+      broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
+      return;
+    }
+
+    if (message.type === "connector.turn.delta") {
+      if (
+        connectorConnection?.connectorId === message.connectorId &&
+        message.runtimeId !== undefined &&
+        message.runtimeGeneration !== undefined &&
+        store.acceptsRuntimeEvent(
           message.payload.sessionId,
           message.payload.turnId,
-          message.payload.providerTurnId,
-        );
-        return;
-      case "connector.turn.delta": {
-        store.appendDelta(message.payload.sessionId, message.payload);
+          message.runtimeId,
+          message.runtimeGeneration,
+        )
+      ) {
         broadcast(
           message.payload.sessionId,
           makeEnvelope("assistant.message.delta", message.payload),
         );
-        return;
       }
-      case "connector.turn.message.completed": {
-        const state = store.completeMessage(
-          message.payload.sessionId,
-          message.payload,
-        );
-        broadcast(
-          message.payload.sessionId,
-          makeEnvelope("assistant.message.completed", {
-            ...message.payload,
-            seq: state.lastEventSeq,
-          }),
-        );
-        return;
-      }
-      case "connector.turn.completed":
-        broadcastTerminalTurn(message, "completed");
-        return;
-      case "connector.turn.interrupted":
-        broadcastTerminalTurn(message, "interrupted");
-        return;
-      case "connector.turn.failed":
-        broadcastTerminalTurn(message, "failed");
-        return;
-      case "connector.turn.outcome_unknown":
-        broadcastTerminalTurn(message, "outcome_unknown");
+      return;
     }
+
+    const source = sourceOf(message);
+    if (
+      source === undefined ||
+      connectorConnection?.connectorId !== source.connectorId
+    ) {
+      return;
+    }
+
+    let durableEvent: ServerEnvelope | undefined;
+    switch (message.type) {
+      case "connector.runtime.status":
+        await store.updateRuntime(message.payload.runtime, source);
+        if (
+          connectorConnection.runtime.runtimeId === message.payload.runtime.runtimeId &&
+          connectorConnection.runtime.generation === message.payload.runtime.generation
+        ) {
+          connectorConnection.runtime = message.payload.runtime;
+          lastRuntime = message.payload.runtime;
+          broadcast(null, makeEnvelope("runtime.status", message.payload));
+        }
+        break;
+      case "connector.command.error": {
+        const isNew = await store.recordConnectorNotice(source);
+        if (isNew) {
+          broadcast(
+            message.payload.sessionId,
+            makeEnvelope("protocol.error", {
+              error: protocolError(message.payload.code, message.payload.message, {
+                commandId: message.payload.commandId,
+                sessionId: message.payload.sessionId,
+                retryable: message.payload.retryable,
+              }),
+            }),
+          );
+        }
+        break;
+      }
+      case "connector.session.bound":
+        await store.bindProviderSession(
+          message.payload.sessionId,
+          message.payload.providerSessionId,
+          source,
+        );
+        break;
+      case "connector.turn.bound":
+        await store.bindProviderTurn(
+          message.payload.sessionId,
+          message.payload.turnId,
+          message.payload.providerTurnId,
+          source,
+        );
+        break;
+      case "connector.turn.message.completed":
+        durableEvent = await store.completeMessage(message, source);
+        break;
+      case "connector.turn.completed":
+      case "connector.turn.interrupted":
+      case "connector.turn.failed":
+      case "connector.turn.outcome_unknown":
+        durableEvent = await store.finishTurn(message, source);
+        break;
+    }
+    acknowledge(socket, source.sourceEventId);
+    if (durableEvent !== undefined) broadcastDurable(durableEvent);
   };
 
   const attachBrowser = (socket: WebSocket) => {
@@ -446,15 +454,7 @@ export async function startCoreServer(
       send(socket, makeEnvelope("runtime.status", { runtime: lastRuntime }));
     }
     socket.on("message", (data) => {
-      const parsed = ClientEnvelopeSchema.safeParse(
-        (() => {
-          try {
-            return decodeJson(data.toString());
-          } catch {
-            return null;
-          }
-        })(),
-      );
+      const parsed = ClientEnvelopeSchema.safeParse(parseSocketData(data.toString()));
       if (!parsed.success) {
         send(
           socket,
@@ -464,53 +464,49 @@ export async function startCoreServer(
         );
         return;
       }
-      handleClient(socket, parsed.data);
+      void handleClient(socket, parsed.data).catch((error) => {
+        console.error("Core client command failed", error);
+        send(
+          socket,
+          makeEnvelope("protocol.error", {
+            error: protocolError("CORE_STORAGE_FAILURE", "Core mutation failed."),
+          }),
+        );
+      });
     });
     socket.on("close", () => clients.delete(socket));
+  };
+
+  const scheduleConnectorLoss = (connection: ConnectorConnection) => {
+    if (closing) return;
+    connectorLossTimer = setTimeout(() => {
+      void store.markRuntimeLost(connection.runtime).then((events) => {
+        for (const event of events) broadcastDurable(event);
+        lastRuntime = { ...connection.runtime, status: "lost" };
+        broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
+      });
+    }, options.connectorLossGraceMs ?? 750);
   };
 
   const attachConnector = (socket: WebSocket) => {
     if (connector?.readyState === WebSocket.OPEN) connector.close(1012);
     connector = socket;
     socket.on("message", (data) => {
-      const parsed = ConnectorEnvelopeSchema.safeParse(
-        (() => {
-          try {
-            return decodeJson(data.toString());
-          } catch {
-            return null;
-          }
-        })(),
-      );
-      if (parsed.success) handleConnector(parsed.data);
+      const parsed = ConnectorEnvelopeSchema.safeParse(parseSocketData(data.toString()));
+      if (!parsed.success) {
+        console.error("Core rejected an invalid Connector envelope", parsed.error);
+        return;
+      }
+      void handleConnector(socket, parsed.data).catch((error) => {
+        console.error("Core Connector ingest failed", error);
+      });
     });
     socket.on("close", () => {
-      if (connector === socket) {
-        connector = undefined;
-        for (const snapshot of store.activeSnapshots()) {
-          const turnId = snapshot.activeTurnId;
-          if (turnId === null) continue;
-          const state = store.finishTurn(snapshot.sessionId, {
-            turnId,
-            status: "outcome_unknown",
-            completedAt: new Date().toISOString(),
-          });
-          broadcast(
-            snapshot.sessionId,
-            makeEnvelope("turn.outcome_unknown", {
-              sessionId: snapshot.sessionId,
-              turnId,
-              seq: state.lastEventSeq,
-            }),
-          );
-        }
-        lastRuntime = {
-          runtimeId: lastRuntime?.runtimeId ?? "runtime-unknown",
-          generation: lastRuntime?.generation ?? 1,
-          status: "lost",
-        };
-        broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
-      }
+      if (connector !== socket) return;
+      connector = undefined;
+      const lost = connectorConnection;
+      connectorConnection = undefined;
+      if (lost !== undefined) scheduleConnectorLoss(lost);
     });
   };
 
@@ -526,9 +522,9 @@ export async function startCoreServer(
     });
   });
 
-  await new Promise<void>((resolve, reject) => {
+  await new Promise<void>((resolveListen, reject) => {
     httpServer.once("error", reject);
-    httpServer.listen(options.port ?? 8787, host, () => resolve());
+    httpServer.listen(options.port ?? 8787, host, () => resolveListen());
   });
   const address = httpServer.address();
   if (address === null || typeof address === "string") {
@@ -540,13 +536,56 @@ export async function startCoreServer(
     port: address.port,
     browserUrl: `ws://${host}:${address.port}/ws`,
     connectorUrl: `ws://${host}:${address.port}/connector`,
+    dbPath,
     async close() {
+      closing = true;
+      if (connectorLossTimer !== undefined) clearTimeout(connectorLossTimer);
       for (const client of clients.keys()) client.close();
       connector?.close();
       socketServer.close();
-      await new Promise<void>((resolve, reject) => {
-        httpServer.close((error) => (error ? reject(error) : resolve()));
+      await new Promise<void>((resolveClose, reject) => {
+        httpServer.close((error) => (error ? reject(error) : resolveClose()));
       });
+      await store.close();
     },
   };
+}
+
+function parseSocketData(value: string) {
+  try {
+    return decodeJson(value);
+  } catch {
+    return null;
+  }
+}
+
+function sourceOf(message: ConnectorEnvelope): ConnectorSource | undefined {
+  if (
+    message.connectorId === undefined ||
+    message.sourceEventId === undefined ||
+    message.runtimeId === undefined ||
+    message.runtimeGeneration === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    connectorId: message.connectorId,
+    sourceEventId: message.sourceEventId,
+    runtimeId: message.runtimeId,
+    runtimeGeneration: message.runtimeGeneration,
+  };
+}
+
+function sessionIdOf(event: ServerEnvelope) {
+  if (
+    event.type === "turn.started" ||
+    event.type === "turn.completed" ||
+    event.type === "turn.interrupted" ||
+    event.type === "turn.failed" ||
+    event.type === "turn.outcome_unknown" ||
+    event.type === "assistant.message.completed"
+  ) {
+    return event.payload.sessionId;
+  }
+  return null;
 }

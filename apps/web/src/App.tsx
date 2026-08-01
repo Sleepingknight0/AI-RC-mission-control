@@ -10,6 +10,21 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 
 const SESSION_ID = "session-demo";
 const CORE_URL = import.meta.env.VITE_CORE_WS_URL ?? "ws://127.0.0.1:8787/ws";
+const CURSOR_KEY = `aicl:last-event-seq:${SESSION_ID}`;
+
+function durableSeq(message: ServerEnvelope) {
+  if (
+    message.type === "turn.started" ||
+    message.type === "assistant.message.completed" ||
+    message.type === "turn.completed" ||
+    message.type === "turn.interrupted" ||
+    message.type === "turn.failed" ||
+    message.type === "turn.outcome_unknown"
+  ) {
+    return message.payload.seq;
+  }
+  return null;
+}
 
 function updateSnapshot(
   current: SessionSnapshot | null,
@@ -17,6 +32,8 @@ function updateSnapshot(
 ): SessionSnapshot | null {
   if (message.type === "session.snapshot") return message.payload.snapshot;
   if (current === null) return null;
+  const seq = durableSeq(message);
+  if (seq !== null && seq <= current.lastEventSeq) return current;
 
   switch (message.type) {
     case "turn.started":
@@ -24,7 +41,15 @@ function updateSnapshot(
         ...current,
         activeTurnId: message.payload.turn.turnId,
         lastEventSeq: message.payload.seq,
-        turns: [...current.turns, message.payload.turn],
+        turns: current.turns.some(
+          (turn) => turn.turnId === message.payload.turn.turnId,
+        )
+          ? current.turns.map((turn) =>
+              turn.turnId === message.payload.turn.turnId
+                ? message.payload.turn
+                : turn,
+            )
+          : [...current.turns, message.payload.turn],
       };
     case "assistant.message.delta": {
       const existing = current.messages.find(
@@ -51,15 +76,27 @@ function updateSnapshot(
       return {
         ...current,
         lastEventSeq: message.payload.seq,
-        messages: current.messages.map((candidate) =>
-          candidate.messageId === message.payload.messageId
-            ? {
-                ...candidate,
+        messages: current.messages.some(
+          (candidate) => candidate.messageId === message.payload.messageId,
+        )
+          ? current.messages.map((candidate) =>
+              candidate.messageId === message.payload.messageId
+                ? {
+                    ...candidate,
+                    content: message.payload.content,
+                    completed: true,
+                  }
+                : candidate,
+            )
+          : [
+              ...current.messages,
+              {
+                messageId: message.payload.messageId,
+                turnId: message.payload.turnId,
                 content: message.payload.content,
                 completed: true,
-              }
-            : candidate,
-        ),
+              },
+            ],
       };
     case "turn.completed":
     case "turn.interrupted":
@@ -106,6 +143,9 @@ function updateSnapshot(
 
 export function App() {
   const socketRef = useRef<WebSocket | null>(null);
+  const lastSeenSeqRef = useRef(
+    Number.parseInt(sessionStorage.getItem(CURSOR_KEY) ?? "0", 10) || 0,
+  );
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">(
     "connecting",
   );
@@ -115,50 +155,75 @@ export function App() {
   const [notice, setNotice] = useState("Waiting for Core snapshot…");
 
   useEffect(() => {
-    const socket = new WebSocket(CORE_URL);
-    socketRef.current = socket;
-    socket.addEventListener("open", () => {
-      setConnection("online");
-      socket.send(
-        JSON.stringify(
-          makeEnvelope("client.hello", {
-            clientName: "aicl-web",
-            supportedProtocolVersions: [PROTOCOL_VERSION],
-          }),
-        ),
-      );
-      socket.send(
-        JSON.stringify(
-          makeEnvelope("session.subscribe", {
-            sessionId: SESSION_ID,
-            afterSeq: 0,
-          }),
-        ),
-      );
-    });
-    socket.addEventListener("message", (event) => {
-      if (typeof event.data !== "string") return;
-      const parsed = ServerEnvelopeSchema.safeParse(JSON.parse(event.data));
-      if (!parsed.success) {
-        setNotice("Core sent an invalid normalized envelope.");
-        return;
-      }
-      const message = parsed.data;
-      if (message.type === "runtime.status") setRuntime(message.payload.runtime);
-      if (message.type === "command.accepted") {
-        setNotice(`Accepted ${message.payload.commandId}`);
-      }
-      if (message.type === "command.rejected") {
-        setNotice(`${message.payload.error.code}: ${message.payload.error.message}`);
-      }
-      if (message.type === "replay.boundary" && message.payload.phase === "end") {
-        setNotice(`Snapshot synchronized at seq ${message.payload.upperBoundSeq}`);
-      }
-      setSnapshot((current) => updateSnapshot(current, message));
-    });
-    socket.addEventListener("close", () => setConnection("offline"));
-    socket.addEventListener("error", () => setConnection("offline"));
-    return () => socket.close();
+    let disposed = false;
+    let reconnectTimer: number | undefined;
+    const connect = () => {
+      if (disposed) return;
+      setConnection("connecting");
+      const socket = new WebSocket(CORE_URL);
+      socketRef.current = socket;
+      socket.addEventListener("open", () => {
+        setConnection("online");
+        socket.send(
+          JSON.stringify(
+            makeEnvelope("client.hello", {
+              clientName: "aicl-web",
+              supportedProtocolVersions: [PROTOCOL_VERSION],
+            }),
+          ),
+        );
+        socket.send(
+          JSON.stringify(
+            makeEnvelope("session.subscribe", {
+              sessionId: SESSION_ID,
+              afterSeq: lastSeenSeqRef.current,
+            }),
+          ),
+        );
+      });
+      socket.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") return;
+        const parsed = ServerEnvelopeSchema.safeParse(JSON.parse(event.data));
+        if (!parsed.success) {
+          setNotice("Core sent an invalid normalized envelope.");
+          return;
+        }
+        const message = parsed.data;
+        if (message.type === "runtime.status") setRuntime(message.payload.runtime);
+        if (message.type === "command.accepted") {
+          setNotice(`Accepted ${message.payload.commandId}`);
+        }
+        if (message.type === "command.rejected") {
+          setNotice(`${message.payload.error.code}: ${message.payload.error.message}`);
+        }
+        if (message.type === "replay.boundary" && message.payload.phase === "end") {
+          lastSeenSeqRef.current = Math.max(
+            lastSeenSeqRef.current,
+            message.payload.upperBoundSeq,
+          );
+          sessionStorage.setItem(CURSOR_KEY, String(lastSeenSeqRef.current));
+          setNotice(`Snapshot synchronized at seq ${message.payload.upperBoundSeq}`);
+        }
+        const seq = durableSeq(message);
+        if (seq !== null && seq > lastSeenSeqRef.current) {
+          lastSeenSeqRef.current = seq;
+          sessionStorage.setItem(CURSOR_KEY, String(seq));
+        }
+        setSnapshot((current) => updateSnapshot(current, message));
+      });
+      socket.addEventListener("close", () => {
+        if (disposed) return;
+        setConnection("offline");
+        reconnectTimer = window.setTimeout(connect, 500);
+      });
+      socket.addEventListener("error", () => socket.close());
+    };
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
+      socketRef.current?.close();
+    };
   }, []);
 
   const submit = (event: FormEvent) => {

@@ -21,7 +21,10 @@ afterEach(async () => {
 
 describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
   it("streams, interrupts, classifies death, and resumes without replay", async () => {
-    const core: CoreServerHandle = await startCoreServer({ port: 0 });
+    const core: CoreServerHandle = await startCoreServer({
+      port: 0,
+      dbPath: ":memory:",
+    });
     handles.push(core);
     const provider = new CodexProvider({
       cwd: resolve("../../spikes/fixture-project"),
@@ -30,6 +33,7 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
       coreUrl: core.connectorUrl,
       provider,
       providerName: "codex",
+      journalPath: ":memory:",
     });
     handles.push(connector);
     await connector.ready;

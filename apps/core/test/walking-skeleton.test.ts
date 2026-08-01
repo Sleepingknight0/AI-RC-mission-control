@@ -53,7 +53,10 @@ function send(browser: BrowserHarness, value: unknown) {
 
 describe("mock Connector to Core to browser flow", () => {
   it("streams normalized output, rejects concurrency, and restores a snapshot", async () => {
-    const core: CoreServerHandle = await startCoreServer({ port: 0 });
+    const core: CoreServerHandle = await startCoreServer({
+      port: 0,
+      dbPath: ":memory:",
+    });
     openHandles.push(core);
     const connector = startMockConnector({
       coreUrl: core.connectorUrl,
@@ -157,7 +160,11 @@ describe("mock Connector to Core to browser flow", () => {
   });
 
   it("marks an active Turn outcome_unknown when Connector ownership is lost", async () => {
-    const core = await startCoreServer({ port: 0 });
+    const core = await startCoreServer({
+      port: 0,
+      dbPath: ":memory:",
+      connectorLossGraceMs: 25,
+    });
     openHandles.push(core);
     const connector = new WebSocket(core.connectorUrl);
     await new Promise<void>((resolve, reject) => {
@@ -167,6 +174,8 @@ describe("mock Connector to Core to browser flow", () => {
     connector.send(
       JSON.stringify(
         makeEnvelope("connector.hello", {
+          connectorId: "connector-loss-test",
+          bootId: "boot-loss-test",
           runtime: {
             runtimeId: "runtime-loss-test",
             generation: 7,

@@ -32,6 +32,7 @@
 
 ```powershell
 pnpm install
+pnpm migrate
 pnpm dev
 ```
 
@@ -41,6 +42,20 @@ pnpm dev
 `codex app-server --stdio` และ repository root เป็น project path โดยค่าเริ่มต้น
 หน้าเว็บส่ง prompt ผ่าน normalized WebSocket flow, รองรับ interrupt และปฏิเสธ
 Turn ซ้อนด้วย `TURN_ALREADY_ACTIVE`
+
+Core และ Connector ใช้ SQLite คนละไฟล์ โดยค่าเริ่มต้นอยู่ที่
+`.data/aicl-core.db` และ `.data/aicl-connector.db` ตามลำดับ คำสั่ง
+`pnpm migrate` รัน schema migrations ของทั้งสอง process ซ้ำได้อย่างปลอดภัย
+Core commit durable state/event ก่อน broadcast ส่วน token deltas เป็น ephemeral
+และ browser จะขอ replay จาก durable sequence ล่าสุดเมื่อ reconnect
+
+เปลี่ยนตำแหน่งฐานข้อมูล local ได้ด้วย:
+
+```powershell
+$env:AICL_CORE_DB_PATH = 'C:\path\to\core.db'
+$env:AICL_CONNECTOR_DB_PATH = 'C:\path\to\connector.db'
+pnpm dev
+```
 
 ตรวจ binary/schema compatibility หรือสลับเป็น deterministic mock ได้ด้วย:
 
