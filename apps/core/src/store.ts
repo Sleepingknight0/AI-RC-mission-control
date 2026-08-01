@@ -28,7 +28,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-const CORE_SCHEMA_VERSION = 3;
+const CORE_SCHEMA_VERSION = 4;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -1427,6 +1427,15 @@ export class CoreDatabase {
         now,
       );
       const status = terminalStatus(message.type);
+      events.push(
+        ...this.#settleRunningWork(
+          message.payload.sessionId,
+          message.payload.turnId,
+          status,
+          runtimeFromSource(source),
+          now,
+        ),
+      );
       const failureCode =
         message.type === "connector.turn.failed"
           ? message.payload.failureCode
@@ -2105,6 +2114,20 @@ export class CoreDatabase {
     const now = new Date().toISOString();
     for (const row of rows) {
       events.push(...this.#invalidateApprovalsForTurn(row.turn_id, now));
+      const runtime: Runtime = {
+        runtimeId: row.runtime_id,
+        generation: row.generation,
+        status: "lost",
+      };
+      events.push(
+        ...this.#settleRunningWork(
+          row.session_id,
+          row.turn_id,
+          "outcome_unknown",
+          runtime,
+          now,
+        ),
+      );
       this.#database
         .prepare(
           `UPDATE turns SET state = 'outcome_unknown', revision = revision + 1,
@@ -2129,11 +2152,7 @@ export class CoreDatabase {
         this.#appendVisibleEvent({
           sessionId: row.session_id,
           origin: "core",
-          runtime: {
-            runtimeId: row.runtime_id,
-            generation: row.generation,
-            status: "lost",
-          },
+          runtime,
           turnId: row.turn_id,
           type: "turn.outcome_unknown",
           payload: (identity) => ({
@@ -2141,6 +2160,68 @@ export class CoreDatabase {
             turnId: row.turn_id,
             ...identity,
           }),
+          now,
+        }),
+      );
+    }
+    return events;
+  }
+
+  #settleRunningWork(
+    sessionId: string,
+    turnId: string,
+    status: ToolActivity["status"],
+    runtime: Runtime,
+    now: string,
+  ): ServerEnvelope[] {
+    const events: ServerEnvelope[] = [];
+    const activityIds = this.#database
+      .prepare(
+        "SELECT id FROM tool_activities WHERE session_id = ? AND turn_id = ? AND state = 'running'",
+      )
+      .all(sessionId, turnId) as unknown as Array<{ id: string }>;
+    for (const { id } of activityIds) {
+      this.#database
+        .prepare(
+          `UPDATE tool_activities SET state = ?, revision = revision + 1, updated_at = ?
+            WHERE id = ? AND state = 'running'`,
+        )
+        .run(status, now, id);
+      const activity = this.#activity(id);
+      events.push(
+        this.#appendVisibleEvent({
+          sessionId,
+          origin: "core",
+          runtime,
+          turnId,
+          type: "activity.completed",
+          payload: (identity) => ({ sessionId, activity, ...identity }),
+          now,
+        }),
+      );
+    }
+
+    const fileChangeIds = this.#database
+      .prepare(
+        "SELECT id FROM file_changes WHERE session_id = ? AND turn_id = ? AND state = 'running'",
+      )
+      .all(sessionId, turnId) as unknown as Array<{ id: string }>;
+    for (const { id } of fileChangeIds) {
+      this.#database
+        .prepare(
+          `UPDATE file_changes SET state = ?, revision = revision + 1, updated_at = ?
+            WHERE id = ? AND state = 'running'`,
+        )
+        .run(status, now, id);
+      const fileChange = this.#fileChange(id);
+      events.push(
+        this.#appendVisibleEvent({
+          sessionId,
+          origin: "core",
+          runtime,
+          turnId,
+          type: "file.change.completed",
+          payload: (identity) => ({ sessionId, fileChange, ...identity }),
           now,
         }),
       );

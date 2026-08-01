@@ -51,9 +51,11 @@ Core และ Connector ใช้ SQLite คนละไฟล์ โดยค�
 Core commit durable state/event ก่อน broadcast ส่วน token deltas เป็น ephemeral
 และ browser จะขอ replay จาก durable sequence ล่าสุดเมื่อ reconnect
 
-Core schema version 3 เก็บ activity, file change, approval, artifact metadata
+Core schema version 4 เก็บ activity, file change, approval, artifact metadata
 และลำดับแสดงผลข้ามชนิด event ส่วน Connector schema version 2 ใช้ journal
-sequence แบบ FIFO พร้อม durable command receipts
+sequence แบบ FIFO พร้อม durable command receipts สถานะ terminal จะปิด activity
+และ file change ที่ค้างให้ตรงกับ `completed`, `interrupted`, `failed` หรือ
+`outcome_unknown` เสมอ
 diff ไม่เกิน 512 KiB และ serialized envelope ไม่เกิน 768 KiB จึงส่ง inline;
 ข้อมูลที่เกินเพดานใดเพดานหนึ่งถูกแบ่ง chunk ผ่าน Connector journal แล้วดาวน์โหลด
 จาก `/artifacts/{artifactId}` ด้วย bearer token ชั่วคราว
@@ -95,6 +97,28 @@ Real Codex end-to-end test ถูกปิดใน test suite ปกติเ�
 $env:AICL_REAL_CODEX = '1'
 pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
 ```
+
+## Clean-checkout final gate
+
+ใช้ path แบบเต็มที่ไม่ผ่าน Windows 8.3 alias (เช่น `BLUEWH~1`) เพราะ pnpm
+junctions ที่ติดตั้งผ่าน short-path อาจทำให้ Vite หา `/@vite/client` ไม่พบ:
+
+```powershell
+git clone . C:\Projects\aicl-final-check
+cd C:\Projects\aicl-final-check
+pnpm install --frozen-lockfile
+pnpm --filter @aicl/connector codex:compatibility
+pnpm migrate
+pnpm migrate
+pnpm check
+
+$env:AICL_REAL_CODEX = '1'
+pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
+```
+
+จากนั้นรัน `pnpm dev`, เปิด `http://127.0.0.1:5173/?session=final-demo`
+และตรวจ first token, approve/decline, command output, diff review, refresh/replay
+และ Stop turn ตามหลักฐานใน `reviews/codex/M7.2-FINAL-GATE.md`.
 
 ## ทดสอบ Approval บน Browser/Mobile
 

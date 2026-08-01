@@ -24,7 +24,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M6.1 Codex correctness/recovery self-audit completed
 - [x] M6.2 Codex security/boundary self-audit completed
 - [x] M7.1 Codex resolved accepted self-audit findings with regression tests
-- [ ] M7.2 clean-checkout prototype demo and final gate completed
+- [x] M7.2 clean-checkout prototype demo and final gate completed
 
 ## Optional post-Prototype phases
 
@@ -34,8 +34,8 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-No external AI gate. Next milestone: **M7.2** — Codex runs the clean-checkout
-prototype demo and final real-provider gate.
+**Prototype 0 complete.** No external AI gate remains. P1–P3 are optional
+post-Prototype review/refinement phases and are not required for this baseline.
 
 ## Last verified demo
 
@@ -44,9 +44,9 @@ prototype demo and final real-provider gate.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 3 and Connector schema version 2; `pnpm migrate` is idempotent. Core adds durable display order and database transition guards; Connector adds strict FIFO journal sequence.
-- Repository checks: `pnpm check` — strict typecheck, 65 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
-- Real Codex E2E: opt-in test passed in 73.64 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, new-process resume, no command replay, and deterministic provider teardown.
+- Database schema: Core schema version 4 and Connector schema version 2; `pnpm migrate` is idempotent. Core adds durable display order, database transition guards, and terminal activity/file-change reconciliation; Connector adds strict FIFO journal sequence.
+- Repository checks: `pnpm check` — strict typecheck, 66 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
+- Real Codex E2E: opt-in test passed in 66.70 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, new-process resume, no command replay, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
 - M4 race/fault tests: exactly one of two tabs wins approval CAS; duplicate command IDs replay; expiry/provider loss/runtime restart reject stale decisions; interrupt, UTF-8 batching, inline/large diff thresholds, artifact integrity/auth/range/traversal all pass.
 - Mobile approval demo: Playwright at 390×844 used real Codex command approvals. Approve-once created only `output/playwright/provider-approval-proof.txt`; decline produced activity state `declined` and did not create its target file.
@@ -55,3 +55,4 @@ prototype demo and final real-provider gate.
 - M6.1 audit: `reviews/codex/M6.1-CORRECTNESS-RECOVERY-AUDIT.md` records 12 evidence-backed findings (6 High, 5 Medium, 1 Low), three read-only fault probes, verified controls, and one falsified race hypothesis. No remediation was mixed into the review milestone.
 - M6.2 audit: `reviews/codex/M6.2-SECURITY-BOUNDARY-AUDIT.md` preserves 6 Standards and 6 Spec findings (8 distinct remediation themes). In-memory probes reproduced hostile-Origin browser control, Connector impersonation with prompt interception, artifact allocation gaps, missing rate throttling, and raw secret leakage. No remediation was mixed into the review milestone.
 - M7.1 remediation: `reviews/codex/M7.1-REMEDIATION-REGISTER.md` maps all 17 accepted security/recovery themes to implemented controls and regression evidence. Per-launch WebSocket capabilities, canonical project roots, payload/allocation/rate limits, redaction, FIFO receipts, startup ownership expiry, passive approval expiry, durable command outcomes, timeline sequencing, and SQLite transition guards are verified.
+- M7.2 final gate: `reviews/codex/M7.2-FINAL-GATE.md` records the canonical-path clean checkout, frozen install, compatibility/migration/full-check gates, opt-in real-provider lifecycle, and Playwright browser acceptance. Codex 0.146 terminal items are reconciled when a dedicated completion notification is absent; plain add/delete file bodies are normalized into reviewable unified diffs.

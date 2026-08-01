@@ -5,9 +5,9 @@
 M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
 M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
 (functional, responsive, accessible mission-control frontend), and both M6
-self-audits and M7.1 accepted-finding remediation are complete on the target
-Windows host. Codex owns the remaining Prototype 0 phase. The next observable
-outcome is M7.2 clean-checkout validation with the real provider.
+self-audits, M7.1 accepted-finding remediation, and the M7.2 final gate are
+complete on the target Windows host. Prototype 0 is complete; P1–P3 are
+optional operator-selected follow-up phases.
 
 ## Scope
 
@@ -23,7 +23,8 @@ outcome is M7.2 clean-checkout validation with the real provider.
 - M6.1 correctness/recovery self-audit — **done**
 - M6.2 security/boundary self-audit — **done**
 - M7.1 accepted-finding remediation — **done**
-- Current: M7.2 clean-checkout final gate (Codex-owned)
+- M7.2 clean-checkout final gate — **done**
+- Current: Prototype 0 complete; no blocking milestone
 
 ## Non-goals
 
@@ -47,8 +48,8 @@ outcome is M7.2 clean-checkout validation with the real provider.
 - Core owns authoritative SQLite projections and events under `.data/aicl-core.db`
 - Connector owns a separate inbox/outbox journal under `.data/aicl-connector.db`
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
-- Core schema v3 projects tool activities, file changes, approvals, artifacts,
-  cross-type display sequence, and guarded command transitions
+- Core schema v4 projects tool activities, file changes, approvals, artifacts,
+  cross-type display sequence, guarded transitions, and terminal work settlement
 - Connector schema v2 batches ephemeral UTF-8 command output, journals
   large-diff chunks in FIFO order, and reports durable command receipts
 - Browser and Connector endpoints require separate per-launch capabilities;
@@ -101,6 +102,9 @@ outcome is M7.2 clean-checkout validation with the real provider.
 - [x] Repair trust, containment, resource, environment, and redaction boundaries (M7.1)
 - [x] Repair FIFO, receipt/lease, timeout, approval, command, timeline, and DB invariants (M7.1)
 - [x] Add regression coverage and pass the complete repository gate (M7.1)
+- [x] Run frozen clean-checkout install, migrations, and complete checks (M7.2)
+- [x] Run the opt-in real provider lifecycle and Playwright browser gate (M7.2)
+- [x] Repair final-gate terminal activity and diff normalization gaps (M7.2)
 
 ## M7.1 completed verification
 
@@ -120,7 +124,7 @@ durable display sequence, safe artifact media types, decoded semantic limits,
 and role-specific WebSocket capability helpers. Durable event envelopes carry
 Session-local sequence; assistant/command deltas remain ephemeral. Generated
 Codex types, raw events, and raw provider request IDs stay under the adapter
-boundary. Core SQLite schema is v3 and Connector schema is v2; both migrations
+boundary. Core SQLite schema is v4 and Connector schema is v2; both migrations
 remain idempotent.
 
 ## Tests and fault scenarios
@@ -129,11 +133,11 @@ remain idempotent.
 - Mock spike passed after harness fix.
 - Three real spikes: first-delta 4.5–6.3 s; ~55 deltas/s avg; peak 1 s up to 154;
   mid-turn kill reconstructed as `interrupted` via `thread/read` + `thread/resume`.
-- `pnpm check`: strict typecheck, 65 unit/integration tests, ESLint, a real
+- `pnpm check`: strict typecheck, 66 unit/integration tests, ESLint, a real
   Windows child-tree termination test, and Vite production build passed.
 - Live compatibility probe: Codex 0.146.0, 275 schema files, canonical SHA-256
   `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`.
-- Opt-in real Codex E2E passed in 73.64 s: first delta/final, active rejection,
+- Opt-in real Codex E2E passed in 66.70 s: first delta/final, active rejection,
   interrupt, provider death, `outcome_unknown`, new-process resume, no replay.
 - Database tests cover schema v1 migration/idempotence, WAL/foreign keys/busy
   timeout, active-Turn and Connector-source partial uniqueness, and revisions
@@ -278,7 +282,7 @@ remain idempotent.
 
 ## Final outcome
 
-M0 through M7.1 complete. Reproduce the normal and M7.2 opt-in gates with:
+M0 through M7.2 complete. Reproduce the final gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
@@ -296,6 +300,8 @@ M6.2 evidence is recorded in
 `reviews/codex/M6.2-SECURITY-BOUNDARY-AUDIT.md`.
 M7.1 decisions and evidence are recorded in
 `reviews/codex/M7.1-REMEDIATION-REGISTER.md`.
+M7.2 clean-checkout and browser evidence is recorded in
+`reviews/codex/M7.2-FINAL-GATE.md`.
 
-Next: Codex performs M7.2 from a clean checkout, runs the opt-in real-provider
-demo/fault gate, records final evidence, and completes Prototype 0.
+Prototype 0 is complete. Grok visual refinement, Claude independent audit, and
+Codex integration of reproducible feedback remain optional P1–P3 work.

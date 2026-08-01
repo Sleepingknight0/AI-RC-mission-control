@@ -1,4 +1,6 @@
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { startConnector, type ConnectorHandle } from "@aicl/connector";
 import { CodexProvider } from "@aicl/connector/codex";
@@ -15,9 +17,13 @@ import { startCoreServer, type CoreServerHandle } from "../src/server.js";
 
 const enabled = process.env.AICL_REAL_CODEX === "1";
 const handles: Array<{ close(): Promise<void> }> = [];
+const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
   await Promise.allSettled(handles.splice(0).reverse().map((handle) => handle.close()));
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
@@ -27,15 +33,17 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
       dbPath: ":memory:",
     });
     handles.push(core);
+    const directory = temporaryDirectory();
+    const journalPath = join(directory, "connector.db");
     const provider = new CodexProvider({
       cwd: resolve("../../spikes/fixture-project"),
     });
-    const connector: ConnectorHandle = startConnector({
+    let connector: ConnectorHandle = startConnector({
       coreUrl: core.connectorUrl,
       connectorToken: core.connectorToken,
       provider,
       providerName: "codex",
-      journalPath: ":memory:",
+      journalPath,
     });
     handles.push(connector);
     await connector.ready;
@@ -140,6 +148,40 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     send(
       browser,
       makeEnvelope("turn.submit", {
+        commandId: "real-lost-runtime-rejection",
+        sessionId: "real-codex-session",
+        prompt: "This prompt must not be accepted by the lost Runtime.",
+      }),
+    );
+    await waitFor(browser, "command.rejected", (message) =>
+      message.payload.commandId === "real-lost-runtime-rejection" &&
+      message.payload.error.code === "RUNTIME_NOT_READY",
+    );
+
+    const firstGeneration = connector.identity.generation;
+    await connector.close();
+    handles.splice(handles.indexOf(connector), 1);
+    const resumedProvider = new CodexProvider({
+      cwd: resolve("../../spikes/fixture-project"),
+    });
+    connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider: resumedProvider,
+      providerName: "codex",
+      journalPath,
+    });
+    handles.push(connector);
+    await connector.ready;
+    expect(connector.identity.generation).toBe(firstGeneration + 1);
+    await waitFor(browser, "runtime.status", (message) =>
+      message.payload.runtime.generation === connector.identity.generation &&
+      message.payload.runtime.status === "ready",
+    );
+
+    send(
+      browser,
+      makeEnvelope("turn.submit", {
         commandId: "real-resume-turn",
         sessionId: "real-codex-session",
         prompt: "Do not use tools. Reply with exactly: AICL_RESUMED",
@@ -211,4 +253,10 @@ async function waitFor<T extends ServerEnvelope["type"]>(
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("Timed out waiting for real Codex event");
+}
+
+function temporaryDirectory() {
+  const directory = mkdtempSync(join(tmpdir(), "aicl-real-e2e-"));
+  temporaryDirectories.push(directory);
+  return directory;
 }

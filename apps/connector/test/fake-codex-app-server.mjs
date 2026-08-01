@@ -162,6 +162,68 @@ lines.on("line", (line) => {
           });
           finishTurn("Activity complete");
         }, 15);
+      } else if (text === "terminal-item-reconciliation") {
+        setTimeout(() => {
+          const command = {
+            type: "commandExecution",
+            id: "provider-terminal-command-item",
+            command: "pnpm test",
+            commandActions: [],
+            cwd: process.cwd(),
+            status: "completed",
+            aggregatedOutput: "terminal output",
+            exitCode: 0,
+            durationMs: 14,
+          };
+          const fileChange = {
+            type: "fileChange",
+            id: "provider-terminal-file-item",
+            status: "completed",
+            changes: [
+              {
+                path: "proof.txt",
+                kind: { type: "add" },
+                diff: "AICL_DIFF_OK\n",
+              },
+            ],
+          };
+          send({
+            method: "item/started",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              startedAtMs: Date.now(),
+              item: {
+                ...command,
+                status: "inProgress",
+                aggregatedOutput: null,
+                exitCode: null,
+                durationMs: null,
+              },
+            },
+          });
+          send({
+            method: "item/started",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              startedAtMs: Date.now(),
+              item: { ...fileChange, status: "inProgress" },
+            },
+          });
+          send({
+            method: "turn/completed",
+            params: {
+              threadId: active.threadId,
+              turn: {
+                id: turnId,
+                status: "completed",
+                items: [command, fileChange],
+              },
+            },
+          });
+          active = undefined;
+        }, 15);
       } else if (text === "approval") {
         setTimeout(() => {
           send({

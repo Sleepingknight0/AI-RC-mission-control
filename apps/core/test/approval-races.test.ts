@@ -105,6 +105,8 @@ describe("approval compare-and-set", () => {
     const approval = await requestApproval(setup.firstTab, "lost-turn");
     setup.provider.lose();
     await waitFor(setup.firstTab, "approval.invalidated");
+    const activity = await waitFor(setup.firstTab, "activity.completed");
+    expect(activity.payload.activity.status).toBe("outcome_unknown");
     await waitFor(setup.firstTab, "turn.outcome_unknown");
 
     send(setup.firstTab, approvalCommand(approval, "late-after-loss"));

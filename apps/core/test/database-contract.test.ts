@@ -27,10 +27,10 @@ afterEach(async () => {
 });
 
 describe("Core SQLite contract", () => {
-  it("applies schema v3 idempotently with required pragmas and indexes", async () => {
+  it("applies schema v4 idempotently with required pragmas and indexes", async () => {
     const path = databasePath();
     const first = open(path);
-    expect(first.schemaVersion).toBe(3);
+    expect(first.schemaVersion).toBe(4);
     expect(Object.values(first.pragma("journal_mode"))).toContain("wal");
     expect(Object.values(first.pragma("foreign_keys"))).toContain(1);
     expect(Object.values(first.pragma("busy_timeout"))).toContain(5000);
@@ -38,7 +38,7 @@ describe("Core SQLite contract", () => {
     openDatabases.splice(openDatabases.indexOf(first), 1);
 
     const second = open(path);
-    expect(second.schemaVersion).toBe(3);
+    expect(second.schemaVersion).toBe(4);
     await second.close();
     openDatabases.splice(openDatabases.indexOf(second), 1);
 

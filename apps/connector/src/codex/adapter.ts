@@ -158,7 +158,9 @@ interface ActiveTurn {
   contentByMessage: Map<string, string>;
   completedMessages: Set<string>;
   activityIds: Map<string, string>;
+  completedActivityItems: Set<string>;
   fileChangeIds: Map<string, string>;
+  completedFileChangeItems: Set<string>;
   turnDiff: string;
   outputBatcher: OutputBatcher;
   lost: boolean;
@@ -265,7 +267,9 @@ export class CodexProvider implements ConnectorProvider {
       contentByMessage: new Map(),
       completedMessages: new Set(),
       activityIds: new Map(),
+      completedActivityItems: new Set(),
       fileChangeIds: new Map(),
+      completedFileChangeItems: new Set(),
       turnDiff: "",
       outputBatcher,
       lost: false,
@@ -473,6 +477,28 @@ export class CodexProvider implements ConnectorProvider {
     turn: z.infer<typeof TurnCompletedSchema>["params"]["turn"],
   ) {
     active.outputBatcher.flushAll();
+    const terminalItemStatus = activityTerminalStatus(turn.status);
+    for (const item of turn.items ?? []) {
+      const activity = ActivityItemSchema.safeParse(item);
+      if (activity.success) {
+        this.#emitActivity(
+          active,
+          "item/completed",
+          activity.data,
+          activity.data.status === "inProgress" ? terminalItemStatus : undefined,
+        );
+        continue;
+      }
+      const fileChange = FileChangeItemSchema.safeParse(item);
+      if (fileChange.success) {
+        this.#emitFileChange(
+          active,
+          "item/completed",
+          fileChange.data,
+          fileChange.data.status === "inProgress" ? terminalItemStatus : undefined,
+        );
+      }
+    }
     const finalItem = turn.items
       ?.map((item) =>
         z
@@ -515,11 +541,21 @@ export class CodexProvider implements ConnectorProvider {
     active: ActiveTurn,
     method: "item/started" | "item/completed",
     item: z.infer<typeof ActivityItemSchema>,
+    statusOverride?: ToolActivity["status"],
   ) {
+    if (
+      method === "item/completed" &&
+      active.completedActivityItems.has(item.id)
+    ) {
+      return;
+    }
+    if (method === "item/completed") active.completedActivityItems.add(item.id);
     const activityId = this.#activityId(active, item.id);
     if (method === "item/completed") active.outputBatcher.flush(activityId);
     const isCommand = item.type === "commandExecution";
-    const status = method === "item/started" ? "running" : activityStatus(item.status);
+    const status =
+      statusOverride ??
+      (method === "item/started" ? "running" : activityStatus(item.status));
     const activity: ToolActivity = {
       activityId,
       turnId: active.command.payload.turnId,
@@ -553,15 +589,24 @@ export class CodexProvider implements ConnectorProvider {
     active: ActiveTurn,
     method: "item/started" | "item/completed",
     item: z.infer<typeof FileChangeItemSchema>,
+    statusOverride?: ToolActivity["status"],
   ) {
+    if (
+      method === "item/completed" &&
+      active.completedFileChangeItems.has(item.id)
+    ) {
+      return;
+    }
+    if (method === "item/completed") active.completedFileChangeItems.add(item.id);
     const fileChangeId = this.#fileChangeId(active, item.id);
-    const diff = item.changes.map((change) => change.diff).join("\n") || active.turnDiff;
+    const diff = normalizeFileChangeDiff(item.changes, active.turnDiff);
     const counts = countDiffLines(diff);
     const common = {
       fileChangeId,
       turnId: active.command.payload.turnId,
       status:
-        method === "item/started" ? ("running" as const) : activityStatus(item.status),
+        statusOverride ??
+        (method === "item/started" ? ("running" as const) : activityStatus(item.status)),
       revision: method === "item/started" ? 0 : 1,
       files: item.changes.map((change) => ({
         path: change.path,
@@ -784,6 +829,15 @@ function activityStatus(
   return status;
 }
 
+function activityTerminalStatus(status: string): ToolActivity["status"] {
+  if (status === "completed") return "completed";
+  if (["interrupted", "cancelled", "canceled"].includes(status)) {
+    return "interrupted";
+  }
+  if (status === "failed") return "failed";
+  return "outcome_unknown";
+}
+
 function countDiffLines(diff: string) {
   let additions = 0;
   let deletions = 0;
@@ -792,4 +846,38 @@ function countDiffLines(diff: string) {
     if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
   }
   return { additions, deletions };
+}
+
+function normalizeFileChangeDiff(
+  changes: Array<z.infer<typeof FileUpdateChangeSchema>>,
+  turnDiff: string,
+) {
+  if (looksLikeUnifiedDiff(turnDiff)) return turnDiff;
+  return changes
+    .map((change) => {
+      if (looksLikeUnifiedDiff(change.diff)) return change.diff;
+      if (change.kind.type === "update") return change.diff;
+      const lines = change.diff.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");
+      const count = Math.max(lines.length, 1);
+      const path = change.path.replace(/\\/g, "/");
+      if (change.kind.type === "add") {
+        return [
+          "--- /dev/null",
+          `+++ b/${path}`,
+          `@@ -0,0 +1,${count} @@`,
+          ...lines.map((line) => `+${line}`),
+        ].join("\n");
+      }
+      return [
+        `--- a/${path}`,
+        "+++ /dev/null",
+        `@@ -1,${count} +0,0 @@`,
+        ...lines.map((line) => `-${line}`),
+      ].join("\n");
+    })
+    .join("\n");
+}
+
+function looksLikeUnifiedDiff(value: string) {
+  return /(^|\n)(--- |\+\+\+ |@@ )/.test(value);
 }

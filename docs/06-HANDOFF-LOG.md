@@ -774,3 +774,67 @@ lease without automatic prompt replay.
 Codex performs **M7.2** from a clean checkout: migrate, run normal and opt-in
 real-provider gates, execute the documented browser demo/fault paths, record
 final evidence, and complete Prototype 0.
+
+---
+
+### 2026-08-02 05:50 — Codex — M7.2
+
+**Scope**
+
+Run the final clean-checkout, real-provider, browser, durability, recovery, and
+security gates; repair only failures exposed by that evidence; complete
+Prototype 0.
+
+**Files changed or reviewed**
+
+- `apps/connector/src/codex/adapter.ts` and adapter fixtures/tests — reconcile
+  terminal Turn items and normalize plain add/delete content to unified diff
+- `packages/protocol`, Core schema v4, and Core recovery tests — represent and
+  persist `outcome_unknown`; terminalize dangling activity/file-change records
+- `apps/core/test/real-codex.e2e.test.ts` — prove lost Runtime rejection and
+  resume from a new Connector process without prompt replay
+- README, status, execution plan, this handoff, and the M7.2 evidence report
+
+**Commands and tests**
+
+```text
+compatibility → Codex 0.146.0 accepted; canonical schema SHA-256
+b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03
+
+pnpm migrate (twice) → Core v4 / Connector v2, idempotent
+pnpm check → 66 passed; opt-in real E2E skipped; typecheck/lint/build passed
+opt-in real Codex E2E → 1 passed in 66.70 s
+git diff --check → exit 0
+```
+
+**Observable result**
+
+Playwright drove the real React/Core/Connector/Codex path. It observed the exact
+first response, refresh/replay, decline with no side effect, approve-once with
+exit code/output, approved file diff with `+1/−0` in unified and split views,
+Connector generation recovery, and an interrupted long command. Browser console
+reported zero errors and zero warnings.
+
+**Repairs discovered by the final gate**
+
+- The real E2E expected a lost Connector generation to restart its provider;
+  it now starts a new Connector on the durable journal and proves the old
+  generation rejects commands.
+- Codex 0.146 may include a terminal command/file item only in `turn/completed`;
+  the adapter now reconciles it once instead of leaving the UI at `RUNNING`.
+- Added/deleted file content may arrive without unified headers; normalization
+  now produces correct counts and before/after review.
+- Core now closes any remaining work projection at every terminal boundary,
+  including the explicit `outcome_unknown` state.
+
+**Known limitations or uncertain outcomes**
+
+- Prototype authentication remains a local per-launch capability, not the
+  long-term device/passkey design.
+- On Windows, install/run from a canonical long path. An 8.3 path alias caused
+  Vite `/@vite/client` resolution to fail despite an unchanged checkout.
+
+**Requested next action**
+
+Prototype 0 is complete. Stop here. P1 Grok refinement, P2 Claude independent
+audit, and P3 Codex feedback integration are optional operator-selected phases.

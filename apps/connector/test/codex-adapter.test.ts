@@ -181,6 +181,46 @@ describe("Codex adapter normalization", () => {
     expect(serialized).not.toMatch(/item\/commandExecution|item\/fileChange/);
   });
 
+  it("reconciles a terminal command item when item/completed is omitted", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+
+    await adapter.startTurn(
+      startCommand("terminal-item-reconciliation"),
+      (event) => events.push(event),
+    );
+
+    const completed = events.filter(
+      (event) => event.type === "connector.activity.completed",
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.type).toBe("connector.activity.completed");
+    if (completed[0]?.type === "connector.activity.completed") {
+      expect(completed[0].payload.activity).toMatchObject({
+        status: "completed",
+        exitCode: 0,
+        durationMs: 14,
+        outputPreview: "terminal output",
+      });
+    }
+    const fileChanges = events.filter(
+      (event) => event.type === "connector.file.change.completed",
+    );
+    expect(fileChanges).toHaveLength(1);
+    expect(fileChanges[0]?.type).toBe("connector.file.change.completed");
+    if (fileChanges[0]?.type === "connector.file.change.completed") {
+      expect(fileChanges[0].payload.fileChange).toMatchObject({
+        status: "completed",
+        additions: 1,
+        deletions: 0,
+      });
+      expect(fileChanges[0].payload.fileChange.inlineDiff).toContain(
+        "+AICL_DIFF_OK",
+      );
+    }
+    expect(events.at(-1)?.type).toBe("connector.turn.completed");
+  });
+
   it("keeps provider request IDs internal and resolves an opaque approval once", async () => {
     const adapter = provider();
     const events: ConnectorEnvelope[] = [];

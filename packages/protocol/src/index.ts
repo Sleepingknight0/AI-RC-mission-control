@@ -120,6 +120,7 @@ export const ActivityStatusSchema = z.enum([
   "failed",
   "declined",
   "interrupted",
+  "outcome_unknown",
 ]);
 
 export const ToolActivitySchema = z.object({
