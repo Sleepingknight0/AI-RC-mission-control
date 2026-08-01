@@ -21,7 +21,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M4.3 artifact-backed large diff flow implemented
 - [x] M5.1 Codex mission-control frontend implemented
 - [x] M5.2 Codex responsive, accessibility, and UX pass completed
-- [ ] M6.1 Codex correctness/recovery self-audit completed
+- [x] M6.1 Codex correctness/recovery self-audit completed
 - [ ] M6.2 Codex security/boundary self-audit completed
 - [ ] M7.1 Codex resolved accepted self-audit findings with regression tests
 - [ ] M7.2 clean-checkout prototype demo and final gate completed
@@ -34,8 +34,8 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-No external AI gate. Next milestone: **M6.1** — Codex performs an
-independent-style correctness and recovery self-audit.
+No external AI gate. Next milestone: **M6.2** — Codex performs an
+independent-style security and boundary self-audit.
 
 ## Last verified demo
 
@@ -52,3 +52,4 @@ independent-style correctness and recovery self-audit.
 - Mobile approval demo: Playwright at 390×844 used real Codex command approvals. Approve-once created only `output/playwright/provider-approval-proof.txt`; decline produced activity state `declined` and did not create its target file.
 - M5.1 browser demo: real Session catalog, selectable desktop/mobile sessions, normalized timeline, activity and diff review, recovery truth, keyboard submission, local draft recovery, and approval actions all rendered from protocol state. Mock desktop/mobile and real Codex approve/decline paths completed with zero console warnings or errors.
 - M5.2 UX gate: Playwright verified 375/768/1024/1440 layouts with zero page overflow or sub-44px enabled controls, keyboard skip/focus order, mobile drawer Escape/focus restoration, WCAG-AA token contrast, reduced motion, and 200% text. A real Codex approval remained operable at 200% text; decline created no target file. Timeline construction/windowing tests cover 100,000 items.
+- M6.1 audit: `reviews/codex/M6.1-CORRECTNESS-RECOVERY-AUDIT.md` records 12 evidence-backed findings (6 High, 5 Medium, 1 Low), three read-only fault probes, verified controls, and one falsified race hypothesis. No remediation was mixed into the review milestone.

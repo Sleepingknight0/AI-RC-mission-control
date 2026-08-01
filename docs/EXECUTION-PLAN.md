@@ -3,10 +3,11 @@
 ## Purpose and observable outcome
 
 M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
-M3 (durability/reconnect), M4 (approval/activity/diff safety), and M5
-(functional, responsive, accessible mission-control frontend) are complete on
-the target Windows host. Codex owns every remaining Prototype 0 phase. The next
-observable outcome is an independent-style M6.1 correctness/recovery self-audit.
+M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
+(functional, responsive, accessible mission-control frontend), and the M6.1
+correctness/recovery self-audit are complete on the target Windows host. Codex
+owns every remaining Prototype 0 phase. The next observable outcome is an
+independent-style M6.2 security/boundary self-audit.
 
 ## Scope
 
@@ -19,8 +20,9 @@ observable outcome is an independent-style M6.1 correctness/recovery self-audit.
 - M4.1–M4.3 normalized activity, approval CAS, interrupt, and artifacts — **done**
 - M5.1 functional mission-control frontend — **done**
 - M5.2 responsive, accessibility, and UX polish — **done**
-- Current: M6.1 correctness/recovery self-audit (Codex-owned)
-- Next after this run: M6.2 security/boundary self-audit
+- M6.1 correctness/recovery self-audit — **done**
+- Current: M6.2 security/boundary self-audit (Codex-owned)
+- Next after this run: M7.1 accepted-finding remediation
 
 ## Non-goals
 
@@ -82,14 +84,18 @@ observable outcome is an independent-style M6.1 correctness/recovery self-audit.
 - [x] Add keyboard focus, live-status, reduced-motion, forced-color, and 200% text behavior (M5.2)
 - [x] Add linear 100,000-item projection and bounded timeline windowing (M5.2)
 - [x] Re-run real Codex mobile approval UX with a declined side effect (M5.2)
+- [x] Trace state, ordering, idempotency, restart, fencing, approval, and artifact invariants (M6.1)
+- [x] Run targeted recovery suites and read-only journal/channel/crash-window probes (M6.1)
+- [x] Record 12 evidence-backed findings without remediation (M6.1)
 
-## M6.1 verification and rollback
+## M6.2 verification and rollback
 
-- Switch explicitly into reviewer mode and trace state, SQLite, command,
-  sequence, runtime-generation, approval, restart, and provider-loss invariants.
+- Switch explicitly into reviewer mode and trace schema validation, WebSocket and
+  HTTP trust boundaries, artifact authorization, payload limits, process-spawn
+  quoting, path containment, secret/error leakage, and approval replay.
 - Every finding must include severity, file/symbol, reproduction, evidence,
   violated invariant, remediation, and a regression-test proposal.
-- Do not implement accepted findings during M6.1; record them for M7.1 so the
+- Do not implement accepted findings during M6.2; record them for M7.1 so the
   audit remains distinct from remediation.
 - If a claimed defect cannot be reproduced, record the attempted falsification
   rather than changing working code speculatively.
@@ -102,7 +108,8 @@ latest Turn/runtime status, pending approvals, cwd, activity time, Turn count,
 and durable cursor from Core projections. Durable event envelopes carry
 Session-local sequence; assistant/command deltas remain ephemeral. Generated
 Codex types, raw events, and raw provider request IDs stay under the adapter
-boundary. M5.2 added no protocol or SQLite schema changes.
+boundary. M6.1 added no protocol, source, or SQLite schema changes; it recorded
+remediation candidates for M7.1 only.
 
 ## Tests and fault scenarios
 
@@ -149,6 +156,15 @@ boundary. M5.2 added no protocol or SQLite schema changes.
   the virtual window renders at most 18 rows for an 844 px viewport.
 - Process cleanup verified no listeners on 5173/8787/8788 and no project Codex
   process remained.
+- M6.1 targeted Core suites passed: durability/reconnect, approval races, and
+  database contract (3 files, 11 tests). Targeted Connector suites passed:
+  journal, Codex adapter, and output batching (3 files, 12 tests).
+- A same-millisecond Connector journal probe reproduced non-FIFO replay; 49 of
+  100 message-completed/Turn-completed pairs reversed causal order.
+- A same-process Connector channel outage beyond the grace period reproduced an
+  incorrect `turn.outcome_unknown` despite unchanged boot and Runtime identity.
+- A Core crash-window model reproduced a committed running Turn with no dispatch
+  receipt and no reconciliation event after reopen.
 
 ## Surprises and measurements
 
@@ -161,6 +177,10 @@ boundary. M5.2 added no protocol or SQLite schema changes.
   strand Connector shutdown; close now rejects the active waiter before RPC stop.
 - A 375 px layout that passed at default text size overflowed by 27 px at 200%;
   the header status strip and timeline metadata now wrap instead of being clipped.
+- Millisecond timestamps plus random UUID tie-breaking do not preserve Connector
+  outbox insertion order under burst writes.
+- The current loss timer cannot distinguish transport loss from Connector process
+  death, and Core startup does not rebuild an ownership deadline for active Turns.
 
 ## Decision log
 
@@ -204,10 +224,12 @@ boundary. M5.2 added no protocol or SQLite schema changes.
 - Use a linear grouped timeline projection and fixed 184 px virtual rows after
   200 records. Individual large rows remain internally scrollable, bounding DOM
   size while preserving their full normalized content.
+- Keep M6.1 review evidence separate from repair work. The 12 findings are queued
+  for triage/remediation in M7.1 after the independent M6.2 boundary audit.
 
 ## Final outcome
 
-M0 through M5.2 complete. Reproduce the normal and opt-in gates with:
+M0 through M6.1 complete. Reproduce the normal and opt-in gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
@@ -219,4 +241,7 @@ $env:AICL_REAL_CODEX = '1'
 pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
 ```
 
-Next: Codex performs M6.1 and stops before the M6.2 security/boundary self-audit.
+M6.1 evidence is recorded in
+`reviews/codex/M6.1-CORRECTNESS-RECOVERY-AUDIT.md`.
+
+Next: Codex performs M6.2 and stops before M7.1 remediation.

@@ -544,3 +544,75 @@ timeline, composer, and approval controls fit without horizontal page overflow.
 
 Codex performs **M6.1** as an independent-style correctness/recovery self-audit,
 records evidence-backed findings, and stops before M6.2 or remediation.
+
+---
+
+### 2026-08-02 03:09 — Codex — M6.1
+
+**Scope**
+
+Perform an independent-style correctness and recovery self-audit across Core,
+Connector, Web reconstruction, SQLite constraints, command idempotency, event
+ordering, approvals, artifacts, Runtime fencing, restart, and provider loss.
+No finding remediation was included in this milestone.
+
+**Files changed or reviewed**
+
+- `reviews/codex/M6.1-CORRECTNESS-RECOVERY-AUDIT.md` — 12 findings with
+  severity, affected symbols, reproduction, evidence, invariant, remediation,
+  and regression-test proposal
+- `apps/core/src/server.ts`, `apps/core/src/store.ts`, Core migrations/tests
+- Connector journal, client, Codex adapter/RPC process, migrations/tests
+- Web protocol reducer, timeline construction, and approval command state
+- implementation status, execution plan, review index, and this handoff
+
+**Commands and tests**
+
+```text
+Core targeted suites
+→ durability/reconnect, approval races, database contract: 3 files / 11 passed
+
+Connector targeted suites
+→ journal, Codex adapter, output batching: 3 files / 12 passed
+
+pnpm check
+→ exit 0; 47 tests passed; one opt-in real-provider E2E skipped; strict
+  typecheck, ESLint, Windows process-tree test, and Web build passed
+
+Read-only Connector journal probe
+→ first mismatch at event 0; 49/100 causal pairs replayed terminal-first
+
+Read-only same-process reconnect probe
+→ same boot/Runtime identity still produced turn.outcome_unknown
+
+Read-only accept/dispatch crash-window probe
+→ running Turn remained active with no reconciliation event after reopen
+```
+
+**Observable result**
+
+Open `reviews/codex/M6.1-CORRECTNESS-RECOVERY-AUDIT.md`. The audit records six
+High, five Medium, and one Low finding. Highest-risk items are non-FIFO Connector
+replay, the Core accept-to-dispatch crash window, ambiguous RPC timeout handling,
+and incorrect Runtime/process ownership recovery.
+
+**Verified controls and falsification**
+
+- Command deduplication/conflict handling, serialized Core writes,
+  commit-before-broadcast, approval CAS, ordered artifact integrity checks,
+  provider-exit invalidation, no automatic prompt replay, and Windows process
+  teardown remain verified.
+- A suspected snapshot-to-live subscription gap was falsified because the final
+  subscription/replay block has no asynchronous yield.
+
+**Known limitations or uncertain outcomes**
+
+- Findings are deliberately not fixed in M6.1. M7.1 owns accepted remediation
+  and regression tests after both self-audit lenses are complete.
+- Security exploitability and boundary-hardening conclusions are outside this
+  milestone and must be established independently in M6.2.
+
+**Requested next action**
+
+Codex performs **M6.2** as a security/boundary self-audit, records independently
+reproducible findings, and stops before M7.1 remediation.
