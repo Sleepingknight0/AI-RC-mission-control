@@ -400,3 +400,76 @@ file. Repeat with a different filename and choose **Decline**; the activity beco
 External AI gate reached: stop the Codex loop and run
 `.\scripts\Invoke-GrokFrontend.ps1` for M5.1. After Grok writes its handoff, run
 the Codex integration prompt; do not start Claude M6 before M5.2 passes.
+
+---
+
+### 2026-08-02 02:08 — Codex — Codex-only migration and M5.1
+
+**Scope**
+
+Remove Grok/Claude as blocking Prototype 0 gates, retain them as optional
+post-prototype tools, and implement one milestone group: the functional M5.1
+mission-control frontend backed exclusively by normalized Core state.
+
+**Files changed or reviewed**
+
+- `prompts/codex/08-CODEX-ONLY-PROTOTYPE-LOOP.md` — reusable loop prompt,
+  verified SHA-256 `5ae38d97522bdf4930a2fd43694c3d50883ad6bb767a5420572bd514a07b5ddf`
+- `AGENTS.md`, scope/workflow/status/execution docs, scripts and VS Code tasks —
+  Codex owns M4–M7; external launchers are optional P1/P2 tools
+- `packages/protocol/src/index.ts`, `apps/core/src/store.ts`,
+  `apps/core/src/server.ts` — normalized Session catalog request/snapshot
+- `apps/web/src/App.tsx`, `apps/web/src/state.ts`, `apps/web/src/styles.css` —
+  Mission Overview, Session rail/selector, normalized timeline, recovery,
+  activity/diff review, Approval Dock, composer, and responsive layout
+- Protocol, Core, and Web tests plus typed mission-control fixtures
+
+**Commands and tests**
+
+```text
+pnpm --filter @aicl/web check
+→ 3 tests, typecheck, ESLint, and Vite production build passed
+
+pnpm check
+→ exit 0; 45 tests passed; one opt-in real-provider E2E skipped; strict
+  typecheck, ESLint, Windows process-tree test, and production build passed
+
+Playwright, AICL_PROVIDER=mock, 1440×1000 and 390×844
+→ Session switch, Ctrl+Enter, streamed response, reload-safe unsent draft,
+  and no automatic draft replay; 0 console warnings/errors
+
+Playwright, real Codex, 390×844
+→ Approve-once created only its proof file; decline created no target file;
+  Approval Dock decisions remained visible; 0 console warnings/errors
+```
+
+**Observable result**
+
+Run `pnpm dev`, open `http://127.0.0.1:5173`, select or open a Session,
+submit a prompt, and observe real normalized activity in the stable timeline.
+Refresh with an unsent draft to see it restored without dispatch. A provider
+command approval stays at the bottom with evidence and both decisions visible;
+the timeline remains inspectable above it.
+
+**Protocol/schema assumptions**
+
+- `sessions.snapshot` is an additive protocol-v1 Core read model, not a Codex
+  provider projection. It uses existing schema-v2 tables; no migration is needed.
+- A Session summary exposes only durable Core facts. Missing model/profile/token
+  telemetry is omitted rather than synthesized.
+- Durable sequence drives replay deduplication; ephemeral deltas use stable local
+  identities and are replaced by authoritative completed messages.
+
+**Known limitations or uncertain outcomes**
+
+- Timeline display groups current projection rows by Turn because projections do
+  not yet expose a complete display timestamp/sequence for every item.
+- The timeline viewport is bounded, but 100k-event virtualization and automated
+  DOM-level accessibility/overflow coverage remain M5.2 work.
+- Runtime health is the latest normalized Connector runtime view; it is not
+  invented as a per-Session provider metric.
+
+**Requested next action**
+
+Codex completes **M5.2** responsive, accessibility, and UX verification, records
+evidence, and stops before the M6.1 correctness/recovery self-audit.

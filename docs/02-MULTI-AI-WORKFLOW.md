@@ -1,136 +1,64 @@
-# Multi-AI Development Workflow
+# Codex-Only Prototype Workflow
 
-## Default allocation
+## Prototype 0 ownership
 
-The allocation is a planning rule, not a billing or token quota:
-
-```text
-Codex   70–80%  Primary implementation and integration
-Grok    15–25%  Frontend design and frontend implementation
-Claude   5–10%  Independent correctness/security review
-```
-
-## Responsibility matrix
-
-| Situation | Lead | Supporting role | Final authority |
-|---|---|---|---|
-| Codex app-server protocol and Windows process behavior | Codex | Claude reviews failure semantics | Measured trace + Codex integration |
-| Core, Connector, SQLite, state machines, idempotency | Codex | Claude audits constraints/concurrency | Tests and accepted decisions |
-| Normalized protocol types | Codex | Grok consumes; Claude audits | Codex |
-| Mission-control visual design | Grok | Codex supplies typed fixtures | Codex integrates |
-| React component implementation | Grok | Codex verifies protocol and tests | Codex |
-| Recovery and `outcome_unknown` semantics | Codex | Claude adversarial review | Tests + decision log |
-| Security boundary and path validation | Codex | Claude security review | Codex |
-| Final regression and release gate | Codex | Grok UX audit, Claude correctness audit | Operator |
-
-## Required sequence
+Codex owns every implementation and review milestone through M7.2:
 
 ```text
-1. Codex runs empirical spike
-2. Codex builds the backend/protocol walking skeleton
-3. Codex exposes stable protocol types and fixtures
-4. Grok implements or refines frontend in its allowed paths
-5. Codex integrates Grok changes and runs checks
-6. Claude performs read-only audit
-7. Codex triages findings, records decisions, fixes accepted issues
-8. Codex runs the final prototype gate
+M0–M4  measurements, vertical slice, durability, approvals, artifacts
+M5     mission-control frontend and UX verification
+M6     correctness/recovery and security/boundary self-audits
+M7     finding remediation, regressions, and clean-checkout gate
 ```
 
-## Why Codex integrates everything
+Grok and Claude are not blocking gates. Their launchers and prompts remain in
+the repository only for optional post-prototype review.
 
-One agent must own cross-component consistency. Codex is the primary implementer and therefore owns:
+## One-round loop
 
-- whether a proposed UI field exists in the protocol
-- whether a review finding is reproducible
-- whether a fix preserves state-machine invariants
-- whether tests and migrations remain coherent
-- whether the working tree is ready for the next milestone
-
-Grok and Claude do not directly redefine architecture through isolated edits.
-
-## File ownership
-
-### Codex default ownership
-
-```text
-apps/core/**
-apps/connector/**
-packages/protocol/**
-packages/domain/**
-packages/database-*/**
-packages/adapter-*/**
-tests/integration/**
-tests/fault-injection/**
-migrations/**
-scripts/**
-```
-
-### Grok assigned ownership
-
-```text
-apps/web/**
-packages/ui-kit/**
-frontend tests and fixtures
-reviews/grok/**
-docs/03-FRONTEND-MISSION-CONTROL-BRIEF.md
-```
-
-Grok must not modify protocol fields to make a screen easier. It records missing requirements in its handoff report.
-
-### Claude default ownership
-
-```text
-reviews/claude/**
-```
-
-Claude is read-only for source code by default.
-
-## Avoiding collisions
-
-Use one of these modes:
-
-### Sequential mode — recommended initially
-
-Only one AI edits the repository at a time. Finish and inspect Codex work before opening Grok; finish integration before running Claude.
-
-### Worktree mode — optional after M2
+Run:
 
 ```powershell
-git worktree add ..\aicl-grok-ui -b grok/ui-prototype
-git worktree add ..\aicl-audit -b audit/read-only
+.\scripts\Invoke-Codex.ps1 `
+  -PromptPath .\prompts\codex\08-CODEX-ONLY-PROTOTYPE-LOOP.md
 ```
 
-Do not use parallel worktrees before the root build and protocol package are stable.
+Each round reads the first unchecked item in
+`docs/05-IMPLEMENTATION-STATUS.md`, completes one coherent milestone group,
+runs the applicable checks, updates the execution plan and handoff log, then
+stops. Do not continue into the next milestone in the same run.
 
-## Handoff contract
+## Authority and evidence
 
-Every agent handoff must state:
+Codex owns all code paths and resolves conflicts in this order:
 
-- task and scope
-- files changed or reviewed
-- commands/tests run
-- protocol assumptions
-- unresolved issues
-- requested next action
+1. measured provider behavior and generated schema
+2. accepted scope and architecture decisions
+3. database constraints and reproducible tests
+4. active milestone prompt
+5. long-form specification
 
-Use `docs/06-HANDOFF-LOG.md` for implementation handoffs and `reviews/` for detailed reviews.
+No review claim is accepted without a reproduction or concrete evidence.
 
-## Conflict resolution
+## Safe checkpoints
 
-When AIs disagree:
+Before a round, inspect `git status`. After it completes, run:
 
-1. Reproduce the scenario.
-2. Prefer measured provider behavior over documentation assumptions.
-3. Prefer database constraints and tests over prose.
-4. Prefer the narrowest fix that preserves accepted decisions.
-5. Record the accepted/rejected decision and reason.
-6. Codex implements the final decision.
+```powershell
+pnpm check
+git diff --check
+.\scripts\Show-NextStep.ps1
+```
 
-## Prohibited collaboration patterns
+Create a local commit only when the active prompt authorizes it, the diff is
+coherent, and required checks pass. Never push automatically.
 
-- Asking all three AIs to implement the same feature independently in the same working tree
-- Letting Grok change backend contracts without a protocol decision
-- Letting Claude silently edit code during an audit
-- Applying review findings without reproducing them
-- Merging generated code without running the repository checks
-- Sending the complete 3,000-line specification as the only task prompt
+## Optional post-prototype phases
+
+- P1: Grok visual hierarchy and UX review.
+- P2: Claude independent correctness/security audit.
+- P3: Codex reproduces, triages, and integrates only proven feedback.
+
+Optional reviewers do not edit concurrently with Codex and do not redefine
+backend contracts. Their reports must include file paths, evidence, severity,
+and actionable remediation.

@@ -118,4 +118,4 @@ if ($requiredFailures.Count -gt 0) {
 }
 
 Write-Host 'Required toolchain checks passed.'
-Write-Host 'Optional tools are needed only for their assigned Grok/Claude stages.'
+Write-Host 'Optional Grok/Claude tools are used only for post-prototype review.'

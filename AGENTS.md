@@ -2,7 +2,7 @@
 
 ## Mission
 
-Build a Windows-first, single-operator, enterprise-grade AI CLI mission-control application. Codex is the primary implementation owner. Grok may perform explicitly assigned frontend work. Claude performs independent review unless an implementation task explicitly overrides that role.
+Build a Windows-first, single-operator, enterprise-grade AI CLI mission-control application. Codex owns all Prototype 0 implementation, frontend work, self-audits, remediation, and final integration. Grok and Claude are optional post-prototype reviewers and never block a Prototype 0 milestone.
 
 ## Read order
 
@@ -98,7 +98,8 @@ Record exact commands and results in the handoff log.
 - Do not push, force-reset, rewrite history, or delete user work.
 - Do not commit unless the active task explicitly requests commits.
 - Only one agent may own a file area at a time.
-- Codex is the integration authority and resolves Grok/Claude feedback against measurements, tests, and accepted decisions.
+- Codex is the sole Prototype 0 implementation and integration authority.
+- After Prototype 0, optional Grok/Claude feedback is advisory; Codex accepts only findings supported by measurements, tests, and accepted decisions.
 - Reviews must include file paths, evidence, severity, and a concrete remediation.
 
 ## Completion report

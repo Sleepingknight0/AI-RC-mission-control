@@ -3,9 +3,10 @@
 ## Purpose and observable outcome
 
 M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
-M3 (durability/reconnect), and M4 (approval/activity/diff safety) are complete
-on the target Windows host. The next observable outcome is the Grok-owned
-mission-control frontend pass (M5.1); Codex stops at this external gate.
+M3 (durability/reconnect), M4 (approval/activity/diff safety), and M5.1
+(functional mission-control frontend) are complete on the target Windows host.
+Codex owns every remaining Prototype 0 phase. The next observable outcome is an
+M5.2 responsive, accessibility, and UX verification pass.
 
 ## Scope
 
@@ -16,12 +17,14 @@ mission-control frontend pass (M5.1); Codex stops at this external gate.
 - M2.1–M2.3 real Codex vertical slice and fault semantics — **done**
 - M3.1–M3.3 SQLite durability, idempotency, replay, and refresh — **done**
 - M4.1–M4.3 normalized activity, approval CAS, interrupt, and artifacts — **done**
-- Next: M5.1 mission-control frontend implementation (Grok-owned external gate)
+- M5.1 functional mission-control frontend — **done**
+- Current: M5.2 responsive, accessibility, and UX polish (Codex-owned)
+- Next after this run: M6.1 correctness/recovery self-audit
 
 ## Non-goals
 
 - Anything excluded by `docs/00-PROTOTYPE-0-SCOPE.md`
-- Grok frontend pass before protocol packages exist
+- Optional external visual/audit passes before Prototype 0 is complete
 - Claude provider integration, multi-user, cloud control plane
 
 ## Current repository state
@@ -42,7 +45,12 @@ mission-control frontend pass (M5.1); Codex stops at this external gate.
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
 - Core schema v2 projects tool activities, file changes, approvals, and artifacts
 - Connector batches ephemeral UTF-8 command output and journals large-diff chunks
-- Web exposes an approval dock, command activity, and unified/side-by-side diffs
+- Core publishes a normalized durable Session catalog; Web never reads SQLite or
+  provider-specific state
+- Web exposes Mission Overview, selectable Session rail, normalized timeline,
+  recovery truth, a non-modal approval dock, command activity, and verified
+  unified/side-by-side artifact-backed diffs
+- Grok and Claude launchers remain optional post-prototype tools only
 
 ## Implementation sequence
 
@@ -64,14 +72,29 @@ mission-control frontend pass (M5.1); Codex stops at this external gate.
 - [x] Normalize bounded command/tool output and file changes (M4.1)
 - [x] Implement approval CAS, expiry, invalidation, and race tests (M4.2)
 - [x] Implement authenticated artifact-backed large diffs (M4.3)
+- [x] Build Mission Overview and a dense selectable Session rail from real snapshots (M5.1)
+- [x] Recompose Session Console into stable timeline, activity, diff, recovery, approval, and composer surfaces (M5.1)
+- [x] Add deterministic frontend state tests and verify the live browser flow (M5.1)
+
+## M5.2 verification and rollback
+
+- Verify keyboard order, visible focus, semantic labels, reduced motion, overflow,
+  and touch targets; then run Web checks, `pnpm check`, and `git diff --check`.
+- Exercise deterministic sessions at 375, 768, 1024, and 1440 px widths.
+- Preserve the normalized protocol boundary; do not add provider-specific UI data.
+- If the UI cannot derive a field from authoritative state, show `Unavailable` or
+  omit it rather than invent telemetry. Revert only M5.1-owned frontend changes
+  if the build or live command path regresses.
 
 ## Protocol or schema changes
 
-`@aicl/protocol` version 1 now also includes normalized tool activities, bounded
-command-output batches, file changes, approval lifecycle events, interrupt
-results, and artifact references. Durable event envelopes carry Session-local
-sequence; assistant/command deltas remain ephemeral. Generated Codex types, raw
-events, and raw provider request IDs stay under the adapter boundary.
+`@aicl/protocol` version 1 now also includes normalized `sessions.list` and
+`sessions.snapshot` messages. Each Session summary derives operational state,
+latest Turn/runtime status, pending approvals, cwd, activity time, Turn count,
+and durable cursor from Core projections. Durable event envelopes carry
+Session-local sequence; assistant/command deltas remain ephemeral. Generated
+Codex types, raw events, and raw provider request IDs stay under the adapter
+boundary. No SQLite schema migration was required for M5.1.
 
 ## Tests and fault scenarios
 
@@ -79,7 +102,7 @@ events, and raw provider request IDs stay under the adapter boundary.
 - Mock spike passed after harness fix.
 - Three real spikes: first-delta 4.5–6.3 s; ~55 deltas/s avg; peak 1 s up to 154;
   mid-turn kill reconstructed as `interrupted` via `thread/read` + `thread/resume`.
-- `pnpm check`: strict typecheck, 41 unit/integration tests, ESLint, a real
+- `pnpm check`: strict typecheck, 45 unit/integration tests, ESLint, a real
   Windows child-tree termination test, and Vite production build passed.
 - Live compatibility probe: Codex 0.146.0, 275 schema files, canonical SHA-256
   `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`.
@@ -100,6 +123,10 @@ events, and raw provider request IDs stay under the adapter boundary.
   SHA-256/length verification, authorization, byte range, and traversal denial.
 - Playwright at 390×844 approved and declined real Codex command requests; only
   the approved command created its ignored proof artifact.
+- Playwright exercised the M5.1 UI at 1440×1000 and 390×844: Session selection,
+  Ctrl/Cmd+Enter submission, live output, reload-safe unsent drafts, and no
+  automatic draft replay. Real Codex approval and decline paths produced zero
+  browser console warnings or errors; the declined command created no file.
 - Process cleanup verified no listeners on 5173/8787/8788 and no project Codex
   process remained.
 
@@ -141,10 +168,17 @@ events, and raw provider request IDs stay under the adapter boundary.
   only by opaque artifact ID with ephemeral bearer authorization.
 - Represent pending approval on the Approval projection while Prototype 0 keeps
   the owning Turn in `running`; the one-active-Turn invariant stays unchanged.
+- Publish the Session rail as a normalized Core read model instead of deriving
+  fake metrics in Web. Omit provider model/profile/token data because the current
+  authoritative projection does not expose it.
+- Keep unsent prompts in per-Session browser storage and restore them only as
+  drafts. Never submit or replay a draft during reconnect.
+- Keep the mobile Approval Dock non-modal with a scrollable evidence region and
+  an always-visible decision row so approval never blocks timeline inspection.
 
 ## Final outcome
 
-M0 through M4 complete. Reproduce the normal and opt-in gates with:
+M0 through M5.1 complete. Reproduce the normal and opt-in gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
@@ -156,4 +190,4 @@ $env:AICL_REAL_CODEX = '1'
 pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
 ```
 
-Next: stop the Codex loop and run `.\scripts\Invoke-GrokFrontend.ps1` for M5.1.
+Next: Codex completes M5.2 and stops before the M6.1 self-audit.

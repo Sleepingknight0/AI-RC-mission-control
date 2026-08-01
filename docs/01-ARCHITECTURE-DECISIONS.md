@@ -2,9 +2,9 @@
 
 This file is the concise implementation authority for the prototype. The long-form specification remains the design reference.
 
-## AD-001 — Codex is the primary implementation owner
+## AD-001 — Codex owns Prototype 0 end to end
 
-Codex owns architecture, Core, Connector, provider integration, database, normalized protocol, tests, and final integration. Grok specializes in frontend work. Claude provides independent review.
+Codex owns architecture, Core, Connector, provider integration, database, normalized protocol, frontend, tests, self-audits, remediation, and final integration through the clean-checkout gate. Grok visual review and Claude independent audit are optional post-prototype phases and never block Prototype 0.
 
 ## AD-002 — Separate Core and Connector processes
 

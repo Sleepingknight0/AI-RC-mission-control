@@ -2,12 +2,11 @@
 
 ชุดเริ่มต้นสำหรับสร้าง **Prototype แรกที่ใช้งานได้จริง** ของ AICL Mission Control โดยใช้แนวทาง:
 
-- **Codex** เป็นผู้พัฒนาหลักและผู้รวมงาน
-- **Grok Build** รับผิดชอบ frontend และ UX/UI แบบ aerospace mission control
-- **Claude Code** ทำ independent audit แบบ read-only
+- **Codex** รับผิดชอบ implementation, frontend, self-audit และ integration ทั้งหมดจน Prototype 0 เสร็จ
+- **Grok Build** และ **Claude Code** เป็น optional review หลัง Prototype 0
 - สเปกฉบับเต็มเป็น reference ระยะยาว แต่ Prototype ทำเฉพาะ milestone ที่ระบุใน `docs/00-PROTOTYPE-0-SCOPE.md`
 
-เริ่มจาก [START-HERE.md](START-HERE.md) และ [IDE workflow](docs/08-IDE-WORKFLOW.md) ส่วนการแบ่งงานสาม AI ดู [คู่มือภาษาไทย](docs/02-MULTI-AI-WORKFLOW-TH.md)
+เริ่มจาก [START-HERE.md](START-HERE.md) และ [IDE workflow](docs/08-IDE-WORKFLOW.md) ส่วน milestone loop ดู [คู่มือภาษาไทย](docs/02-MULTI-AI-WORKFLOW-TH.md)
 
 ## คำสั่งหลัก
 
@@ -18,13 +17,13 @@
 # วัด Codex app-server บน Windows จริง 3 รอบ
 .\scripts\Run-CodexSpike.ps1 -Runs 3
 
-# ให้ Codex ทำ milestone ถัดไป
+# ให้ Codex ทำ milestone ถัดไปแบบ Codex-only
 .\scripts\Invoke-Codex.ps1
 
-# ให้ Grok ทำ frontend pass หลัง protocol คงที่
+# Optional หลัง Prototype 0: ให้ Grok ตรวจ frontend
 .\scripts\Invoke-GrokFrontend.ps1
 
-# ให้ Claude audit แบบ read-only
+# Optional หลัง Prototype 0: ให้ Claude audit แบบ read-only
 .\scripts\Invoke-ClaudeReview.ps1
 ```
 

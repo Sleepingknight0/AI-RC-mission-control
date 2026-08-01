@@ -17,8 +17,8 @@ Open **Terminal → Run Task** and select:
 - `AICL: Check toolchain`
 - `AICL: Run Codex spike (3 runs)`
 - `AICL: Codex next milestone`
-- `AICL: Grok frontend pass`
-- `AICL: Claude read-only review`
+- `AICL: Optional post-prototype Grok UX review`
+- `AICL: Optional post-prototype Claude audit`
 - `AICL: Show next milestone`
 - `AICL: pnpm dev`
 - `AICL: pnpm check`
@@ -45,21 +45,21 @@ Do not ask Codex to scaffold the product before real spike measurements are reco
 6. Commit a stable checkpoint manually
 ```
 
-Codex does not commit by default.
+The Codex-only loop prompt may create a local commit after checks pass. It never pushes.
 
-## Frontend handoff
+## Optional post-prototype frontend review
 
-After `packages/protocol` and `packages/test-fixtures` are stable:
+After Prototype 0 is complete, an optional Grok UX review can be run:
 
 ```powershell
 .\scripts\Invoke-GrokFrontend.ps1
 ```
 
-The default mode copies the frontend task to the clipboard and opens Grok interactively. Keep permission review enabled. Grok is limited by instruction to frontend paths and records missing protocol requirements instead of changing backend contracts.
+The default mode copies the task to the clipboard and opens Grok interactively. This is advisory and does not block M0–M7.
 
-## Independent review
+## Optional post-prototype independent review
 
-After a working vertical slice:
+After Prototype 0 is complete:
 
 ```powershell
 .\scripts\Invoke-ClaudeReview.ps1 `
@@ -73,7 +73,8 @@ Reports are stored under `reviews/claude/`. Codex must reproduce and triage find
 
 ## Parallel work
 
-Use sequential operation during M0–M2. After the protocol package is stable, an optional Grok worktree may be created:
+Prototype 0 uses the Codex-only sequential milestone loop. If optional
+post-prototype reviews need isolated edits, a Grok worktree may be created:
 
 ```powershell
 git worktree add ..\aicl-grok-ui -b grok/ui-prototype

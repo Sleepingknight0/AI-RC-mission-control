@@ -25,7 +25,7 @@ code .\AICL-Mission-Control.code-workspace
 - Node.js 20+
 - Codex CLI ที่ login แล้ว
 
-Grok Build และ Claude Code เป็น optional จนกว่าจะถึงขั้น frontend/audit
+Grok Build และ Claude Code เป็น optional สำหรับ review หลัง Prototype 0 เท่านั้น
 
 ## 3. รัน empirical spike ก่อนเขียน product code
 
@@ -66,25 +66,27 @@ spikes/codex-app-server/artifacts/<timestamp>/
 .\scripts\Invoke-Codex.ps1
 ```
 
-## 5. ให้ Grok ทำ frontend หลัง protocol types ใช้งานได้แล้ว
+## 5. ทำ Codex-only loop จน Prototype 0 เสร็จ
 
-อย่าเริ่ม Grok frontend pass ก่อน `packages/protocol` และ mock fixtures คงที่
+รัน prompt เดิมซ้ำครั้งละหนึ่ง milestone:
+
+```powershell
+.\scripts\Invoke-Codex.ps1 `
+  -PromptPath .\prompts\codex\08-CODEX-ONLY-PROTOTYPE-LOOP.md
+```
+
+ตรวจ `pnpm check`, `git diff --check` และ `Show-NextStep.ps1` หลังแต่ละรอบ
+
+## 6. Optional review หลัง Prototype 0
 
 ```powershell
 .\scripts\Invoke-GrokFrontend.ps1
-```
-
-สคริปต์จะ copy คำสั่งลง clipboard และเปิด Grok แบบ interactive เพื่อให้คุณตรวจ permission ก่อนแก้ไฟล์
-
-## 6. ให้ Claude ตรวจหลังแต่ละ vertical slice
-
-```powershell
 .\scripts\Invoke-ClaudeReview.ps1
 ```
 
-Claude จะรันใน `plan` permission mode และบันทึกรายงานลง `reviews/claude/` โดยไม่แก้ source code
+Grok/Claude ไม่ใช่ blocking gate Codex ต้อง reproduce และ triage feedback ก่อนรวม
 
-## 7. ให้ Codex รวมและแก้ผล review
+## 7. ให้ Codex รวมผล optional review
 
 ```powershell
 .\scripts\Invoke-Codex.ps1 `
@@ -93,8 +95,8 @@ Claude จะรันใน `plan` permission mode และบันทึก�
 
 ## หลักการสำคัญ
 
-- Codex เป็นผู้ถือ ownership ของ architecture, backend, provider adapter, database และ integration
-- Grok แก้ได้เฉพาะ `apps/web`, `packages/ui-kit` และ frontend tests ตาม prompt
+- Codex ถือ ownership ของ Prototype 0 ทุกส่วน รวม frontend, self-audit และ final gate
+- Grok/Claude ใช้หลัง Prototype 0 เป็น optional reviewer/refiner
 - Claude ตรวจและรายงาน ไม่แก้ source โดยค่าเริ่มต้น
 - ไม่ให้ AI หลายตัวแก้ไฟล์ชุดเดียวกันพร้อมกัน
 - ทุก milestone ต้องจบด้วยคำสั่งทดสอบและหลักฐานที่รันได้

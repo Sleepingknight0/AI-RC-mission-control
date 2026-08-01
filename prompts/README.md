@@ -12,15 +12,16 @@
 | `codex/05-APPROVAL-INTERRUPT-AND-DIFF.md` | Add command output, approvals, interrupt, artifacts |
 | `codex/06-INTEGRATE-GROK-AND-CLAUDE-FEEDBACK.md` | Integrate frontend and triage audits |
 | `codex/07-FINAL-PROTOTYPE-GATE.md` | Run clean-checkout release gate |
+| `codex/08-CODEX-ONLY-PROTOTYPE-LOOP.md` | Reusable owner loop for every remaining Prototype 0 milestone |
 
-## Grok — frontend specialist
+## Grok — optional post-prototype UX reviewer
 
 | Prompt | Use |
 |---|---|
 | `grok/01-FRONTEND-IMPLEMENTATION.md` | Implement mission-control frontend in assigned paths |
 | `grok/02-FRONTEND-UX-AUDIT.md` | Read-only frontend UX review |
 
-## Claude — independent checker
+## Claude — optional post-prototype independent checker
 
 | Prompt | Use |
 |---|---|
@@ -30,4 +31,4 @@
 
 ## Selection rule
 
-Run agents sequentially. Codex owns the current milestone and integration. Grok starts only when frontend protocol types and fixtures are stable. Claude reviews a working vertical slice and does not edit source by default.
+Codex owns all Prototype 0 milestones through M7.2. Run Grok or Claude only as optional sequential reviews after Prototype 0; Codex remains the integration authority.

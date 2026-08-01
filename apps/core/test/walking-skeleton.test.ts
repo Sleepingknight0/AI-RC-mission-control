@@ -66,6 +66,9 @@ describe("mock Connector to Core to browser flow", () => {
     await connector.ready;
 
     const first = await openBrowser(core.browserUrl);
+    send(first, makeEnvelope("sessions.list", {}));
+    const emptyCatalog = await waitForMessage(first, "sessions.snapshot");
+    expect(emptyCatalog.payload.sessions).toEqual([]);
     send(
       first,
       makeEnvelope("session.subscribe", {
@@ -74,6 +77,15 @@ describe("mock Connector to Core to browser flow", () => {
       }),
     );
     await waitForMessage(first, "session.snapshot");
+    await waitUntil(() =>
+      first.messages.some(
+        (message) =>
+          message.type === "sessions.snapshot" &&
+          message.payload.sessions.some(
+            (session) => session.sessionId === WALKING_SKELETON_FIXTURE.sessionId,
+          ),
+      ),
+    );
 
     send(
       first,

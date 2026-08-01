@@ -21,6 +21,32 @@ describe("normalized protocol validation", () => {
     expect(result.success).toBe(true);
   });
 
+  it("validates the normalized Session catalog without provider fields", () => {
+    expect(ClientEnvelopeSchema.safeParse(makeEnvelope("sessions.list", {})).success).toBe(
+      true,
+    );
+    expect(
+      ServerEnvelopeSchema.safeParse(
+        makeEnvelope("sessions.snapshot", {
+          sessions: [
+            {
+              sessionId: "session-1",
+              state: "awaiting_approval",
+              runtimeStatus: "busy",
+              activeTurnId: "turn-1",
+              pendingApprovalCount: 1,
+              lastTurnStatus: "running",
+              lastActivityAt: "2026-08-02T01:02:00.000Z",
+              cwd: "C:\\Projects\\aicl",
+              turnCount: 2,
+              lastEventSeq: 9,
+            },
+          ],
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
   it("rejects raw provider fields in a frontend envelope", () => {
     const result = ServerEnvelopeSchema.safeParse({
       ...makeEnvelope("assistant.message.delta", {

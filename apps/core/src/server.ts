@@ -201,6 +201,10 @@ export async function startCoreServer(
       options.beforeDurableBroadcast?.(event);
       const sessionId = sessionIdOf(event);
       broadcast(sessionId, event);
+      broadcast(
+        null,
+        makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
+      );
     } catch (error) {
       options.onBroadcastError?.(error, event);
       if (options.onBroadcastError === undefined) {
@@ -268,6 +272,12 @@ export async function startCoreServer(
     switch (message.type) {
       case "client.hello":
         return;
+      case "sessions.list":
+        send(
+          socket,
+          makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
+        );
+        return;
       case "session.subscribe": {
         const { sessionId, afterSeq } = message.payload;
         await store.ensureSession(sessionId);
@@ -295,6 +305,10 @@ export async function startCoreServer(
           }),
         );
         clients.set(socket, sessionId);
+        send(
+          socket,
+          makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
+        );
         return;
       }
       case "turn.submit": {
@@ -520,6 +534,10 @@ export async function startCoreServer(
       const recovered = await store.reconcileRuntime(message.payload.runtime);
       for (const event of recovered) broadcastDurable(event);
       broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
+      broadcast(
+        null,
+        makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
+      );
       return;
     }
 
@@ -583,6 +601,10 @@ export async function startCoreServer(
           connectorConnection.runtime = message.payload.runtime;
           lastRuntime = message.payload.runtime;
           broadcast(null, makeEnvelope("runtime.status", message.payload));
+          broadcast(
+            null,
+            makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
+          );
         }
         break;
       case "connector.command.error": {

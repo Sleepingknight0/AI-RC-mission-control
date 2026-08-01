@@ -18,7 +18,7 @@ Set-Location $repoRoot
 
 $claude = Get-Command claude -ErrorAction SilentlyContinue
 if ($null -eq $claude) {
-    throw 'Claude Code CLI was not found on PATH. It is optional until the review stage.'
+    throw 'Claude Code CLI was not found on PATH. It is optional and used only after Prototype 0.'
 }
 
 $resolvedPrompt = if ([System.IO.Path]::IsPathRooted($PromptPath)) {

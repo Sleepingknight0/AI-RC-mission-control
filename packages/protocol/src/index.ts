@@ -58,6 +58,24 @@ export const TurnStatusSchema = z.enum([
   "outcome_unknown",
 ]);
 
+export const RuntimeStatusSchema = z.enum([
+  "offline",
+  "ready",
+  "busy",
+  "lost",
+  "incompatible",
+]);
+
+export const SessionOperationalStateSchema = z.enum([
+  "idle",
+  "running",
+  "awaiting_approval",
+  "completed",
+  "interrupted",
+  "failed",
+  "outcome_unknown",
+]);
+
 export const ActivityStatusSchema = z.enum([
   "running",
   "completed",
@@ -170,7 +188,20 @@ export const AssistantMessageSchema = z.object({
 export const RuntimeSchema = z.object({
   runtimeId: id,
   generation: z.number().int().positive(),
-  status: z.enum(["offline", "ready", "busy", "lost", "incompatible"]),
+  status: RuntimeStatusSchema,
+});
+
+export const SessionSummarySchema = z.object({
+  sessionId: id,
+  state: SessionOperationalStateSchema,
+  runtimeStatus: RuntimeStatusSchema.nullable(),
+  activeTurnId: id.nullable(),
+  pendingApprovalCount: z.number().int().nonnegative(),
+  lastTurnStatus: TurnStatusSchema.nullable(),
+  lastActivityAt: timestamp,
+  cwd: z.string().max(4_096).nullable(),
+  turnCount: z.number().int().nonnegative(),
+  lastEventSeq: z.number().int().nonnegative(),
 });
 
 export const SessionSnapshotSchema = z.object({
@@ -201,6 +232,7 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       afterSeq: z.number().int().nonnegative(),
     }),
   ),
+  envelope("sessions.list", z.object({}).strict()),
   envelope(
     "turn.submit",
     z.object({
@@ -250,6 +282,10 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
   envelope(
     "session.snapshot",
     z.object({ snapshot: SessionSnapshotSchema }),
+  ),
+  envelope(
+    "sessions.snapshot",
+    z.object({ sessions: z.array(SessionSummarySchema) }),
   ),
   envelope("runtime.status", z.object({ runtime: RuntimeSchema })),
   envelope(
@@ -540,6 +576,7 @@ export type ProtocolError = z.infer<typeof ProtocolErrorSchema>;
 export type Turn = z.infer<typeof TurnSchema>;
 export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
 export type Runtime = z.infer<typeof RuntimeSchema>;
+export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 export type ToolActivity = z.infer<typeof ToolActivitySchema>;
 export type FileChange = z.infer<typeof FileChangeSchema>;
 export type Approval = z.infer<typeof ApprovalSchema>;

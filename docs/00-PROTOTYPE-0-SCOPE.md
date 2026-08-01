@@ -106,7 +106,7 @@ Deliverables:
 - sticky Approval Dock in the UI
 - no session-global revision check in the approval path
 
-### M5 — Grok frontend pass
+### M5 — Codex mission-control frontend
 
 Deliverables:
 
@@ -118,27 +118,32 @@ Deliverables:
 - responsive desktop/mobile layouts
 - keyboard navigation and reduced motion
 - mock fixtures for all important states
+- functional command output, approval, diff, reconnect, lost-runtime, and `outcome_unknown` surfaces backed by normalized data
 
-Grok may not alter backend contracts. Codex integrates and verifies the result.
+Codex owns implementation and verification. M5.1 establishes the functional interface; M5.2 completes responsive, accessibility, and UX polish.
 
-### M6 — Claude independent audit
-
-Deliverables:
-
-- read-only architecture/correctness review
-- security/recovery review
-- findings with severity, evidence, failure scenario, and remediation
-- no source edits by Claude unless the operator explicitly changes the role
-
-### M7 — Codex integration and prototype gate
+### M6 — Codex correctness and security self-audit
 
 Deliverables:
 
-- accepted Grok and Claude feedback integrated by Codex
+- separate correctness/recovery review pass
+- separate security/boundary review pass
+- findings with severity, file/symbol, reproduction, evidence, violated invariant, remediation, and regression test
+- audit artifacts recorded before remediation starts
+
+### M7 — Codex remediation and prototype gate
+
+Deliverables:
+
+- accepted self-audit findings fixed with regression coverage
 - all prototype tests pass
 - manual Windows smoke test documented
 - known limitations documented
 - a runnable demo path from clean checkout
+
+After Prototype 0, optional P1 Grok visual/UX review and P2 Claude independent
+audit may run. Codex owns P3 evidence-based triage and integration; these phases
+are not Prototype 0 gates.
 
 ## Included in Prototype 0
 

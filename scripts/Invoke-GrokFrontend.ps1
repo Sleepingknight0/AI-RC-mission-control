@@ -17,7 +17,7 @@ Set-Location $repoRoot
 
 $grok = Get-Command grok -ErrorAction SilentlyContinue
 if ($null -eq $grok) {
-    throw 'Grok Build CLI was not found on PATH. It is optional until the frontend stage.'
+    throw 'Grok Build CLI was not found on PATH. It is optional and used only after Prototype 0.'
 }
 
 $resolvedPrompt = if ([System.IO.Path]::IsPathRooted($PromptPath)) {
@@ -37,7 +37,7 @@ if ([string]::IsNullOrWhiteSpace($prompt)) {
 
 if (-not $Headless) {
     Set-Clipboard -Value $prompt
-    Write-Host 'The Grok frontend prompt has been copied to the clipboard.'
+    Write-Host 'The optional post-prototype Grok prompt has been copied to the clipboard.'
     Write-Host 'Grok will open interactively in the repository. Paste the prompt and review permissions before execution.'
     Write-Host ''
     & grok

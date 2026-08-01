@@ -23,14 +23,14 @@
       "problemMatcher": []
     },
     {
-      "label": "AICL: Grok frontend pass",
+      "label": "AICL: Optional post-prototype Grok UX review",
       "type": "shell",
       "command": "powershell",
       "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/Invoke-GrokFrontend.ps1"],
       "problemMatcher": []
     },
     {
-      "label": "AICL: Claude read-only review",
+      "label": "AICL: Optional post-prototype Claude audit",
       "type": "shell",
       "command": "powershell",
       "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/Invoke-ClaudeReview.ps1"],

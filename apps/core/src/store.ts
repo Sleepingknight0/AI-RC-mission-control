@@ -21,6 +21,7 @@ import {
   type Runtime,
   type ServerEnvelope,
   type SessionSnapshot,
+  type SessionSummary,
   type ToolActivity,
   type Turn,
 } from "@aicl/protocol";
@@ -81,6 +82,18 @@ interface SessionRow {
   provider_session_id: string | null;
   state_revision: number;
   last_event_seq: number;
+}
+
+interface SessionSummaryRow {
+  id: string;
+  updated_at: string;
+  last_event_seq: number;
+  active_turn_id: string | null;
+  last_turn_state: Turn["status"] | null;
+  pending_approval_count: number;
+  runtime_state: Runtime["status"] | null;
+  cwd: string | null;
+  turn_count: number;
 }
 
 interface TurnRow {
@@ -272,6 +285,48 @@ export class CoreDatabase {
       fileChanges: fileChanges.map(fileChangeFromRow),
       approvals: approvals.map(approvalFromRow),
     };
+  }
+
+  sessionSummaries(): SessionSummary[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT s.id, s.updated_at, s.last_event_seq,
+                (SELECT t.id FROM turns t
+                  WHERE t.session_id = s.id AND t.state = 'running'
+                  ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS active_turn_id,
+                (SELECT t.state FROM turns t
+                  WHERE t.session_id = s.id
+                  ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS last_turn_state,
+                (SELECT COUNT(*) FROM approval_requests a
+                  WHERE a.session_id = s.id AND a.state = 'pending') AS pending_approval_count,
+                (SELECT r.state FROM runtimes r
+                  WHERE r.session_id = s.id
+                  ORDER BY r.updated_at DESC, r.generation DESC LIMIT 1) AS runtime_state,
+                (SELECT a.cwd FROM tool_activities a
+                  WHERE a.session_id = s.id AND a.cwd IS NOT NULL
+                  ORDER BY a.created_at DESC, a.id DESC LIMIT 1) AS cwd,
+                (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) AS turn_count
+           FROM sessions s ORDER BY s.updated_at DESC, s.id`,
+      )
+      .all() as unknown as SessionSummaryRow[];
+
+    return rows.map((row) => ({
+      sessionId: row.id,
+      state:
+        row.pending_approval_count > 0
+          ? "awaiting_approval"
+          : row.active_turn_id !== null
+            ? "running"
+            : row.last_turn_state ?? "idle",
+      runtimeStatus: row.runtime_state,
+      activeTurnId: row.active_turn_id,
+      pendingApprovalCount: row.pending_approval_count,
+      lastTurnStatus: row.last_turn_state,
+      lastActivityAt: row.updated_at,
+      cwd: row.cwd,
+      turnCount: row.turn_count,
+      lastEventSeq: row.last_event_seq,
+    }));
   }
 
   replay(sessionId: string, afterSeq: number, upperBoundSeq: number) {
