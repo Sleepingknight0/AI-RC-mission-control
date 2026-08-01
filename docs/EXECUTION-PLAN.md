@@ -3,10 +3,10 @@
 ## Purpose and observable outcome
 
 M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
-M3 (durability/reconnect), M4 (approval/activity/diff safety), and M5.1
-(functional mission-control frontend) are complete on the target Windows host.
-Codex owns every remaining Prototype 0 phase. The next observable outcome is an
-M5.2 responsive, accessibility, and UX verification pass.
+M3 (durability/reconnect), M4 (approval/activity/diff safety), and M5
+(functional, responsive, accessible mission-control frontend) are complete on
+the target Windows host. Codex owns every remaining Prototype 0 phase. The next
+observable outcome is an independent-style M6.1 correctness/recovery self-audit.
 
 ## Scope
 
@@ -18,8 +18,9 @@ M5.2 responsive, accessibility, and UX verification pass.
 - M3.1–M3.3 SQLite durability, idempotency, replay, and refresh — **done**
 - M4.1–M4.3 normalized activity, approval CAS, interrupt, and artifacts — **done**
 - M5.1 functional mission-control frontend — **done**
-- Current: M5.2 responsive, accessibility, and UX polish (Codex-owned)
-- Next after this run: M6.1 correctness/recovery self-audit
+- M5.2 responsive, accessibility, and UX polish — **done**
+- Current: M6.1 correctness/recovery self-audit (Codex-owned)
+- Next after this run: M6.2 security/boundary self-audit
 
 ## Non-goals
 
@@ -50,6 +51,8 @@ M5.2 responsive, accessibility, and UX verification pass.
 - Web exposes Mission Overview, selectable Session rail, normalized timeline,
   recovery truth, a non-modal approval dock, command activity, and verified
   unified/side-by-side artifact-backed diffs
+- Compact layouts collapse Overview and expose Health/Diff in a keyboard-safe
+  drawer; large timelines use bounded DOM windowing after 200 items
 - Grok and Claude launchers remain optional post-prototype tools only
 
 ## Implementation sequence
@@ -75,26 +78,31 @@ M5.2 responsive, accessibility, and UX verification pass.
 - [x] Build Mission Overview and a dense selectable Session rail from real snapshots (M5.1)
 - [x] Recompose Session Console into stable timeline, activity, diff, recovery, approval, and composer surfaces (M5.1)
 - [x] Add deterministic frontend state tests and verify the live browser flow (M5.1)
+- [x] Verify 375/768/1024/1440 layouts, safe areas, touch targets, and overflow (M5.2)
+- [x] Add keyboard focus, live-status, reduced-motion, forced-color, and 200% text behavior (M5.2)
+- [x] Add linear 100,000-item projection and bounded timeline windowing (M5.2)
+- [x] Re-run real Codex mobile approval UX with a declined side effect (M5.2)
 
-## M5.2 verification and rollback
+## M6.1 verification and rollback
 
-- Verify keyboard order, visible focus, semantic labels, reduced motion, overflow,
-  and touch targets; then run Web checks, `pnpm check`, and `git diff --check`.
-- Exercise deterministic sessions at 375, 768, 1024, and 1440 px widths.
-- Preserve the normalized protocol boundary; do not add provider-specific UI data.
-- If the UI cannot derive a field from authoritative state, show `Unavailable` or
-  omit it rather than invent telemetry. Revert only M5.1-owned frontend changes
-  if the build or live command path regresses.
+- Switch explicitly into reviewer mode and trace state, SQLite, command,
+  sequence, runtime-generation, approval, restart, and provider-loss invariants.
+- Every finding must include severity, file/symbol, reproduction, evidence,
+  violated invariant, remediation, and a regression-test proposal.
+- Do not implement accepted findings during M6.1; record them for M7.1 so the
+  audit remains distinct from remediation.
+- If a claimed defect cannot be reproduced, record the attempted falsification
+  rather than changing working code speculatively.
 
 ## Protocol or schema changes
 
-`@aicl/protocol` version 1 now also includes normalized `sessions.list` and
+`@aicl/protocol` version 1 includes normalized `sessions.list` and
 `sessions.snapshot` messages. Each Session summary derives operational state,
 latest Turn/runtime status, pending approvals, cwd, activity time, Turn count,
 and durable cursor from Core projections. Durable event envelopes carry
 Session-local sequence; assistant/command deltas remain ephemeral. Generated
 Codex types, raw events, and raw provider request IDs stay under the adapter
-boundary. No SQLite schema migration was required for M5.1.
+boundary. M5.2 added no protocol or SQLite schema changes.
 
 ## Tests and fault scenarios
 
@@ -102,7 +110,7 @@ boundary. No SQLite schema migration was required for M5.1.
 - Mock spike passed after harness fix.
 - Three real spikes: first-delta 4.5–6.3 s; ~55 deltas/s avg; peak 1 s up to 154;
   mid-turn kill reconstructed as `interrupted` via `thread/read` + `thread/resume`.
-- `pnpm check`: strict typecheck, 45 unit/integration tests, ESLint, a real
+- `pnpm check`: strict typecheck, 47 unit/integration tests, ESLint, a real
   Windows child-tree termination test, and Vite production build passed.
 - Live compatibility probe: Codex 0.146.0, 275 schema files, canonical SHA-256
   `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`.
@@ -127,6 +135,18 @@ boundary. No SQLite schema migration was required for M5.1.
   Ctrl/Cmd+Enter submission, live output, reload-safe unsent drafts, and no
   automatic draft replay. Real Codex approval and decline paths produced zero
   browser console warnings or errors; the declined command created no file.
+- M5.2 Playwright matrix at 375×812, 768×1024, 1024×768, and 1440×1000
+  reported zero page/body overflow and zero enabled controls below 44×44 px.
+- Keyboard order begins with the skip link and reaches Overview, Session,
+  Health/Diff drawer, activities, and composer; Escape closes the drawer and
+  restores focus. Important operational state uses explicit live regions.
+- Primary/secondary/muted/accent/status token pairs measured 5.59:1–18.31:1;
+  reduced-motion resolved animation/transition to 0.01 ms and one iteration.
+- At 200% root text size, mobile content and the real Approval Dock had zero
+  horizontal overflow; both decisions remained fully visible. Decline left its
+  requested target absent and the Turn completed with zero console errors.
+- Web tests construct 100,000 timeline items in 46–69 ms on this host and prove
+  the virtual window renders at most 18 rows for an 844 px viewport.
 - Process cleanup verified no listeners on 5173/8787/8788 and no project Codex
   process remained.
 
@@ -139,6 +159,8 @@ boundary. No SQLite schema migration was required for M5.1.
 - Steady agent-delta payload ~253–263 bytes; ephemeral batching is mandatory.
 - Closing a provider while a final Turn notification was still in flight could
   strand Connector shutdown; close now rejects the active waiter before RPC stop.
+- A 375 px layout that passed at default text size overflowed by 27 px at 200%;
+  the header status strip and timeline metadata now wrap instead of being clipped.
 
 ## Decision log
 
@@ -175,10 +197,17 @@ boundary. No SQLite schema migration was required for M5.1.
   drafts. Never submit or replay a draft during reconnect.
 - Keep the mobile Approval Dock non-modal with a scrollable evidence region and
   an always-visible decision row so approval never blocks timeline inspection.
+- Collapse Overview and move Health/Diff into a full-height compact drawer so
+  Session state, timeline, approval, and composer stay ahead of secondary data.
+- Do not make streaming output a live region. Announce operational state and
+  approvals separately so screen-reader users can review output without flooding.
+- Use a linear grouped timeline projection and fixed 184 px virtual rows after
+  200 records. Individual large rows remain internally scrollable, bounding DOM
+  size while preserving their full normalized content.
 
 ## Final outcome
 
-M0 through M5.1 complete. Reproduce the normal and opt-in gates with:
+M0 through M5.2 complete. Reproduce the normal and opt-in gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
@@ -190,4 +219,4 @@ $env:AICL_REAL_CODEX = '1'
 pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
 ```
 
-Next: Codex completes M5.2 and stops before the M6.1 self-audit.
+Next: Codex performs M6.1 and stops before the M6.2 security/boundary self-audit.

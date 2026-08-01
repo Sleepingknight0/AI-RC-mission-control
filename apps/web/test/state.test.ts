@@ -2,9 +2,11 @@ import { makeEnvelope, type SessionSnapshot } from "@aicl/protocol";
 import { describe, expect, it } from "vitest";
 
 import {
+  TIMELINE_VIRTUAL_ROW_HEIGHT,
   buildTimeline,
   turnAvailability,
   updateSnapshot,
+  virtualTimelineWindow,
 } from "../src/state.js";
 
 const snapshot: SessionSnapshot = {
@@ -94,5 +96,54 @@ describe("mission-control render state", () => {
       canSubmit: false,
       reason: "Runtime ownership was lost. Review recovery state.",
     });
+  });
+
+  it("windows a 100,000-item timeline to a bounded render set", () => {
+    const window = virtualTimelineWindow(
+      100_000,
+      9_200_000,
+      844,
+    );
+
+    expect(window.totalHeight).toBe(100_000 * TIMELINE_VIRTUAL_ROW_HEIGHT);
+    expect(window.start).toBeGreaterThan(0);
+    expect(window.end).toBeLessThan(100_000);
+    expect(window.end - window.start).toBeLessThanOrEqual(18);
+    expect(window.offsetTop).toBe(window.start * TIMELINE_VIRTUAL_ROW_HEIGHT);
+  });
+
+  it("keeps 100,000-item timeline construction linear and stable", () => {
+    const turns = Array.from({ length: 50_000 }, (_, index) => ({
+      turnId: `turn-${index}`,
+      commandId: `command-${index}`,
+      status: "completed" as const,
+      prompt: `Prompt ${index}`,
+      startedAt: "2026-08-02T01:00:00.000Z",
+      completedAt: "2026-08-02T01:00:01.000Z",
+      failureCode: null,
+      providerTurnId: null,
+    }));
+    const messages = turns.map((turn, index) => ({
+      messageId: `message-${index}`,
+      turnId: turn.turnId,
+      content: `Response ${index}`,
+      completed: true,
+    }));
+
+    const items = buildTimeline({
+      ...snapshot,
+      activeTurnId: null,
+      turns,
+      messages,
+    });
+
+    expect(items).toHaveLength(100_000);
+    expect(items.slice(0, 4).map((item) => item.id)).toEqual([
+      "turn:turn-0:operator",
+      "message:message-0",
+      "turn:turn-1:operator",
+      "message:message-1",
+    ]);
+    expect(items.at(-1)?.id).toBe("message:message-49999");
   });
 });

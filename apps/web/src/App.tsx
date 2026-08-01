@@ -22,8 +22,11 @@ import {
   buildTimeline,
   durableSeq,
   latestTurn,
+  TIMELINE_VIRTUALIZATION_THRESHOLD,
+  TIMELINE_VIRTUAL_ROW_HEIGHT,
   turnAvailability,
   updateSnapshot,
+  virtualTimelineWindow,
   type ConnectionState,
   type TimelineItem,
 } from "./state.js";
@@ -124,9 +127,26 @@ function StatusPill({ value, label }: { value: string; label?: string }) {
   );
 }
 
+function useMediaQuery(query: string) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
+
 function ActivityBlock({ activity }: { activity: ToolActivity }) {
+  const [open, setOpen] = useState(activity.status === "running");
   return (
-    <details className="activity-block" open={activity.status === "running"}>
+    <details
+      className="activity-block"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
         <span>
           <small>{activity.kind.toUpperCase()}</small>
@@ -147,13 +167,22 @@ function ActivityBlock({ activity }: { activity: ToolActivity }) {
 function TimelineEntry({
   item,
   onInspectFileChange,
+  position,
+  setSize,
 }: {
   item: TimelineItem;
   onInspectFileChange: (fileChangeId: string) => void;
+  position?: number;
+  setSize?: number;
 }) {
   if (item.kind === "operator") {
     return (
-      <article className="timeline-entry operator-entry" data-state={item.turn.status}>
+      <article
+        className="timeline-entry operator-entry"
+        data-state={item.turn.status}
+        aria-posinset={position}
+        aria-setsize={setSize}
+      >
         <div className="entry-meta">
           <span>OPERATOR</span>
           <time dateTime={item.turn.startedAt}>{formatTime(item.turn.startedAt)}</time>
@@ -165,7 +194,11 @@ function TimelineEntry({
   }
   if (item.kind === "assistant") {
     return (
-      <article className="timeline-entry assistant-entry">
+      <article
+        className="timeline-entry assistant-entry"
+        aria-posinset={position}
+        aria-setsize={setSize}
+      >
         <div className="entry-meta">
           <span>ASSISTANT</span>
           <span>{item.completed ? "AUTHORITATIVE" : "STREAMING"}</span>
@@ -176,13 +209,21 @@ function TimelineEntry({
   }
   if (item.kind === "activity") {
     return (
-      <article className="timeline-entry machine-entry">
+      <article
+        className="timeline-entry machine-entry"
+        aria-posinset={position}
+        aria-setsize={setSize}
+      >
         <ActivityBlock activity={item.activity} />
       </article>
     );
   }
   return (
-    <article className="timeline-entry file-entry">
+    <article
+      className="timeline-entry file-entry"
+      aria-posinset={position}
+      aria-setsize={setSize}
+    >
       <div className="entry-meta">
         <span>FILE CHANGE</span>
         <StatusPill value={item.fileChange.status} />
@@ -210,6 +251,9 @@ export function App() {
   const lastSeenSeqRef = useRef(readCursor(INITIAL_SESSION_ID));
   const connectedBeforeRef = useRef(false);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const inspectorRef = useRef<HTMLElement | null>(null);
+  const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const pendingInspectorFocusRef = useRef<string | null>(null);
   const timelineAtBottomRef = useRef(true);
   const previousTimelineSignalRef = useRef("");
   const [connection, setConnection] = useState<ConnectionState>("connecting");
@@ -231,7 +275,14 @@ export function App() {
   const [artifactLoading, setArtifactLoading] = useState(false);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [unreadUpdates, setUnreadUpdates] = useState(0);
+  const [timelineViewport, setTimelineViewport] = useState({
+    scrollTop: 0,
+    height: 620,
+  });
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const compactLayout = useMediaQuery("(max-width: 860px)");
 
   const subscribe = (socket: WebSocket, sessionId: string) => {
     lastSeenSeqRef.current = readCursor(sessionId);
@@ -383,6 +434,20 @@ export function App() {
   }, []);
 
   const timelineItems = useMemo(() => buildTimeline(snapshot), [snapshot]);
+  const timelineVirtualized =
+    timelineItems.length > TIMELINE_VIRTUALIZATION_THRESHOLD;
+  const timelineWindow = useMemo(
+    () =>
+      virtualTimelineWindow(
+        timelineItems.length,
+        timelineViewport.scrollTop,
+        timelineViewport.height,
+      ),
+    [timelineItems.length, timelineViewport.height, timelineViewport.scrollTop],
+  );
+  const renderedTimelineItems = timelineVirtualized
+    ? timelineItems.slice(timelineWindow.start, timelineWindow.end)
+    : timelineItems;
   const timelineSignal = `${snapshot?.lastEventSeq ?? 0}:${snapshot?.messages
     .map((message) => message.content.length)
     .join(",")}:${snapshot?.activities.map((activity) => activity.outputPreview.length).join(",")}`;
@@ -399,6 +464,44 @@ export function App() {
       setUnreadUpdates((count) => count + 1);
     }
   }, [timelineSignal]);
+
+  useEffect(() => {
+    const container = timelineRef.current;
+    if (container === null) return;
+    const update = () =>
+      setTimelineViewport({
+        scrollTop: container.scrollTop,
+        height: container.clientHeight,
+      });
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!compactLayout || !inspectorOpen) return;
+    const frame = window.requestAnimationFrame(() => {
+      const targetId = pendingInspectorFocusRef.current;
+      pendingInspectorFocusRef.current = null;
+      const target = targetId === null
+        ? inspectorRef.current
+        : document.getElementById(targetId);
+      target?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [compactLayout, inspectorOpen, selectedFileChangeId]);
+
+  useEffect(() => {
+    if (!compactLayout || !inspectorOpen) return;
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setInspectorOpen(false);
+      inspectorTriggerRef.current?.focus();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [compactLayout, inspectorOpen]);
 
   useEffect(() => {
     const available = snapshot?.fileChanges ?? [];
@@ -556,7 +659,28 @@ export function App() {
     setSelectedFileChangeId(fileChangeId);
     setArtifactText(null);
     setArtifactError(null);
-    document.querySelector<HTMLElement>("#diff-review")?.focus({ preventScroll: false });
+    pendingInspectorFocusRef.current = "diff-review";
+    if (compactLayout) setInspectorOpen(true);
+    else {
+      pendingInspectorFocusRef.current = null;
+      document.querySelector<HTMLElement>("#diff-review")?.focus({ preventScroll: false });
+    }
+  };
+
+  const openInspector = (focusId: string | null = null) => {
+    pendingInspectorFocusRef.current = focusId;
+    if (compactLayout) setInspectorOpen(true);
+    else {
+      pendingInspectorFocusRef.current = null;
+      if (focusId !== null) {
+        document.getElementById(focusId)?.focus({ preventScroll: false });
+      }
+    }
+  };
+
+  const closeInspector = () => {
+    setInspectorOpen(false);
+    window.requestAnimationFrame(() => inspectorTriggerRef.current?.focus());
   };
 
   const returnToLive = () => {
@@ -573,6 +697,12 @@ export function App() {
     timelineAtBottomRef.current =
       container.scrollHeight - container.scrollTop - container.clientHeight < 64;
     if (timelineAtBottomRef.current) setUnreadUpdates(0);
+    if (timelineVirtualized) {
+      setTimelineViewport({
+        scrollTop: container.scrollTop,
+        height: container.clientHeight,
+      });
+    }
   };
 
   const pendingApprovals =
@@ -610,10 +740,14 @@ export function App() {
     () => (displayedDiff === null ? null : splitDiff(displayedDiff)),
     [displayedDiff],
   );
+  const operationalAnnouncement = `${connectionLabel(connection)}. Session ${selectedSessionId} is ${formatState(sessionState)}. ${pendingApprovals.length} pending ${pendingApprovals.length === 1 ? "approval" : "approvals"}.`;
 
   return (
     <div className="app-shell">
       <a className="skip-link" href="#session-console">Skip to Session Console</a>
+      <p className="sr-only" aria-live="polite" aria-atomic="true">
+        {operationalAnnouncement}
+      </p>
 
       <header className="command-bar">
         <div className="brand-block">
@@ -641,11 +775,26 @@ export function App() {
       </header>
 
       <section className="mission-overview" aria-labelledby="overview-title">
-        <div>
-          <p className="eyebrow">OPERATIONAL PICTURE</p>
-          <h2 id="overview-title">Mission Overview</h2>
+        <div className="overview-heading">
+          <div>
+            <p className="eyebrow">OPERATIONAL PICTURE</p>
+            <h2 id="overview-title">Mission Overview</h2>
+          </div>
+          <button
+            type="button"
+            className="secondary-button mobile-panel-toggle"
+            aria-expanded={overviewOpen}
+            aria-controls="mission-metrics"
+            onClick={() => setOverviewOpen((open) => !open)}
+          >
+            {overviewOpen ? "Hide overview" : "Show overview"}
+          </button>
         </div>
-        <dl className="mission-metrics">
+        <dl
+          className="mission-metrics"
+          id="mission-metrics"
+          hidden={compactLayout && !overviewOpen}
+        >
           <div><dt>Sessions</dt><dd>{sessions.length.toString().padStart(2, "0")}</dd></div>
           <div><dt>Active</dt><dd>{activeCount.toString().padStart(2, "0")}</dd></div>
           <div><dt>Approval</dt><dd>{approvalCount.toString().padStart(2, "0")}</dd></div>
@@ -748,17 +897,33 @@ export function App() {
                 <div><dt>Unknown</dt><dd>Provider side effects may not have a proven terminal result.</dd></div>
                 <div><dt>System will not</dt><dd>Replay or resend the original prompt automatically.</dd></div>
               </dl>
-              <button type="button" className="secondary-button" onClick={() => document.querySelector<HTMLElement>("#diff-review")?.focus()}>
+              <button type="button" className="secondary-button" onClick={() => openInspector("diff-review")}>
                 Inspect file changes
               </button>
             </section>
           )}
+
+          <div className="mobile-toolbelt">
+            <button
+              ref={inspectorTriggerRef}
+              type="button"
+              className="secondary-button"
+              aria-expanded={inspectorOpen}
+              aria-controls="session-inspector"
+              onClick={() => openInspector()}
+            >
+              Open system health and file review
+            </button>
+          </div>
 
           <section className="timeline-panel" aria-labelledby="timeline-title">
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">NORMALIZED EVENTS</p>
                 <h3 id="timeline-title">Timeline</h3>
+                <span className="sr-only" id="timeline-help">
+                  Live event text is not announced automatically. Use Return to live after reviewing older events.
+                </span>
               </div>
               <span className="mono-meta">SEQ {snapshot?.lastEventSeq ?? 0}</span>
             </div>
@@ -766,7 +931,10 @@ export function App() {
               className="timeline"
               ref={timelineRef}
               onScroll={onTimelineScroll}
+              role="feed"
               aria-busy={timelineBusy}
+              aria-label="Session event timeline"
+              aria-describedby="timeline-help"
             >
               {snapshot === null ? (
                 <div className="loading-state" role="status">
@@ -775,11 +943,42 @@ export function App() {
                   <p>Loading authoritative Session projection…</p>
                 </div>
               ) : timelineItems.length > 0 ? (
-                timelineItems.map((item) => (
+                timelineVirtualized ? (
+                  <div
+                    className="timeline-virtual-space"
+                    style={{ height: timelineWindow.totalHeight }}
+                  >
+                    {renderedTimelineItems.map((item, index) => {
+                      const absoluteIndex = timelineWindow.start + index;
+                      return (
+                        <div
+                          className="timeline-virtual-row"
+                          key={item.id}
+                          style={{
+                            height: TIMELINE_VIRTUAL_ROW_HEIGHT,
+                            transform: `translateY(${timelineWindow.offsetTop + index * TIMELINE_VIRTUAL_ROW_HEIGHT}px)`,
+                          }}
+                        >
+                          <TimelineEntry
+                            item={item}
+                            onInspectFileChange={inspectFileChange}
+                            position={absoluteIndex + 1}
+                            setSize={timelineItems.length}
+                          />
+                        </div>
+                      );
+                    })}
+                    <span className="sr-only">
+                      Showing events {timelineWindow.start + 1} through {timelineWindow.end} of {timelineItems.length}.
+                    </span>
+                  </div>
+                ) : timelineItems.map((item, index) => (
                   <TimelineEntry
                     key={item.id}
                     item={item}
                     onInspectFileChange={inspectFileChange}
+                    position={index + 1}
+                    setSize={timelineItems.length}
                   />
                 ))
               ) : (
@@ -829,7 +1028,23 @@ export function App() {
           </form>
         </main>
 
-        <aside className="inspector" aria-label="Session inspector">
+        <aside
+          className={`inspector ${compactLayout && inspectorOpen ? "mobile-inspector-open" : ""}`}
+          id="session-inspector"
+          ref={inspectorRef}
+          aria-label="Session inspector"
+          tabIndex={-1}
+          hidden={compactLayout && !inspectorOpen}
+        >
+          <div className="mobile-drawer-heading">
+            <div>
+              <p className="eyebrow">SESSION TOOLS</p>
+              <h2>Health and file review</h2>
+            </div>
+            <button type="button" className="secondary-button" onClick={closeInspector}>
+              Close
+            </button>
+          </div>
           <section className="inspector-panel health-panel">
             <div className="panel-heading">
               <div>
@@ -944,11 +1159,14 @@ export function App() {
       <div className="notice-bar" role="status" aria-live="polite">{notice}</div>
 
       {pendingApprovals.length > 0 && (
-        <aside className="approval-dock" aria-label="Pending approvals" aria-live="assertive">
+        <aside className="approval-dock" aria-labelledby="approval-dock-title">
+          <p className="sr-only" role="alert">
+            Approval required. {pendingApprovals.length} pending.
+          </p>
           <div className="approval-dock-heading">
             <div>
               <p className="eyebrow">OPERATOR DECISION</p>
-              <h2>Approval Dock</h2>
+              <h2 id="approval-dock-title">Approval Dock</h2>
             </div>
             <span className="mono-meta">{pendingApprovals.length} pending</span>
           </div>

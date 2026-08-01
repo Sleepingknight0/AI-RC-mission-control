@@ -11,5 +11,7 @@ Prototype responsibilities:
 - reconnect/replay and `outcome_unknown` recovery presentation
 - non-modal Approval Dock and unified/side-by-side verified diff review
 - responsive desktop/mobile mission-control layout
+- mobile Overview and Health/Diff drawers with focus restoration
+- bounded DOM rendering for 100,000-record timelines
 
 It must not import Codex provider types or database modules.

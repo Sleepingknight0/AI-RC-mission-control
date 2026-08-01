@@ -27,6 +27,46 @@ export type TimelineItem =
   | { id: string; kind: "activity"; activity: ToolActivity }
   | { id: string; kind: "file_change"; fileChange: FileChange };
 
+export const TIMELINE_VIRTUALIZATION_THRESHOLD = 200;
+export const TIMELINE_VIRTUAL_ROW_HEIGHT = 184;
+
+export interface TimelineWindow {
+  start: number;
+  end: number;
+  offsetTop: number;
+  totalHeight: number;
+}
+
+export function virtualTimelineWindow(
+  itemCount: number,
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight = TIMELINE_VIRTUAL_ROW_HEIGHT,
+  overscan = 6,
+): TimelineWindow {
+  if (itemCount <= 0) {
+    return { start: 0, end: 0, offsetTop: 0, totalHeight: 0 };
+  }
+  const safeRowHeight = Math.max(1, rowHeight);
+  const safeScrollTop = Math.max(0, scrollTop);
+  const safeViewportHeight = Math.max(0, viewportHeight);
+  const safeOverscan = Math.max(0, Math.floor(overscan));
+  const start = Math.min(
+    itemCount - 1,
+    Math.max(0, Math.floor(safeScrollTop / safeRowHeight) - safeOverscan),
+  );
+  const end = Math.min(
+    itemCount,
+    Math.ceil((safeScrollTop + safeViewportHeight) / safeRowHeight) + safeOverscan,
+  );
+  return {
+    start,
+    end: Math.max(start + 1, end),
+    offsetTop: start * safeRowHeight,
+    totalHeight: itemCount * safeRowHeight,
+  };
+}
+
 export function durableSeq(message: ServerEnvelope) {
   switch (message.type) {
     case "turn.started":
@@ -216,12 +256,28 @@ export function updateSnapshot(
 
 export function buildTimeline(snapshot: SessionSnapshot | null): TimelineItem[] {
   if (snapshot === null) return [];
+  const messagesByTurn = new Map<string, SessionSnapshot["messages"]>();
+  const activitiesByTurn = new Map<string, SessionSnapshot["activities"]>();
+  const fileChangesByTurn = new Map<string, SessionSnapshot["fileChanges"]>();
+  for (const message of snapshot.messages) {
+    const messages = messagesByTurn.get(message.turnId) ?? [];
+    messages.push(message);
+    messagesByTurn.set(message.turnId, messages);
+  }
+  for (const activity of snapshot.activities) {
+    const activities = activitiesByTurn.get(activity.turnId) ?? [];
+    activities.push(activity);
+    activitiesByTurn.set(activity.turnId, activities);
+  }
+  for (const fileChange of snapshot.fileChanges) {
+    const fileChanges = fileChangesByTurn.get(fileChange.turnId) ?? [];
+    fileChanges.push(fileChange);
+    fileChangesByTurn.set(fileChange.turnId, fileChanges);
+  }
   const items: TimelineItem[] = [];
   for (const turn of snapshot.turns) {
     items.push({ id: `turn:${turn.turnId}:operator`, kind: "operator", turn });
-    for (const message of snapshot.messages.filter(
-      (candidate) => candidate.turnId === turn.turnId,
-    )) {
+    for (const message of messagesByTurn.get(turn.turnId) ?? []) {
       items.push({
         id: `message:${message.messageId}`,
         kind: "assistant",
@@ -230,14 +286,10 @@ export function buildTimeline(snapshot: SessionSnapshot | null): TimelineItem[] 
         completed: message.completed,
       });
     }
-    for (const activity of snapshot.activities.filter(
-      (candidate) => candidate.turnId === turn.turnId,
-    )) {
+    for (const activity of activitiesByTurn.get(turn.turnId) ?? []) {
       items.push({ id: `activity:${activity.activityId}`, kind: "activity", activity });
     }
-    for (const fileChange of snapshot.fileChanges.filter(
-      (candidate) => candidate.turnId === turn.turnId,
-    )) {
+    for (const fileChange of fileChangesByTurn.get(turn.turnId) ?? []) {
       items.push({
         id: `file-change:${fileChange.fileChangeId}`,
         kind: "file_change",

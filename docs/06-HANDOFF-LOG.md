@@ -473,3 +473,74 @@ the timeline remains inspectable above it.
 
 Codex completes **M5.2** responsive, accessibility, and UX verification, records
 evidence, and stops before the M6.1 correctness/recovery self-audit.
+
+---
+
+### 2026-08-02 02:45 — Codex — M5.2
+
+**Scope**
+
+Complete the responsive, accessibility, performance, and production-quality UX
+pass without changing provider, protocol, or persistence boundaries.
+
+**Files changed or reviewed**
+
+- `apps/web/src/App.tsx` — compact Overview and Health/Diff drawers, focus
+  restoration, live operational/approval announcements, and virtual timeline
+- `apps/web/src/state.ts` — linear timeline grouping and bounded window math
+- `apps/web/src/styles.css` — safe areas, 44 px targets, text wrapping,
+  reduced-motion/forced-color behavior, and responsive drawer layout
+- `apps/web/test/state.test.ts` — 100,000-item construction/window regressions
+- `apps/web/README.md`, status, execution plan, and handoff documentation
+
+**Commands and tests**
+
+```text
+pnpm --filter @aicl/web check
+→ typecheck, 5 tests, ESLint, and Vite production build passed
+
+pnpm check
+→ exit 0; 47 tests passed; one opt-in real-provider E2E skipped; strict
+  typecheck, ESLint, Windows process-tree test, and production build passed
+
+Playwright viewport matrix: 375×812, 768×1024, 1024×768, 1440×1000
+→ 0 page/body overflow; 0 enabled controls below 44×44 px
+
+Playwright accessibility/scale checks
+→ skip link focused `main`; drawer Escape restored trigger focus; token contrast
+  5.59:1–18.31:1; reduced motion 0.01 ms/one iteration; 200% text 0 overflow
+
+Playwright with real Codex at 375×812 and 200% text
+→ both approval decisions fully visible; decline created no target file;
+  terminal Turn completed; console 0 errors/0 warnings
+```
+
+**Observable result**
+
+Run `pnpm dev` and open `http://127.0.0.1:5173`. At widths up to 860 px,
+Overview starts collapsed and Health/Diff opens as a full-height drawer. Press
+Escape to close it and return focus to its trigger. At every tested width,
+timeline, composer, and approval controls fit without horizontal page overflow.
+
+**Protocol/schema assumptions**
+
+- M5.2 consumes the existing normalized protocol-v1 snapshot and catalog only;
+  there is no protocol or SQLite migration.
+- Streaming timeline text is intentionally not an ARIA live region. Operational
+  state and approval count are announced separately to avoid speech flooding.
+- Timeline windowing begins above 200 normalized items and retains stable item
+  IDs plus `aria-posinset`/`aria-setsize` metadata.
+
+**Known limitations or uncertain outcomes**
+
+- Virtualized mode uses fixed 184 px rows with per-row scrolling for unusually
+  large content. Dynamic-height virtualization is not required for Prototype 0.
+- Browser verification is recorded here and in ignored Playwright artifacts;
+  the committed regression suite covers projection/window math, not DOM layout.
+- The mobile Health/Diff drawer is non-modal so a pending Approval Dock can keep
+  operational priority above it.
+
+**Requested next action**
+
+Codex performs **M6.1** as an independent-style correctness/recovery self-audit,
+records evidence-backed findings, and stops before M6.2 or remediation.
