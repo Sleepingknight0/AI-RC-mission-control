@@ -27,6 +27,61 @@ const REQUIRED_METHODS = [
   "thread/resume",
 ];
 
+/** Quote one Windows cmd.exe argument (handles spaces and embedded quotes). */
+function quoteForWindowsShell(value) {
+  const s = String(value);
+  if (s.length === 0) return '""';
+  if (!/[\s"&<>|^%!()]/.test(s)) return s;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+/**
+ * On Windows, `spawn(..., { shell: true })` concatenates args without quoting.
+ * Paths under "Program Files" then break. Prefer shell:false for real .exe paths;
+ * when shell is required, pass a single properly quoted command line.
+ */
+function needsWindowsShell(command) {
+  if (process.platform !== "win32") return false;
+  try {
+    if (existsSync(command) && [".exe", ".com"].includes(extname(command).toLowerCase())) {
+      return false;
+    }
+  } catch {
+    // fall through
+  }
+  return true;
+}
+
+function spawnProcess(command, args, options = {}) {
+  const useShell = needsWindowsShell(command);
+  if (useShell) {
+    const line = [command, ...args].map(quoteForWindowsShell).join(" ");
+    return spawn(line, {
+      ...options,
+      shell: true,
+    });
+  }
+  return spawn(command, args, {
+    ...options,
+    shell: false,
+  });
+}
+
+function spawnProcessSync(command, args, options = {}) {
+  const useShell = needsWindowsShell(command);
+  if (useShell) {
+    const line = [command, ...args].map(quoteForWindowsShell).join(" ");
+    return spawnSync(line, {
+      ...options,
+      shell: true,
+    });
+  }
+  return spawnSync(command, args, {
+    ...options,
+    shell: false,
+  });
+}
+
 class RpcError extends Error {
   constructor(method, error) {
     super(`${method}: ${error?.message ?? "JSON-RPC error"}`);
@@ -54,15 +109,13 @@ class JsonlRpcClient {
   }
 
   async start() {
-    const useShell = process.platform === "win32";
     const startedAt = performance.now();
     const appServerArgs = [...this.commandArgs, "app-server", "--stdio"];
-    const child = spawn(this.command, appServerArgs, {
+    const child = spawnProcess(this.command, appServerArgs, {
       cwd: this.cwd,
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      shell: useShell,
       detached: process.platform !== "win32",
     });
     this.child = child;
@@ -890,12 +943,11 @@ function generateSchema(invocation, cwd, out, env) {
 }
 
 function captureCommand(command, args, cwd, env) {
-  const result = spawnSync(command, args, {
+  const result = spawnProcessSync(command, args, {
     cwd,
     env,
     encoding: "utf8",
     windowsHide: true,
-    shell: process.platform === "win32",
     maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) throw result.error;

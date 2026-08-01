@@ -13,6 +13,7 @@ coverage/
 *.sqlite-wal
 CLAUDE.local.md
 spikes/codex-app-server/artifacts/
+spikes/fixture-project/.mock-codex-state.json
 artifacts/codex/*
 !artifacts/codex/.gitkeep
 reviews/claude/*.tmp
