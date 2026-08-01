@@ -1,0 +1,13 @@
+{
+  "name": "aicl-codex-app-server-spike",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "run": "node spike.mjs",
+    "test:mock": "node spike.mjs --codex ./test/mock-codex.mjs --cwd . --out ./artifacts/mock-test --benchmark-turns 1 --kill-after-deltas 3 --kill-delay-ms 5"
+  }
+}

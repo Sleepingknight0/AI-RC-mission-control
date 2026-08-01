@@ -1,0 +1,63 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "AICL: Check toolchain",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/Check-Toolchain.ps1"],
+      "problemMatcher": []
+    },
+    {
+      "label": "AICL: Run Codex spike (3 runs)",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/Run-CodexSpike.ps1", "-Runs", "3"],
+      "problemMatcher": []
+    },
+    {
+      "label": "AICL: Codex next milestone",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/Invoke-Codex.ps1"],
+      "problemMatcher": []
+    },
+    {
+      "label": "AICL: Grok frontend pass",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/Invoke-GrokFrontend.ps1"],
+      "problemMatcher": []
+    },
+    {
+      "label": "AICL: Claude read-only review",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/Invoke-ClaudeReview.ps1"],
+      "problemMatcher": []
+    },
+    {
+      "label": "AICL: Show next milestone",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/Show-NextStep.ps1"],
+      "problemMatcher": []
+    },
+    {
+      "label": "AICL: pnpm dev",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["dev"],
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "AICL: pnpm check",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["check"],
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}
