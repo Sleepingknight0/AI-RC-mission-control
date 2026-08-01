@@ -1,6 +1,12 @@
 import { z } from "zod";
 
 export const PROTOCOL_VERSION = 1 as const;
+export const MAX_WEBSOCKET_MESSAGE_BYTES = 1024 * 1024;
+export const MAX_INLINE_ENVELOPE_BYTES = 768 * 1024;
+export const MAX_PROMPT_BYTES = 256 * 1024;
+export const MAX_OUTPUT_BATCH_BYTES = 256 * 1024;
+export const MAX_INLINE_DIFF_BYTES = 512 * 1024;
+export const ARTIFACT_CHUNK_BYTES = 128 * 1024;
 
 const id = z.string().min(1).max(200);
 const timestamp = z.string().datetime({ offset: true });
@@ -52,6 +58,97 @@ export const TurnStatusSchema = z.enum([
   "outcome_unknown",
 ]);
 
+export const ActivityStatusSchema = z.enum([
+  "running",
+  "completed",
+  "failed",
+  "declined",
+  "interrupted",
+]);
+
+export const ToolActivitySchema = z.object({
+  activityId: id,
+  turnId: id,
+  kind: z.enum(["command", "tool"]),
+  title: z.string().min(1).max(20_000),
+  cwd: z.string().max(4_096).nullable(),
+  status: ActivityStatusSchema,
+  revision: z.number().int().nonnegative(),
+  exitCode: z.number().int().nullable(),
+  durationMs: z.number().int().nonnegative().nullable(),
+  outputPreview: z.string().max(32 * 1024),
+});
+
+export const ArtifactReferenceSchema = z.object({
+  artifactId: id,
+  mediaType: z.string().min(1).max(200),
+  byteLength: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  downloadPath: z.string().regex(/^\/artifacts\/[A-Za-z0-9-]+$/),
+  expiresAt: timestamp.optional(),
+});
+
+export const DiffReferenceSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("inline"),
+    content: z.string(),
+    byteLength: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }),
+  z.object({
+    kind: z.literal("artifact"),
+    artifact: ArtifactReferenceSchema,
+  }),
+]);
+
+export const FileChangeSchema = z.object({
+  fileChangeId: id,
+  turnId: id,
+  status: ActivityStatusSchema,
+  revision: z.number().int().nonnegative(),
+  files: z.array(
+    z.object({
+      path: z.string().min(1).max(4_096),
+      kind: z.enum(["add", "update", "delete"]),
+    }),
+  ),
+  additions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  diff: DiffReferenceSchema.nullable(),
+});
+
+export const ApprovalStateSchema = z.enum([
+  "pending",
+  "approved_once",
+  "declined",
+  "expired",
+  "invalidated",
+]);
+
+export const ApprovalPayloadSchema = z.object({
+  summary: z.string().min(1).max(20_000),
+  command: z.string().max(20_000).nullable(),
+  cwd: z.string().max(4_096).nullable(),
+  reason: z.string().max(20_000).nullable(),
+  activityId: id.nullable(),
+  fileChangeId: id.nullable(),
+});
+
+export const ApprovalSchema = z.object({
+  approvalId: id,
+  sessionId: id,
+  runtimeId: id,
+  runtimeGeneration: z.number().int().positive(),
+  turnId: id,
+  actionType: z.enum(["command", "file_change"]),
+  state: ApprovalStateSchema,
+  revision: z.number().int().nonnegative(),
+  expiresAt: timestamp,
+  payload: ApprovalPayloadSchema,
+  resolvedAt: timestamp.nullable(),
+  resolvedByDeviceId: id.nullable(),
+});
+
 export const TurnSchema = z.object({
   turnId: id,
   commandId: id,
@@ -84,6 +181,9 @@ export const SessionSnapshotSchema = z.object({
   providerSessionId: id.nullable(),
   turns: z.array(TurnSchema),
   messages: z.array(AssistantMessageSchema),
+  activities: z.array(ToolActivitySchema),
+  fileChanges: z.array(FileChangeSchema),
+  approvals: z.array(ApprovalSchema),
 });
 
 export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
@@ -117,9 +217,24 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       turnId: id,
     }),
   ),
+  envelope(
+    "approval.resolve",
+    z.object({
+      commandId: id,
+      sessionId: id,
+      approvalId: id,
+      expectedRevision: z.number().int().nonnegative(),
+      decision: z.enum(["approved_once", "declined"]),
+      deviceId: id,
+    }),
+  ),
 ]);
 
 export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
+  envelope(
+    "server.hello",
+    z.object({ artifactAccessToken: id }),
+  ),
   envelope(
     "command.accepted",
     z.object({ commandId: id, sessionId: id, turnId: id }),
@@ -183,6 +298,58 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
     }),
   ),
   envelope(
+    "activity.started",
+    z.object({ sessionId: id, activity: ToolActivitySchema, ...durableEventIdentity }),
+  ),
+  envelope(
+    "activity.completed",
+    z.object({ sessionId: id, activity: ToolActivitySchema, ...durableEventIdentity }),
+  ),
+  envelope(
+    "command.output.batch",
+    z.object({
+      sessionId: id,
+      turnId: id,
+      activityId: id,
+      streamSeq: z.number().int().positive(),
+      output: z.string(),
+    }),
+  ),
+  envelope(
+    "file.change.started",
+    z.object({ sessionId: id, fileChange: FileChangeSchema, ...durableEventIdentity }),
+  ),
+  envelope(
+    "file.change.completed",
+    z.object({ sessionId: id, fileChange: FileChangeSchema, ...durableEventIdentity }),
+  ),
+  envelope(
+    "approval.requested",
+    z.object({ sessionId: id, approval: ApprovalSchema, ...durableEventIdentity }),
+  ),
+  envelope(
+    "approval.resolved",
+    z.object({ sessionId: id, approval: ApprovalSchema, ...durableEventIdentity }),
+  ),
+  envelope(
+    "approval.expired",
+    z.object({ sessionId: id, approval: ApprovalSchema, ...durableEventIdentity }),
+  ),
+  envelope(
+    "approval.invalidated",
+    z.object({ sessionId: id, approval: ApprovalSchema, ...durableEventIdentity }),
+  ),
+  envelope(
+    "interrupt.result",
+    z.object({
+      commandId: id,
+      sessionId: id,
+      turnId: id,
+      status: z.literal("accepted"),
+      ...durableEventIdentity,
+    }),
+  ),
+  envelope(
     "replay.boundary",
     z.object({
       sessionId: id,
@@ -213,6 +380,19 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       commandId: id,
       providerSessionId: id,
       providerTurnId: id,
+    }),
+  ),
+  envelope(
+    "connector.approval.resolve",
+    z.object({
+      commandId: id,
+      sessionId: id,
+      turnId: id,
+      approvalId: id,
+      providerCorrelationId: id,
+      runtimeId: id,
+      runtimeGeneration: z.number().int().positive(),
+      decision: z.enum(["approved_once", "declined"]),
     }),
   ),
   envelope(
@@ -256,6 +436,78 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
     }),
   ),
   connectorEnvelope(
+    "connector.activity.started",
+    z.object({ sessionId: id, activity: ToolActivitySchema }),
+  ),
+  connectorEnvelope(
+    "connector.activity.completed",
+    z.object({ sessionId: id, activity: ToolActivitySchema }),
+  ),
+  connectorEnvelope(
+    "connector.command.output.batch",
+    z.object({
+      sessionId: id,
+      turnId: id,
+      activityId: id,
+      streamSeq: z.number().int().positive(),
+      output: z.string(),
+    }),
+  ),
+  connectorEnvelope(
+    "connector.file.change.started",
+    z.object({ sessionId: id, fileChange: FileChangeSchema }),
+  ),
+  connectorEnvelope(
+    "connector.file.change.completed",
+    z.object({
+      sessionId: id,
+      fileChange: FileChangeSchema.omit({ diff: true }).extend({
+        inlineDiff: z.string().nullable(),
+        artifact: ArtifactReferenceSchema.nullable(),
+      }),
+    }),
+  ),
+  connectorEnvelope(
+    "connector.approval.requested",
+    z.object({
+      sessionId: id,
+      approval: ApprovalSchema,
+      providerCorrelationId: id,
+    }),
+  ),
+  connectorEnvelope(
+    "connector.interrupt.result",
+    z.object({
+      commandId: id,
+      sessionId: id,
+      turnId: id,
+      status: z.literal("accepted"),
+    }),
+  ),
+  connectorEnvelope(
+    "connector.artifact.begin",
+    z.object({
+      sessionId: id,
+      turnId: id,
+      artifact: ArtifactReferenceSchema,
+      chunkCount: z.number().int().positive(),
+    }),
+  ),
+  connectorEnvelope(
+    "connector.artifact.chunk",
+    z.object({
+      sessionId: id,
+      turnId: id,
+      artifactId: id,
+      chunkIndex: z.number().int().nonnegative(),
+      contentBase64: z.string().max(ARTIFACT_CHUNK_BYTES * 2),
+    }),
+  ),
+  connectorEnvelope(
+    "connector.artifact.complete",
+    z.object({ sessionId: id, turnId: id, artifactId: id }),
+  ),
+  connectorEnvelope(
     "connector.turn.message.completed",
     z.object({
       sessionId: id,
@@ -286,6 +538,10 @@ export type ProtocolError = z.infer<typeof ProtocolErrorSchema>;
 export type Turn = z.infer<typeof TurnSchema>;
 export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
 export type Runtime = z.infer<typeof RuntimeSchema>;
+export type ToolActivity = z.infer<typeof ToolActivitySchema>;
+export type FileChange = z.infer<typeof FileChangeSchema>;
+export type Approval = z.infer<typeof ApprovalSchema>;
+export type ArtifactReference = z.infer<typeof ArtifactReferenceSchema>;
 export type SessionSnapshot = z.infer<typeof SessionSnapshotSchema>;
 export type ClientEnvelope = z.infer<typeof ClientEnvelopeSchema>;
 export type ServerEnvelope = z.infer<typeof ServerEnvelopeSchema>;
@@ -303,9 +559,19 @@ export function makeEnvelope<T extends string, P>(type: T, payload: P) {
   };
 }
 
-export function decodeJson(value: unknown): unknown {
+export function utf8ByteLength(value: string) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+export function decodeJson(
+  value: unknown,
+  maxBytes = MAX_WEBSOCKET_MESSAGE_BYTES,
+): unknown {
   if (typeof value !== "string") {
     throw new TypeError("WebSocket message must be UTF-8 JSON text");
+  }
+  if (utf8ByteLength(value) > maxBytes) {
+    throw new RangeError(`WebSocket message exceeds ${maxBytes} bytes`);
   }
 
   return JSON.parse(value) as unknown;

@@ -5,17 +5,27 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import {
+  MAX_INLINE_DIFF_BYTES,
+  ApprovalSchema,
+  ArtifactReferenceSchema,
+  FileChangeSchema,
   ServerEnvelopeSchema,
+  ToolActivitySchema,
   makeEnvelope,
+  utf8ByteLength,
+  type Approval,
+  type ArtifactReference,
   type ClientEnvelope,
   type ConnectorEnvelope,
+  type FileChange,
   type Runtime,
   type ServerEnvelope,
   type SessionSnapshot,
+  type ToolActivity,
   type Turn,
 } from "@aicl/protocol";
 
-const CORE_SCHEMA_VERSION = 1;
+const CORE_SCHEMA_VERSION = 2;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -28,6 +38,24 @@ type MutationResult =
       kind: "new";
       result: ServerEnvelope;
       durableEvent?: ServerEnvelope;
+    };
+
+type MutatingClientEnvelope = Extract<
+  ClientEnvelope,
+  { type: "turn.submit" | "turn.interrupt" | "approval.resolve" }
+>;
+
+export type ApprovalResolutionResult =
+  | { kind: "same"; result: ServerEnvelope }
+  | { kind: "conflict" }
+  | {
+      kind: "new";
+      result: ServerEnvelope;
+      durableEvent?: ServerEnvelope;
+      dispatch?: {
+        approval: Approval;
+        providerCorrelationId: string;
+      };
     };
 
 export interface ConnectorSource {
@@ -79,6 +107,56 @@ interface RuntimeRow {
   state: Runtime["status"];
 }
 
+interface ActivityRow {
+  id: string;
+  turn_id: string;
+  kind: ToolActivity["kind"];
+  title: string;
+  cwd: string | null;
+  state: ToolActivity["status"];
+  revision: number;
+  exit_code: number | null;
+  duration_ms: number | null;
+  output_preview: string;
+}
+
+interface FileChangeRow {
+  id: string;
+  turn_id: string;
+  state: FileChange["status"];
+  revision: number;
+  files_json: string;
+  additions: number;
+  deletions: number;
+  diff_json: string | null;
+}
+
+interface ApprovalRow {
+  id: string;
+  session_id: string;
+  runtime_id: string;
+  runtime_generation: number;
+  turn_id: string;
+  provider_correlation_id: string;
+  action_type: Approval["actionType"];
+  state: Approval["state"];
+  revision: number;
+  payload_json: string;
+  expires_at: string;
+  resolved_by_device_id: string | null;
+  resolved_at: string | null;
+}
+
+interface ArtifactRow {
+  id: string;
+  session_id: string;
+  turn_id: string;
+  media_type: string;
+  byte_length: number;
+  sha256: string;
+  content: Uint8Array;
+}
+
 export class CoreDatabase {
   readonly #database: DatabaseSync;
   #writerTail: Promise<void> = Promise.resolve();
@@ -126,6 +204,9 @@ export class CoreDatabase {
         providerSessionId: null,
         turns: [],
         messages: [],
+        activities: [],
+        fileChanges: [],
+        approvals: [],
       };
     }
     const turns = this.#database
@@ -141,6 +222,28 @@ export class CoreDatabase {
            FROM assistant_messages WHERE session_id = ? ORDER BY created_at, id`,
       )
       .all(sessionId) as unknown as MessageRow[];
+    const activities = this.#database
+      .prepare(
+        `SELECT id, turn_id, kind, title, cwd, state, revision, exit_code,
+                duration_ms, output_preview
+           FROM tool_activities WHERE session_id = ? ORDER BY created_at, id`,
+      )
+      .all(sessionId) as unknown as ActivityRow[];
+    const fileChanges = this.#database
+      .prepare(
+        `SELECT id, turn_id, state, revision, files_json, additions, deletions,
+                diff_json
+           FROM file_changes WHERE session_id = ? ORDER BY created_at, id`,
+      )
+      .all(sessionId) as unknown as FileChangeRow[];
+    const approvals = this.#database
+      .prepare(
+        `SELECT id, session_id, runtime_id, runtime_generation, turn_id,
+                provider_correlation_id, action_type, state, revision,
+                payload_json, expires_at, resolved_by_device_id, resolved_at
+           FROM approval_requests WHERE session_id = ? ORDER BY created_at, id`,
+      )
+      .all(sessionId) as unknown as ApprovalRow[];
     const active = turns.find((turn) => turn.state === "running");
     return {
       sessionId,
@@ -164,6 +267,9 @@ export class CoreDatabase {
         content: message.content,
         completed: message.completed === 1,
       })),
+      activities: activities.map(activityFromRow),
+      fileChanges: fileChanges.map(fileChangeFromRow),
+      approvals: approvals.map(approvalFromRow),
     };
   }
 
@@ -233,7 +339,7 @@ export class CoreDatabase {
   }
 
   priorCommand(
-    message: Extract<ClientEnvelope, { type: "turn.submit" | "turn.interrupt" }>,
+    message: MutatingClientEnvelope,
   ): Exclude<MutationResult, { kind: "new" }> | undefined {
     const prior = this.#command(message.payload.commandId);
     if (prior === undefined) return undefined;
@@ -346,7 +452,7 @@ export class CoreDatabase {
   }
 
   async recordRejectedCommand(
-    message: Extract<ClientEnvelope, { type: "turn.submit" | "turn.interrupt" }>,
+    message: MutatingClientEnvelope,
     result: ServerEnvelope,
   ): Promise<MutationResult> {
     return this.#write(() => {
@@ -745,7 +851,7 @@ export class CoreDatabase {
   }
 
   #insertCommand(
-    message: Extract<ClientEnvelope, { type: "turn.submit" | "turn.interrupt" }>,
+    message: MutatingClientEnvelope,
     payloadHash: string,
     state: string,
     result: ServerEnvelope,
