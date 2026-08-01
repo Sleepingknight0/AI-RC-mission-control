@@ -42,6 +42,8 @@ pnpm dev
 หน้าเว็บส่ง prompt ผ่าน normalized WebSocket flow, รองรับ interrupt และปฏิเสธ
 Turn ซ้อนด้วย `TURN_ALREADY_ACTIVE` รวมทั้งแสดง command output, file diff และ
 approval dock สำหรับ approve-once/decline โดยไม่เปิดเผย raw provider request ID
+สคริปต์พัฒนาจะสร้าง browser/Connector capability ใหม่ทุกครั้ง จำกัด browser
+Origin แบบ exact match และส่งให้แต่ละ process โดยไม่ต้องเก็บ token ถาวร
 
 Core และ Connector ใช้ SQLite คนละไฟล์ โดยค่าเริ่มต้นอยู่ที่
 `.data/aicl-core.db` และ `.data/aicl-connector.db` ตามลำดับ คำสั่ง
@@ -49,11 +51,19 @@ Core และ Connector ใช้ SQLite คนละไฟล์ โดยค�
 Core commit durable state/event ก่อน broadcast ส่วน token deltas เป็น ephemeral
 และ browser จะขอ replay จาก durable sequence ล่าสุดเมื่อ reconnect
 
-Core schema version 2 เก็บ activity, file change, approval และ artifact metadata
+Core schema version 3 เก็บ activity, file change, approval, artifact metadata
+และลำดับแสดงผลข้ามชนิด event ส่วน Connector schema version 2 ใช้ journal
+sequence แบบ FIFO พร้อม durable command receipts
 diff ไม่เกิน 512 KiB และ serialized envelope ไม่เกิน 768 KiB จึงส่ง inline;
 ข้อมูลที่เกินเพดานใดเพดานหนึ่งถูกแบ่ง chunk ผ่าน Connector journal แล้วดาวน์โหลด
 จาก `/artifacts/{artifactId}` ด้วย bearer token ชั่วคราว
-endpoint รองรับ byte range และตรวจ byte length/SHA-256 โดยไม่รับ filesystem path
+endpoint รองรับ byte range แบบ bounded read ตรวจ byte length/SHA-256 และส่งเป็น
+attachment ด้วย media type ที่อนุญาต โดยไม่รับ filesystem path
+
+Connector ยอมรับ project root เฉพาะ canonical directory ใต้
+`AICL_PROJECT_ROOTS` (คั่นหลาย path ด้วย `;` บน Windows) และส่ง environment
+allowlist ให้ Codex child process เท่านั้น ใช้ `codex login`/credential store;
+ตัวแปร secret อื่นจาก shell จะไม่ถูกส่งต่อโดยอัตโนมัติ
 
 เปลี่ยนตำแหน่งฐานข้อมูล local ได้ด้วย:
 

@@ -5,9 +5,9 @@
 M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
 M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
 (functional, responsive, accessible mission-control frontend), and both M6
-self-audits are complete on the target Windows host. Codex owns every remaining
-Prototype 0 phase. The next observable outcome is M7.1 evidence-based triage,
-remediation, and regression coverage for accepted findings.
+self-audits and M7.1 accepted-finding remediation are complete on the target
+Windows host. Codex owns the remaining Prototype 0 phase. The next observable
+outcome is M7.2 clean-checkout validation with the real provider.
 
 ## Scope
 
@@ -22,8 +22,8 @@ remediation, and regression coverage for accepted findings.
 - M5.2 responsive, accessibility, and UX polish — **done**
 - M6.1 correctness/recovery self-audit — **done**
 - M6.2 security/boundary self-audit — **done**
-- Current: M7.1 accepted-finding remediation (Codex-owned)
-- Next after this run: M7.2 clean-checkout final gate
+- M7.1 accepted-finding remediation — **done**
+- Current: M7.2 clean-checkout final gate (Codex-owned)
 
 ## Non-goals
 
@@ -47,8 +47,14 @@ remediation, and regression coverage for accepted findings.
 - Core owns authoritative SQLite projections and events under `.data/aicl-core.db`
 - Connector owns a separate inbox/outbox journal under `.data/aicl-connector.db`
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
-- Core schema v2 projects tool activities, file changes, approvals, and artifacts
-- Connector batches ephemeral UTF-8 command output and journals large-diff chunks
+- Core schema v3 projects tool activities, file changes, approvals, artifacts,
+  cross-type display sequence, and guarded command transitions
+- Connector schema v2 batches ephemeral UTF-8 command output, journals
+  large-diff chunks in FIFO order, and reports durable command receipts
+- Browser and Connector endpoints require separate per-launch capabilities;
+  browser upgrades also require an exact allowed Origin
+- Connector canonicalizes project roots against an operator-owned allowlist and
+  launches the provider with an explicit environment allowlist
 - Core publishes a normalized durable Session catalog; Web never reads SQLite or
   provider-specific state
 - Web exposes Mission Overview, selectable Session rail, normalized timeline,
@@ -91,28 +97,31 @@ remediation, and regression coverage for accepted findings.
 - [x] Trace browser, Connector, HTTP, filesystem, provider, and rendering boundaries (M6.2)
 - [x] Run hostile-Origin, impersonation, allocation, rate, and redaction probes (M6.2)
 - [x] Preserve 6 Standards and 6 Spec findings without reranking or remediation (M6.2)
+- [x] Deduplicate all accepted findings into a source-traceable register (M7.1)
+- [x] Repair trust, containment, resource, environment, and redaction boundaries (M7.1)
+- [x] Repair FIFO, receipt/lease, timeout, approval, command, timeline, and DB invariants (M7.1)
+- [x] Add regression coverage and pass the complete repository gate (M7.1)
 
-## M7.1 verification and rollback
+## M7.1 completed verification
 
-- Build one deduplicated remediation register from both Codex audit reports;
-  retain source finding IDs and explicitly accept, reject, or defer each item.
-- Repair Critical trust-boundary findings first, then High correctness/security
-  invariants, followed by Medium/Low items justified for Prototype 0.
-- Add a failing regression before or with each accepted fix. Preserve provider
-  compatibility, no prompt replay, row-level approval CAS, and normalized Web.
-- Use small rollback-safe commits if the remediation group must be split; do not
-  mark M7.1 complete while any accepted Prototype 0 finding lacks verification.
+- `reviews/codex/M7.1-REMEDIATION-REGISTER.md` retains every M6.1/M6.2 source
+  ID and maps 17 accepted themes to an implementation and regression proof.
+- Critical trust boundaries were repaired before recovery/state fixes. Provider
+  compatibility, no prompt replay, row-level approval CAS, and normalized Web
+  remain intact.
+- `pnpm check`, `pnpm migrate`, and `git diff --check` are the completion gate.
+  M7.2 owns only clean-checkout and opt-in real-provider validation.
 
 ## Protocol or schema changes
 
-`@aicl/protocol` version 1 includes normalized `sessions.list` and
-`sessions.snapshot` messages. Each Session summary derives operational state,
-latest Turn/runtime status, pending approvals, cwd, activity time, Turn count,
-and durable cursor from Core projections. Durable event envelopes carry
+`@aicl/protocol` still reports Prototype version 1 but intentionally tightens
+the lockstep Core/Connector contract with bounded receipts/outcomes, optional
+durable display sequence, safe artifact media types, decoded semantic limits,
+and role-specific WebSocket capability helpers. Durable event envelopes carry
 Session-local sequence; assistant/command deltas remain ephemeral. Generated
 Codex types, raw events, and raw provider request IDs stay under the adapter
-boundary. M6.1 and M6.2 added no protocol, source, or SQLite schema changes;
-they recorded remediation candidates for M7.1 only.
+boundary. Core SQLite schema is v3 and Connector schema is v2; both migrations
+remain idempotent.
 
 ## Tests and fault scenarios
 
@@ -120,7 +129,7 @@ they recorded remediation candidates for M7.1 only.
 - Mock spike passed after harness fix.
 - Three real spikes: first-delta 4.5–6.3 s; ~55 deltas/s avg; peak 1 s up to 154;
   mid-turn kill reconstructed as `interrupted` via `thread/read` + `thread/resume`.
-- `pnpm check`: strict typecheck, 47 unit/integration tests, ESLint, a real
+- `pnpm check`: strict typecheck, 65 unit/integration tests, ESLint, a real
   Windows child-tree termination test, and Vite production build passed.
 - Live compatibility probe: Codex 0.146.0, 275 schema files, canonical SHA-256
   `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`.
@@ -182,6 +191,14 @@ they recorded remediation candidates for M7.1 only.
 - The first M6.2 `pnpm check` hit one 5 s timeout in the Core-restart recovery
   case. Its immediate targeted rerun passed all 3 tests (affected case 208 ms),
   and the complete rerun passed all 47 tests without source changes.
+- M7.1 security regressions cover exact Origin/capability separation, canonical
+  root containment, aggregate artifact limits, bounded range reads, inert
+  artifact responses, environment isolation, redaction, rate/violation budgets,
+  and heartbeat termination.
+- M7.1 recovery regressions cover exact FIFO journal replay, durable receipts,
+  missing-receipt and startup-lease convergence, RPC timeout ambiguity, one
+  active Turn per Runtime, passive approval expiry, durable command failure,
+  cross-type display order, and database transition guards.
 
 ## Surprises and measurements
 
@@ -196,8 +213,9 @@ they recorded remediation candidates for M7.1 only.
   the header status strip and timeline metadata now wrap instead of being clipped.
 - Millisecond timestamps plus random UUID tie-breaking do not preserve Connector
   outbox insertion order under burst writes.
-- The current loss timer cannot distinguish transport loss from Connector process
-  death, and Core startup does not rebuild an ownership deadline for active Turns.
+- The audit showed that channel loss needs an explicit lease: same-identity
+  receipt reconciliation now preserves verified ownership, while expiry or a
+  missing receipt converges to `outcome_unknown` without prompt replay.
 - Loopback binding does not stop browser cross-site WebSocket access; Origin and
   application identity must be enforced explicitly.
 - Per-frame WebSocket limits work, but aggregate artifact allocation, semantic
@@ -249,10 +267,18 @@ they recorded remediation candidates for M7.1 only.
   for triage/remediation in M7.1 after the independent M6.2 boundary audit.
 - Preserve Standards and Spec M6.2 findings as separate axes. M7.1 may deduplicate
   implementation work, but must keep traceability to every original finding.
+- Use separate browser/Connector capabilities generated per `pnpm dev` launch;
+  treat exact Origin as a second browser boundary, not authentication by itself.
+- Canonicalize operator-owned project roots before provider launch and pass only
+  an explicit child environment allowlist.
+- Use durable Connector receipts plus a bounded Core ownership lease to resolve
+  restart ambiguity conservatively; missing proof always means unknown, never replay.
+- Assign one Core display sequence to every durable projected timeline record;
+  Web ordering never falls back to independent type/timestamp groups.
 
 ## Final outcome
 
-M0 through M6.2 complete. Reproduce the normal and opt-in gates with:
+M0 through M7.1 complete. Reproduce the normal and M7.2 opt-in gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
@@ -268,6 +294,8 @@ M6.1 evidence is recorded in
 `reviews/codex/M6.1-CORRECTNESS-RECOVERY-AUDIT.md`.
 M6.2 evidence is recorded in
 `reviews/codex/M6.2-SECURITY-BOUNDARY-AUDIT.md`.
+M7.1 decisions and evidence are recorded in
+`reviews/codex/M7.1-REMEDIATION-REGISTER.md`.
 
-Next: Codex performs M7.1 accepted-finding remediation and stops before the
-M7.2 clean-checkout final gate.
+Next: Codex performs M7.2 from a clean checkout, runs the opt-in real-provider
+demo/fault gate, records final evidence, and completes Prototype 0.

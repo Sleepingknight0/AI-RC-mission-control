@@ -5,6 +5,8 @@ import {
 } from "node:child_process";
 import { extname } from "node:path";
 
+import { redactSensitiveText } from "@aicl/protocol";
+
 import { BoundedLineFramer, parseJsonLine } from "./line-framer.js";
 import { platformCommand } from "./command.js";
 
@@ -22,6 +24,49 @@ export class ProviderRpcError extends Error {
     super(`${method}: provider returned a JSON-RPC error`);
     this.name = "ProviderRpcError";
   }
+}
+
+export class ProviderRpcTimeoutError extends Error {
+  constructor(readonly method: string, readonly timeoutMs: number) {
+    super(`${method} timed out after ${timeoutMs} ms`);
+    this.name = "ProviderRpcTimeoutError";
+  }
+}
+
+const PROVIDER_ENVIRONMENT_KEYS = [
+  "PATH",
+  "Path",
+  "HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+  "SystemRoot",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "CODEX_HOME",
+] as const;
+
+export function buildProviderEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {
+    NO_COLOR: "1",
+    LOG_FORMAT: "json",
+  };
+  for (const key of PROVIDER_ENVIRONMENT_KEYS) {
+    const value = source[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return environment;
 }
 
 interface PendingRequest {
@@ -45,7 +90,7 @@ export class RpcRequestBroker {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(id);
-        reject(new Error(`${method} timed out after ${timeoutMs} ms`));
+        reject(new ProviderRpcTimeoutError(method, timeoutMs));
       }, timeoutMs);
       this.#pending.set(id, { method, timer, resolve, reject });
       write(params === undefined ? { id, method } : { id, method, params });
@@ -151,7 +196,7 @@ export class CodexRpcProcess {
       invocation.args,
       {
         cwd: this.#options.cwd,
-        env: { ...process.env, NO_COLOR: "1", LOG_FORMAT: "json" },
+        env: buildProviderEnvironment(),
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         detached: process.platform !== "win32",
@@ -180,7 +225,7 @@ export class CodexRpcProcess {
     child.stderr.on("data", (chunk: Buffer) => {
       try {
         for (const line of stderrFramer.push(chunk)) {
-          this.#stderr.push(line);
+          this.#stderr.push(redactSensitiveText(line));
           if (this.#stderr.length > 50) this.#stderr.shift();
         }
       } catch {
@@ -218,13 +263,18 @@ export class CodexRpcProcess {
     return result;
   }
 
-  request(method: string, params?: unknown) {
-    return this.#broker.request(
-      method,
-      params,
-      this.#options.timeoutMs,
-      (message) => this.#write(message),
-    );
+  async request(method: string, params?: unknown) {
+    try {
+      return await this.#broker.request(
+        method,
+        params,
+        this.#options.timeoutMs,
+        (message) => this.#write(message),
+      );
+    } catch (error) {
+      if (error instanceof ProviderRpcTimeoutError) void this.killTree();
+      throw error;
+    }
   }
 
   notify(method: string, params?: unknown) {

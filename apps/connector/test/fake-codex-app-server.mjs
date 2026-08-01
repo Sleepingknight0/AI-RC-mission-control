@@ -46,6 +46,7 @@ lines.on("line", (line) => {
       const text = String(message.params.input[0].text);
       const turnId = `fake-turn-${message.params.clientUserMessageId}`;
       active = { threadId: message.params.threadId, turnId, text, timer: undefined };
+      if (text === "timeout-start") return;
       send({ id: message.id, result: { turn: { id: turnId } } });
       if (text === "crash") {
         setTimeout(() => {
@@ -195,6 +196,22 @@ lines.on("line", (line) => {
               commandActions: [],
               cwd: process.cwd(),
               reason: "test approval",
+            },
+          });
+        }, 15);
+      } else if (text === "oversized-message") {
+        setTimeout(() => {
+          send({
+            method: "item/completed",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              completedAtMs: Date.now(),
+              item: {
+                type: "agentMessage",
+                id: "oversized-message",
+                text: "x".repeat(600 * 1024),
+              },
             },
           });
         }, 15);

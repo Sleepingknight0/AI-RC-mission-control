@@ -24,8 +24,12 @@ afterEach(async () => {
   await Promise.allSettled(providers.splice(0).map((provider) => provider.close()));
 });
 
-function provider() {
-  const value = new CodexProvider({ cwd: process.cwd(), command: fakeCommand });
+function provider(timeoutMs?: number) {
+  const value = new CodexProvider({
+    cwd: process.cwd(),
+    command: fakeCommand,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
   providers.push(value);
   return value;
 }
@@ -115,6 +119,34 @@ describe("Codex adapter normalization", () => {
     expect(lost).toBe(1);
     expect(events.filter((event) => event.type === "connector.turn.bound")).toHaveLength(1);
     expect(events.at(-1)?.type).toBe("connector.turn.outcome_unknown");
+  });
+
+  it("treats a side-effecting RPC timeout as provider loss", async () => {
+    const adapter = provider(500);
+    const events: ConnectorEnvelope[] = [];
+
+    await expect(
+      adapter.startTurn(startCommand("timeout-start"), (event) => events.push(event)),
+    ).rejects.toBeInstanceOf(ProviderLostError);
+    await waitUntil(() =>
+      events.some((event) => event.type === "connector.turn.outcome_unknown"),
+    );
+    expect(events.some((event) => event.type === "connector.turn.failed")).toBe(false);
+  });
+
+  it("fails closed when completed provider output exceeds the normalized limit", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+
+    await expect(
+      adapter.startTurn(startCommand("oversized-message"), (event) =>
+        events.push(event),
+      ),
+    ).rejects.toBeInstanceOf(ProviderLostError);
+    expect(events.at(-1)?.type).toBe("connector.turn.outcome_unknown");
+    expect(events.some((event) => event.type === "connector.turn.completed")).toBe(
+      false,
+    );
   });
 
   it("normalizes command output and file changes without provider identifiers", async () => {

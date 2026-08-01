@@ -23,7 +23,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M5.2 Codex responsive, accessibility, and UX pass completed
 - [x] M6.1 Codex correctness/recovery self-audit completed
 - [x] M6.2 Codex security/boundary self-audit completed
-- [ ] M7.1 Codex resolved accepted self-audit findings with regression tests
+- [x] M7.1 Codex resolved accepted self-audit findings with regression tests
 - [ ] M7.2 clean-checkout prototype demo and final gate completed
 
 ## Optional post-Prototype phases
@@ -34,8 +34,8 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-No external AI gate. Next milestone: **M7.1** — Codex deduplicates, reproduces,
-and resolves accepted self-audit findings with regression tests.
+No external AI gate. Next milestone: **M7.2** — Codex runs the clean-checkout
+prototype demo and final real-provider gate.
 
 ## Last verified demo
 
@@ -44,8 +44,8 @@ and resolves accepted self-audit findings with regression tests.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 2 and Connector schema version 1; `pnpm migrate` is idempotent. Core adds durable activity/file-change/approval/artifact projections while Connector retains its separate inbox/outbox journal.
-- Repository checks: `pnpm check` — strict typecheck, 47 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
+- Database schema: Core schema version 3 and Connector schema version 2; `pnpm migrate` is idempotent. Core adds durable display order and database transition guards; Connector adds strict FIFO journal sequence.
+- Repository checks: `pnpm check` — strict typecheck, 65 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
 - Real Codex E2E: opt-in test passed in 73.64 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, new-process resume, no command replay, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
 - M4 race/fault tests: exactly one of two tabs wins approval CAS; duplicate command IDs replay; expiry/provider loss/runtime restart reject stale decisions; interrupt, UTF-8 batching, inline/large diff thresholds, artifact integrity/auth/range/traversal all pass.
@@ -54,3 +54,4 @@ and resolves accepted self-audit findings with regression tests.
 - M5.2 UX gate: Playwright verified 375/768/1024/1440 layouts with zero page overflow or sub-44px enabled controls, keyboard skip/focus order, mobile drawer Escape/focus restoration, WCAG-AA token contrast, reduced motion, and 200% text. A real Codex approval remained operable at 200% text; decline created no target file. Timeline construction/windowing tests cover 100,000 items.
 - M6.1 audit: `reviews/codex/M6.1-CORRECTNESS-RECOVERY-AUDIT.md` records 12 evidence-backed findings (6 High, 5 Medium, 1 Low), three read-only fault probes, verified controls, and one falsified race hypothesis. No remediation was mixed into the review milestone.
 - M6.2 audit: `reviews/codex/M6.2-SECURITY-BOUNDARY-AUDIT.md` preserves 6 Standards and 6 Spec findings (8 distinct remediation themes). In-memory probes reproduced hostile-Origin browser control, Connector impersonation with prompt interception, artifact allocation gaps, missing rate throttling, and raw secret leakage. No remediation was mixed into the review milestone.
+- M7.1 remediation: `reviews/codex/M7.1-REMEDIATION-REGISTER.md` maps all 17 accepted security/recovery themes to implemented controls and regression evidence. Per-launch WebSocket capabilities, canonical project roots, payload/allocation/rate limits, redaction, FIFO receipts, startup ownership expiry, passive approval expiry, durable command outcomes, timeline sequencing, and SQLite transition guards are verified.

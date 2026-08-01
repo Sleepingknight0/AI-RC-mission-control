@@ -14,6 +14,7 @@ import {
   ServerEnvelopeSchema,
   makeEnvelope,
   utf8ByteLength,
+  websocketCapability,
   type ServerEnvelope,
 } from "@aicl/protocol";
 import WebSocket from "ws";
@@ -44,13 +45,18 @@ describe("artifact-backed diff flow", () => {
     const provider = new DiffProvider();
     const connector = startConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       provider,
       providerName: "diff-test",
       journalPath: ":memory:",
     });
     handles.push(connector);
     await connector.ready;
-    const browser = await openBrowser(core.browserUrl, "diff-session");
+    const browser = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "diff-session",
+    );
 
     submit(browser, "small-diff", "small");
     const small = await waitForFileChange(browser, 0);
@@ -93,6 +99,8 @@ describe("artifact-backed diff flow", () => {
       headers: { authorization: `Bearer ${artifactAccessToken}` },
     });
     expect(authorized.status).toBe(200);
+    expect(authorized.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(authorized.headers.get("content-disposition")).toContain("attachment;");
     const content = Buffer.from(await authorized.arrayBuffer());
     expect(content.byteLength).toBe(reference.byteLength);
     expect(createHash("sha256").update(content).digest("hex")).toBe(
@@ -217,8 +225,14 @@ function submit(browser: BrowserHarness, commandId: string, prompt: string) {
   );
 }
 
-async function openBrowser(url: string, sessionId: string): Promise<BrowserHarness> {
-  const socket = new WebSocket(url);
+async function openBrowser(
+  url: string,
+  token: string,
+  sessionId: string,
+): Promise<BrowserHarness> {
+  const socket = new WebSocket(url, websocketCapability("browser", token), {
+    origin: "http://127.0.0.1:5173",
+  });
   const messages: ServerEnvelope[] = [];
   socket.on("message", (data) => {
     messages.push(ServerEnvelopeSchema.parse(JSON.parse(data.toString())));

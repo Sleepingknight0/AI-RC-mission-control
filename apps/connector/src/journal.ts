@@ -11,7 +11,7 @@ import {
   type Runtime,
 } from "@aicl/protocol";
 
-const CONNECTOR_SCHEMA_VERSION = 1;
+const CONNECTOR_SCHEMA_VERSION = 2;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -38,6 +38,11 @@ interface MetadataRow {
 
 interface InboxRow {
   payload_hash: string;
+}
+
+interface ReceiptRow {
+  command_id: string;
+  state: "received" | "dispatching" | "completed" | "outcome_unknown";
 }
 
 export class ConnectorJournal {
@@ -164,7 +169,7 @@ export class ConnectorJournal {
     return this.#database
       .prepare(
         `SELECT envelope_json FROM outbox_events
-          WHERE acknowledged_at IS NULL ORDER BY created_at, source_event_id`,
+          WHERE acknowledged_at IS NULL ORDER BY journal_seq`,
       )
       .all()
       .map((row) =>
@@ -214,6 +219,17 @@ export class ConnectorJournal {
         )
         .get() as { count: number }
     ).count;
+  }
+
+  commandReceipts() {
+    return (
+      this.#database
+        .prepare(
+          `SELECT command_id, state FROM inbox_commands
+            ORDER BY received_at DESC, command_id DESC LIMIT 1000`,
+        )
+        .all() as unknown as ReceiptRow[]
+    ).map((row) => ({ commandId: row.command_id, state: row.state }));
   }
 
   close() {

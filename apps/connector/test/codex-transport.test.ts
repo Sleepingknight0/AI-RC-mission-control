@@ -5,7 +5,10 @@ import {
   LineTooLongError,
   parseJsonLine,
 } from "../src/codex/line-framer.js";
-import { RpcRequestBroker } from "../src/codex/rpc-process.js";
+import {
+  RpcRequestBroker,
+  buildProviderEnvironment,
+} from "../src/codex/rpc-process.js";
 
 describe("Codex JSON-lines transport", () => {
   it("frames split lines and rejects oversized input", () => {
@@ -32,5 +35,22 @@ describe("Codex JSON-lines transport", () => {
 
     await expect(first).resolves.toBe("first-result");
     await expect(second).resolves.toBe("second-result");
+  });
+
+  it("constructs an allowlisted child environment without unrelated secrets", () => {
+    const environment = buildProviderEnvironment({
+      PATH: "C:\\tools",
+      USERPROFILE: "C:\\Users\\Operator",
+      CODEX_HOME: "C:\\Users\\Operator\\.codex",
+      AICL_TEST_SECRET: "do-not-forward",
+      GOOGLE_APPLICATION_CREDENTIALS: "do-not-forward-either",
+    });
+
+    expect(environment.PATH).toBe("C:\\tools");
+    expect(environment.USERPROFILE).toBe("C:\\Users\\Operator");
+    expect(environment.CODEX_HOME).toBe("C:\\Users\\Operator\\.codex");
+    expect(environment).not.toHaveProperty("AICL_TEST_SECRET");
+    expect(environment).not.toHaveProperty("GOOGLE_APPLICATION_CREDENTIALS");
+    expect(environment.NO_COLOR).toBe("1");
   });
 });

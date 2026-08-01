@@ -10,7 +10,7 @@
     "toolchain": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Check-Toolchain.ps1",
     "spike:mock": "node spikes/codex-app-server/spike.mjs --codex ./spikes/codex-app-server/test/mock-codex.mjs --cwd ./spikes/fixture-project --out ./spikes/codex-app-server/artifacts/mock-test --benchmark-turns 1 --kill-after-deltas 3 --kill-delay-ms 5",
     "status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Show-NextStep.ps1",
-    "dev": "pnpm -r --parallel --if-present run dev",
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Start-Dev.ps1",
     "migrate": "pnpm --filter @aicl/core migrate && pnpm --filter @aicl/connector migrate",
     "check": "pnpm -r --if-present run check",
     "test": "pnpm -r --if-present run test",

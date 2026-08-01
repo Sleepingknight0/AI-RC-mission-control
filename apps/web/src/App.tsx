@@ -2,6 +2,7 @@ import {
   PROTOCOL_VERSION,
   ServerEnvelopeSchema,
   makeEnvelope,
+  websocketCapability,
   type Approval,
   type FileChange,
   type Runtime,
@@ -22,6 +23,8 @@ import {
   buildTimeline,
   durableSeq,
   latestTurn,
+  approvalForRejectedCommand,
+  trackApprovalCommand,
   TIMELINE_VIRTUALIZATION_THRESHOLD,
   TIMELINE_VIRTUAL_ROW_HEIGHT,
   turnAvailability,
@@ -306,7 +309,16 @@ export function App() {
     const connect = () => {
       if (disposed) return;
       setConnection(connectedBeforeRef.current ? "reconnecting" : "connecting");
-      const socket = new WebSocket(CORE_URL);
+      const browserToken = import.meta.env.VITE_AICL_BROWSER_TOKEN;
+      if (browserToken === undefined || browserToken.length === 0) {
+        setConnection("offline");
+        setNotice("VITE_AICL_BROWSER_TOKEN is required to connect to Core.");
+        return;
+      }
+      const socket = new WebSocket(
+        CORE_URL,
+        websocketCapability("browser", browserToken),
+      );
       socketRef.current = socket;
       socket.addEventListener("open", () => {
         connectedBeforeRef.current = true;
@@ -347,11 +359,14 @@ export function App() {
         }
         if (message.type === "command.rejected") {
           setNotice(`${message.payload.error.code}: ${message.payload.error.message}`);
-          const command = approvalCommandsRef.current.get(message.payload.commandId);
-          if (command !== undefined) {
+          const approvalId = approvalForRejectedCommand(
+            approvalCommandsRef.current,
+            message.payload.commandId,
+          );
+          if (approvalId !== null) {
             setResolving((current) => {
               const next = new Set(current);
-              next.delete(command.approvalId);
+              next.delete(approvalId);
               return next;
             });
           }
@@ -607,7 +622,12 @@ export function App() {
     const key = `${approval.approvalId}:${decision}`;
     const existing = approvalCommandsRef.current.get(key);
     const commandId = existing?.commandId ?? crypto.randomUUID();
-    approvalCommandsRef.current.set(key, { approvalId: approval.approvalId, commandId });
+    trackApprovalCommand(
+      approvalCommandsRef.current,
+      key,
+      approval.approvalId,
+      commandId,
+    );
     socket.send(
       JSON.stringify(
         makeEnvelope("approval.resolve", {

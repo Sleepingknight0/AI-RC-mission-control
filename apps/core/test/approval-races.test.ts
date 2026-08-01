@@ -13,6 +13,7 @@ import {
   ConnectorEnvelopeSchema,
   ServerEnvelopeSchema,
   makeEnvelope,
+  websocketCapability,
   type Approval,
   type ServerEnvelope,
 } from "@aicl/protocol";
@@ -39,7 +40,11 @@ afterEach(async () => {
 describe("approval compare-and-set", () => {
   it("allows only one of two tabs to approve and deduplicates its command ID", async () => {
     const setup = await approvalSetup();
-    const secondTab = await openBrowser(setup.core.browserUrl, "approval-session");
+    const secondTab = await openBrowser(
+      setup.core.browserUrl,
+      setup.core.browserToken,
+      "approval-session",
+    );
     const approval = await requestApproval(setup.firstTab, "turn-command");
     const firstResolution = approvalCommand(approval, "approval-command-a");
     const competingResolution = approvalCommand(approval, "approval-command-b");
@@ -86,6 +91,15 @@ describe("approval compare-and-set", () => {
     expect(setup.provider.resolveCalls[0]?.payload.decision).toBe("declined");
   });
 
+  it("expires pending authority without requiring a browser action", async () => {
+    const setup = await approvalSetup(Date.now() + 40);
+    await requestApproval(setup.firstTab, "passive-expiry-turn");
+
+    await waitFor(setup.firstTab, "approval.expired");
+    await waitUntil(() => setup.provider.resolveCalls.length === 1);
+    expect(setup.provider.resolveCalls[0]?.payload.decision).toBe("declined");
+  });
+
   it("invalidates a pending approval on provider death", async () => {
     const setup = await approvalSetup();
     const approval = await requestApproval(setup.firstTab, "lost-turn");
@@ -111,6 +125,7 @@ describe("approval compare-and-set", () => {
     const journalPath = join(directory, "connector.db");
     const firstConnector = startConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       provider: firstProvider,
       providerName: "approval-test",
       journalPath,
@@ -118,7 +133,11 @@ describe("approval compare-and-set", () => {
     });
     handles.push(firstConnector);
     await firstConnector.ready;
-    const browser = await openBrowser(core.browserUrl, "generation-session");
+    const browser = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "generation-session",
+    );
     const approval = await requestApproval(browser, "generation-turn");
 
     await firstConnector.close();
@@ -126,6 +145,7 @@ describe("approval compare-and-set", () => {
     const secondProvider = new ApprovalProvider();
     const secondConnector = startConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       provider: secondProvider,
       providerName: "approval-test",
       journalPath,
@@ -151,13 +171,18 @@ describe("approval compare-and-set", () => {
     const provider = new InterruptingProvider();
     const connector = startConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       provider,
       providerName: "interrupt-test",
       journalPath: ":memory:",
     });
     handles.push(connector);
     await connector.ready;
-    const browser = await openBrowser(core.browserUrl, "interrupt-session");
+    const browser = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "interrupt-session",
+    );
     send(
       browser,
       makeEnvelope("turn.submit", {
@@ -186,6 +211,53 @@ describe("approval compare-and-set", () => {
     expect(completed.payload.activity.status).toBe("interrupted");
     await waitFor(browser, "turn.interrupted");
     expect(provider.interruptCalls).toBe(1);
+    browser.socket.close();
+  });
+
+  it("persists an uncertain provider command failure without leaking its error", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    const provider = new SecretInterruptProvider();
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider,
+      providerName: "secret-interrupt-test",
+      journalPath: ":memory:",
+    });
+    handles.push(connector);
+    await connector.ready;
+    const browser = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "secret-interrupt-session",
+    );
+    send(
+      browser,
+      makeEnvelope("turn.submit", {
+        commandId: "secret-turn-command",
+        sessionId: "secret-interrupt-session",
+        prompt: "run held command",
+      }),
+    );
+    const activity = await waitFor(browser, "activity.started");
+    const interrupt = makeEnvelope("turn.interrupt", {
+      commandId: "secret-interrupt-command",
+      sessionId: "secret-interrupt-session",
+      turnId: activity.payload.activity.turnId,
+    });
+    send(browser, interrupt);
+    await waitFor(browser, "turn.outcome_unknown");
+    const retryStart = browser.messages.length;
+    send(browser, interrupt);
+    const durableResult = await waitForCommand(
+      browser,
+      "secret-interrupt-command",
+      retryStart,
+    );
+
+    expect(durableResult.type).toBe("command.rejected");
+    expect(JSON.stringify(browser.messages)).not.toContain("AICL_TEST_SECRET");
     browser.socket.close();
   });
 });
@@ -387,6 +459,12 @@ class InterruptingProvider implements ConnectorProvider {
   }
 }
 
+class SecretInterruptProvider extends InterruptingProvider {
+  override async interrupt() {
+    throw new Error("Authorization: Bearer AICL_TEST_SECRET");
+  }
+}
+
 function activity(
   activityId: string,
   turnId: string,
@@ -412,13 +490,18 @@ async function approvalSetup(expiresAt?: number) {
   const provider = new ApprovalProvider(expiresAt);
   const connector = startConnector({
     coreUrl: core.connectorUrl,
+    connectorToken: core.connectorToken,
     provider,
     providerName: "approval-test",
     journalPath: ":memory:",
   });
   handles.push(connector);
   await connector.ready;
-  const firstTab = await openBrowser(core.browserUrl, "approval-session");
+  const firstTab = await openBrowser(
+    core.browserUrl,
+    core.browserToken,
+    "approval-session",
+  );
   return { core, provider, connector, firstTab };
 }
 
@@ -448,8 +531,14 @@ function approvalCommand(approval: Approval, commandId: string) {
   });
 }
 
-async function openBrowser(url: string, sessionId: string): Promise<BrowserHarness> {
-  const socket = new WebSocket(url);
+async function openBrowser(
+  url: string,
+  token: string,
+  sessionId: string,
+): Promise<BrowserHarness> {
+  const socket = new WebSocket(url, websocketCapability("browser", token), {
+    origin: "http://127.0.0.1:5173",
+  });
   const messages: ServerEnvelope[] = [];
   socket.on("message", (data) => {
     messages.push(ServerEnvelopeSchema.parse(JSON.parse(data.toString())));

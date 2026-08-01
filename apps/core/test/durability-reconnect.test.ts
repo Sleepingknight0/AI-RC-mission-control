@@ -11,8 +11,12 @@ import type {
 import { ProviderLostError } from "@aicl/connector/provider";
 import {
   ConnectorEnvelopeSchema,
+  CoreToConnectorEnvelopeSchema,
   ServerEnvelopeSchema,
   makeEnvelope,
+  websocketCapability,
+  type CoreToConnectorEnvelope,
+  type Runtime,
   type ServerEnvelope,
 } from "@aicl/protocol";
 import WebSocket from "ws";
@@ -36,6 +40,140 @@ afterEach(async () => {
 });
 
 describe("durability and reconnect", () => {
+  it("expires startup ownership without a Connector and never replays the prompt", async () => {
+    const directory = temporaryDirectory();
+    const corePath = join(directory, "core.db");
+    const firstCore = await startCoreServer({ port: 0, dbPath: corePath });
+    handles.push(firstCore);
+    const firstConnector = await openRawConnector(firstCore, {
+      connectorId: "startup-lease-connector",
+      bootId: "startup-lease-boot",
+      runtime: {
+        runtimeId: "startup-lease-runtime",
+        generation: 1,
+        status: "ready",
+      },
+      commandReceipts: [],
+    });
+    const firstBrowser = await openBrowser(
+      firstCore.browserUrl,
+      firstCore.browserToken,
+      "startup-lease-session",
+      0,
+    );
+    send(
+      firstBrowser,
+      makeEnvelope("turn.submit", {
+        commandId: "startup-lease-command",
+        sessionId: "startup-lease-session",
+        prompt: "must not replay after restart",
+      }),
+    );
+    await waitFor(firstBrowser, "turn.started");
+    firstBrowser.socket.close();
+
+    const port = firstCore.port;
+    const browserToken = firstCore.browserToken;
+    const connectorToken = firstCore.connectorToken;
+    await firstCore.close();
+    handles.splice(handles.indexOf(firstCore), 1);
+    firstConnector.terminate();
+
+    const secondCore = await startCoreServer({
+      port,
+      dbPath: corePath,
+      browserToken,
+      connectorToken,
+      connectorLossGraceMs: 30,
+    });
+    handles.push(secondCore);
+    const refreshed = await openBrowser(
+      secondCore.browserUrl,
+      secondCore.browserToken,
+      "startup-lease-session",
+      0,
+    );
+
+    await waitFor(refreshed, "turn.outcome_unknown");
+    expect(
+      refreshed.messages.some(
+        (message) => message.type === "turn.started" && message.payload.seq > 1,
+      ),
+    ).toBe(false);
+    refreshed.socket.close();
+  });
+
+  it("marks a committed dispatch unknown without a dispatch-proving receipt", async () => {
+    const directory = temporaryDirectory();
+    const corePath = join(directory, "core.db");
+    const firstCore = await startCoreServer({ port: 0, dbPath: corePath });
+    handles.push(firstCore);
+    const identity = {
+      connectorId: "receipt-gap-connector",
+      bootId: "receipt-gap-boot",
+      runtime: {
+        runtimeId: "receipt-gap-runtime",
+        generation: 1,
+        status: "ready" as const,
+      },
+      commandReceipts: [],
+    };
+    const firstConnector = await openRawConnector(firstCore, identity);
+    const browser = await openBrowser(
+      firstCore.browserUrl,
+      firstCore.browserToken,
+      "receipt-gap-session",
+      0,
+    );
+    send(
+      browser,
+      makeEnvelope("turn.submit", {
+        commandId: "receipt-gap-command",
+        sessionId: "receipt-gap-session",
+        prompt: "simulate crash after Core commit",
+      }),
+    );
+    await waitFor(browser, "turn.started");
+    browser.socket.close();
+
+    const port = firstCore.port;
+    const browserToken = firstCore.browserToken;
+    const connectorToken = firstCore.connectorToken;
+    await firstCore.close();
+    handles.splice(handles.indexOf(firstCore), 1);
+    firstConnector.terminate();
+
+    const secondCore = await startCoreServer({
+      port,
+      dbPath: corePath,
+      browserToken,
+      connectorToken,
+      connectorLossGraceMs: 2_000,
+    });
+    handles.push(secondCore);
+    const refreshed = await openBrowser(
+      secondCore.browserUrl,
+      secondCore.browserToken,
+      "receipt-gap-session",
+      0,
+    );
+    const secondConnector = await openRawConnector(secondCore, {
+      ...identity,
+      commandReceipts: [
+        { commandId: "receipt-gap-command", state: "received" },
+      ],
+    });
+
+    await waitFor(refreshed, "turn.outcome_unknown");
+    expect(
+      secondConnectorMessages(secondConnector).some(
+        (message) => message.type === "connector.turn.start",
+      ),
+    ).toBe(false);
+    refreshed.socket.close();
+    secondConnector.close();
+  });
+
   it("survives a Core restart during an active Turn and replays final state once", async () => {
     const directory = temporaryDirectory();
     const corePath = join(directory, "core.db");
@@ -45,6 +183,7 @@ describe("durability and reconnect", () => {
     const provider = new HeldProvider();
     const connector = startConnector({
       coreUrl: firstCore.connectorUrl,
+      connectorToken: firstCore.connectorToken,
       provider,
       providerName: "held",
       journalPath,
@@ -53,8 +192,18 @@ describe("durability and reconnect", () => {
     handles.push(connector);
     await connector.ready;
 
-    const firstTab = await openBrowser(firstCore.browserUrl, "durable-session", 0);
-    const secondTab = await openBrowser(firstCore.browserUrl, "durable-session", 0);
+    const firstTab = await openBrowser(
+      firstCore.browserUrl,
+      firstCore.browserToken,
+      "durable-session",
+      0,
+    );
+    const secondTab = await openBrowser(
+      firstCore.browserUrl,
+      firstCore.browserToken,
+      "durable-session",
+      0,
+    );
     const command = makeEnvelope("turn.submit", {
       commandId: "durable-command",
       sessionId: "durable-session",
@@ -78,11 +227,17 @@ describe("durability and reconnect", () => {
     const port = firstCore.port;
     await firstCore.close();
     handles.splice(handles.indexOf(firstCore), 1);
-    const secondCore = await startCoreServer({ port, dbPath: corePath });
+    const secondCore = await startCoreServer({
+      port,
+      dbPath: corePath,
+      browserToken: firstCore.browserToken,
+      connectorToken: firstCore.connectorToken,
+    });
     handles.push(secondCore);
 
     const refreshed = await openBrowser(
       secondCore.browserUrl,
+      secondCore.browserToken,
       "durable-session",
       started.payload.seq,
     );
@@ -105,6 +260,7 @@ describe("durability and reconnect", () => {
 
     const replayed = await openBrowser(
       secondCore.browserUrl,
+      secondCore.browserToken,
       "durable-session",
       started.payload.seq,
     );
@@ -161,13 +317,19 @@ describe("durability and reconnect", () => {
     const provider = new HeldProvider();
     const connector = startConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       provider,
       providerName: "held",
       journalPath: ":memory:",
     });
     handles.push(connector);
     await connector.ready;
-    const first = await openBrowser(core.browserUrl, "boundary-session", 0);
+    const first = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "boundary-session",
+      0,
+    );
     send(
       first,
       makeEnvelope("turn.submit", {
@@ -184,7 +346,12 @@ describe("durability and reconnect", () => {
     expect(broadcastErrors).toHaveLength(1);
     first.socket.close();
 
-    const second = await openBrowser(core.browserUrl, "boundary-session", 0);
+    const second = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "boundary-session",
+      0,
+    );
     await waitForReplayEnd(second);
     expect(second.messages.some((message) => message.type === "turn.started")).toBe(
       true,
@@ -203,6 +370,7 @@ describe("durability and reconnect", () => {
     const firstProvider = new HeldProvider();
     const firstConnector = startConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       provider: firstProvider,
       providerName: "held",
       journalPath: join(directory, "connector.db"),
@@ -210,7 +378,12 @@ describe("durability and reconnect", () => {
     });
     handles.push(firstConnector);
     await firstConnector.ready;
-    const browser = await openBrowser(core.browserUrl, "restart-session", 0);
+    const browser = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "restart-session",
+      0,
+    );
     send(
       browser,
       makeEnvelope("turn.submit", {
@@ -227,6 +400,7 @@ describe("durability and reconnect", () => {
     const secondProvider = new HeldProvider();
     const secondConnector = startConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       provider: secondProvider,
       providerName: "held",
       journalPath: join(directory, "connector.db"),
@@ -337,10 +511,13 @@ function emitNormalized(emit: ConnectorEmit, value: unknown) {
 
 async function openBrowser(
   url: string,
+  token: string,
   sessionId: string,
   afterSeq: number,
 ): Promise<BrowserHarness> {
-  const socket = new WebSocket(url);
+  const socket = new WebSocket(url, websocketCapability("browser", token), {
+    origin: "http://127.0.0.1:5173",
+  });
   const messages: ServerEnvelope[] = [];
   socket.on("message", (data) => {
     messages.push(ServerEnvelopeSchema.parse(JSON.parse(data.toString())));
@@ -360,6 +537,41 @@ async function openBrowser(
 
 function send(browser: BrowserHarness, value: unknown) {
   browser.socket.send(JSON.stringify(value));
+}
+
+const rawConnectorMessages = new WeakMap<WebSocket, CoreToConnectorEnvelope[]>();
+
+async function openRawConnector(
+  core: Awaited<ReturnType<typeof startCoreServer>>,
+  identity: {
+    connectorId: string;
+    bootId: string;
+    runtime: Runtime;
+    commandReceipts: readonly {
+      commandId: string;
+      state: "received" | "dispatching" | "completed" | "outcome_unknown";
+    }[];
+  },
+) {
+  const socket = new WebSocket(
+    core.connectorUrl,
+    websocketCapability("connector", core.connectorToken),
+  );
+  const messages: CoreToConnectorEnvelope[] = [];
+  rawConnectorMessages.set(socket, messages);
+  socket.on("message", (data) => {
+    messages.push(CoreToConnectorEnvelopeSchema.parse(JSON.parse(data.toString())));
+  });
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+  socket.send(JSON.stringify(makeEnvelope("connector.hello", identity)));
+  return socket;
+}
+
+function secondConnectorMessages(socket: WebSocket) {
+  return rawConnectorMessages.get(socket) ?? [];
 }
 
 async function waitFor<T extends ServerEnvelope["type"]>(

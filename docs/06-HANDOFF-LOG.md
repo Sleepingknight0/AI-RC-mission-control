@@ -702,3 +702,75 @@ browser control and Connector impersonation, both Critical.
 
 Codex performs **M7.1**: create a traceable remediation register, reproduce and
 resolve accepted M6.1/M6.2 findings with regression tests, and stop before M7.2.
+
+---
+
+### 2026-08-02 04:16 — Codex — M7.1
+
+**Scope**
+
+Deduplicate all M6.1/M6.2 findings, accept the 17 Prototype 0 remediation
+themes, repair them with regression coverage, and stop before the clean-checkout
+real-provider gate.
+
+**Files changed or reviewed**
+
+- `reviews/codex/M7.1-REMEDIATION-REGISTER.md` — source finding map, policy
+  clarifications, implemented controls, and regression evidence
+- `packages/protocol` — capability transport, receipt/outcome envelopes,
+  display sequence, media allowlist, and decoded payload ceilings
+- `apps/core` — authenticated upgrades, exact Origin, rate/heartbeat controls,
+  bounded artifacts, passive expiry, receipt/lease recovery, durable command
+  outcomes, Runtime concurrency, display sequencing, and schema v3 guards
+- `apps/connector` — authenticated client, FIFO schema v2, receipts, canonical
+  project containment, provider environment isolation, timeout/loss handling,
+  and stable redacted errors
+- `apps/web` — per-launch capability, approval-command correlation, durable
+  cross-type chronology, and Runtime-busy submission state
+- `scripts/Start-Dev.ps1`, `.env.example`, README, status, and execution plan
+
+**Commands and tests**
+
+```text
+pnpm check
+→ exit 0; 65 passed, one opt-in real-provider E2E skipped; strict typecheck,
+  ESLint, Windows process-tree test, and Web production build passed
+
+pnpm migrate
+→ exit 0; Core schemaVersion=3; Connector schemaVersion=2
+
+git diff --check
+→ exit 0
+```
+
+**Observable result**
+
+Browser and Connector control planes now require separate launch capabilities;
+the browser also requires an exact allowed Origin. Provider execution is limited
+to canonical operator roots and an explicit child environment. Oversized,
+malformed, burst, dead-peer, unsafe artifact, and secret-bearing error paths all
+fail closed. Restart ambiguity converges using durable receipts and an ownership
+lease without automatic prompt replay.
+
+**Verified controls and regressions**
+
+- Same-timestamp Connector outbox entries replay in insertion order.
+- A merely `received` command is not dispatch proof; missing ownership after
+  reconnect/startup becomes `outcome_unknown` and is not redispatched.
+- RPC timeout/provider loss, passive approval expiry, late decisions, uncertain
+  Connector command delivery, and one-Runtime concurrency are terminalized.
+- Timeline order follows Core display sequence; rejected approval commands
+  release the correct Web control; SQLite rejects illegal command transitions.
+
+**Known limitations or uncertain outcomes**
+
+- Prototype authentication remains a per-launch local capability, not the
+  long-term passkey/device identity design.
+- The opt-in real Codex test and clean-checkout operator demo were intentionally
+  not run in M7.1; both belong to M7.2.
+
+**Requested next action**
+
+Codex performs **M7.2** from a clean checkout: migrate, run normal and opt-in
+real-provider gates, execute the documented browser demo/fault paths, record
+final evidence, and complete Prototype 0.

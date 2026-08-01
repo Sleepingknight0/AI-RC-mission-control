@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   TIMELINE_VIRTUAL_ROW_HEIGHT,
   buildTimeline,
+  approvalForRejectedCommand,
+  trackApprovalCommand,
   turnAvailability,
   updateSnapshot,
   virtualTimelineWindow,
@@ -110,6 +112,69 @@ describe("mission-control render state", () => {
     expect(window.end).toBeLessThan(100_000);
     expect(window.end - window.start).toBeLessThanOrEqual(18);
     expect(window.offsetTop).toBe(window.start * TIMELINE_VIRTUAL_ROW_HEIGHT);
+  });
+
+  it("orders reconstructed cross-type items by durable display sequence", () => {
+    const ordered = buildTimeline({
+      ...snapshot,
+      turns: [{ ...snapshot.turns[0]!, eventSeq: 1 }],
+      messages: [
+        {
+          messageId: "message-later",
+          turnId: "turn-1",
+          content: "later",
+          completed: true,
+          eventSeq: 4,
+        },
+      ],
+      activities: [
+        {
+          activityId: "activity-earlier",
+          turnId: "turn-1",
+          kind: "command",
+          title: "earlier",
+          cwd: null,
+          status: "completed",
+          revision: 1,
+          exitCode: 0,
+          durationMs: 1,
+          outputPreview: "",
+          eventSeq: 2,
+        },
+      ],
+      fileChanges: [
+        {
+          fileChangeId: "change-middle",
+          turnId: "turn-1",
+          status: "completed",
+          revision: 1,
+          files: [],
+          additions: 0,
+          deletions: 0,
+          diff: null,
+          eventSeq: 3,
+        },
+      ],
+    });
+
+    expect(ordered.map((item) => item.id)).toEqual([
+      "turn:turn-1:operator",
+      "activity:activity-earlier",
+      "file-change:change-middle",
+      "message:message-later",
+    ]);
+  });
+
+  it("releases an approval by the rejected command identity", () => {
+    const commands = new Map<string, { approvalId: string; commandId: string }>();
+    trackApprovalCommand(
+      commands,
+      "approval-1:approved_once",
+      "approval-1",
+      "command-1",
+    );
+
+    expect(approvalForRejectedCommand(commands, "command-1")).toBe("approval-1");
   });
 
   it("keeps 100,000-item timeline construction linear and stable", () => {

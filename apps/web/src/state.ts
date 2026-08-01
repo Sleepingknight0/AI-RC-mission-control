@@ -23,6 +23,7 @@ export type TimelineItem =
       turn: Turn;
       content: string;
       completed: boolean;
+      eventSeq?: number;
     }
   | { id: string; kind: "activity"; activity: ToolActivity }
   | { id: string; kind: "file_change"; fileChange: FileChange };
@@ -118,7 +119,7 @@ export function updateSnapshot(
         lastEventSeq: message.payload.seq,
         turns: upsertById(
           current.turns,
-          message.payload.turn,
+          { ...message.payload.turn, eventSeq: message.payload.seq },
           (turn) => turn.turnId,
         ),
       };
@@ -156,6 +157,7 @@ export function updateSnapshot(
             turnId: message.payload.turnId,
             content: message.payload.content,
             completed: true,
+            eventSeq: message.payload.seq,
           },
           (item) => item.messageId,
         ),
@@ -167,7 +169,7 @@ export function updateSnapshot(
         lastEventSeq: message.payload.seq,
         activities: upsertById(
           current.activities,
-          message.payload.activity,
+          { ...message.payload.activity, eventSeq: message.payload.seq },
           (item) => item.activityId,
         ),
       };
@@ -192,7 +194,7 @@ export function updateSnapshot(
         lastEventSeq: message.payload.seq,
         fileChanges: upsertById(
           current.fileChanges,
-          message.payload.fileChange,
+          { ...message.payload.fileChange, eventSeq: message.payload.seq },
           (item) => item.fileChangeId,
         ),
       };
@@ -284,6 +286,7 @@ export function buildTimeline(snapshot: SessionSnapshot | null): TimelineItem[] 
         turn,
         content: message.content,
         completed: message.completed,
+        ...(message.eventSeq === undefined ? {} : { eventSeq: message.eventSeq }),
       });
     }
     for (const activity of activitiesByTurn.get(turn.turnId) ?? []) {
@@ -297,7 +300,37 @@ export function buildTimeline(snapshot: SessionSnapshot | null): TimelineItem[] 
       });
     }
   }
-  return items;
+  return items
+    .map((item, index) => ({ item, index, seq: timelineSeq(item) }))
+    .sort((left, right) => left.seq - right.seq || left.index - right.index)
+    .map(({ item }) => item);
+}
+
+function timelineSeq(item: TimelineItem) {
+  if (item.kind === "operator") return item.turn.eventSeq ?? Number.MAX_SAFE_INTEGER;
+  if (item.kind === "activity") return item.activity.eventSeq ?? Number.MAX_SAFE_INTEGER;
+  if (item.kind === "file_change") {
+    return item.fileChange.eventSeq ?? Number.MAX_SAFE_INTEGER;
+  }
+  return item.eventSeq ?? Number.MAX_SAFE_INTEGER;
+}
+
+export function trackApprovalCommand(
+  commands: Map<string, { approvalId: string; commandId: string }>,
+  decisionKey: string,
+  approvalId: string,
+  commandId: string,
+) {
+  const tracked = { approvalId, commandId };
+  commands.set(decisionKey, tracked);
+  commands.set(commandId, tracked);
+}
+
+export function approvalForRejectedCommand(
+  commands: ReadonlyMap<string, { approvalId: string; commandId: string }>,
+  commandId: string,
+) {
+  return commands.get(commandId)?.approvalId ?? null;
 }
 
 export function turnAvailability(
@@ -316,6 +349,9 @@ export function turnAvailability(
   }
   if (runtime.status === "incompatible") {
     return { canSubmit: false, reason: "Installed provider schema is incompatible." };
+  }
+  if (runtime.status === "busy") {
+    return { canSubmit: false, reason: "Connector runtime is executing another Turn." };
   }
   if (snapshot?.activeTurnId != null) {
     return { canSubmit: false, reason: "This Session already has a running Turn." };

@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
+  ARTIFACT_CHUNK_BYTES,
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
+  MAX_ARTIFACT_BYTES,
   ServerEnvelopeSchema,
   makeEnvelope,
   type Runtime,
@@ -25,10 +27,10 @@ afterEach(async () => {
 });
 
 describe("Core SQLite contract", () => {
-  it("applies schema v2 idempotently with required pragmas and indexes", async () => {
+  it("applies schema v3 idempotently with required pragmas and indexes", async () => {
     const path = databasePath();
     const first = open(path);
-    expect(first.schemaVersion).toBe(2);
+    expect(first.schemaVersion).toBe(3);
     expect(Object.values(first.pragma("journal_mode"))).toContain("wal");
     expect(Object.values(first.pragma("foreign_keys"))).toContain(1);
     expect(Object.values(first.pragma("busy_timeout"))).toContain(5000);
@@ -36,26 +38,52 @@ describe("Core SQLite contract", () => {
     openDatabases.splice(openDatabases.indexOf(first), 1);
 
     const second = open(path);
-    expect(second.schemaVersion).toBe(2);
+    expect(second.schemaVersion).toBe(3);
     await second.close();
     openDatabases.splice(openDatabases.indexOf(second), 1);
 
-    const raw = new DatabaseSync(path, { readOnly: true });
+    const raw = new DatabaseSync(path);
     const indexes = raw
       .prepare(
         `SELECT name, sql FROM sqlite_master
           WHERE type = 'index' AND name IN (
             'uq_turn_one_executing_per_session',
+            'uq_turn_one_executing_per_runtime',
             'uq_session_events_connector_source'
           ) ORDER BY name`,
       )
       .all() as unknown as Array<{ name: string; sql: string }>;
     expect(indexes.map((index) => index.name)).toEqual([
       "uq_session_events_connector_source",
+      "uq_turn_one_executing_per_runtime",
       "uq_turn_one_executing_per_session",
     ]);
     expect(indexes[0]?.sql).toContain("source_event_id IS NOT NULL");
-    expect(indexes[1]?.sql).toContain("WHERE state = 'running'");
+    expect(indexes[1]?.sql).toContain("runtime_id, runtime_generation");
+    expect(indexes[2]?.sql).toContain("WHERE state = 'running'");
+
+    const now = new Date().toISOString();
+    raw.prepare(
+      "INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)",
+    ).run("guard-session", now, now);
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO commands (
+             command_id, session_id, command_type, state, payload_json,
+             payload_hash, result_json, received_at, committed_at
+           ) VALUES (?, ?, ?, ?, '{}', ?, '{}', ?, ?)`,
+        )
+        .run(
+          "invalid-command",
+          "guard-session",
+          "shell.exec",
+          "invented",
+          "hash",
+          now,
+          now,
+        ),
+    ).toThrow("invalid command type or initial state");
     raw.close();
   });
 
@@ -208,12 +236,70 @@ describe("Core SQLite contract", () => {
     ) {
       throw new Error("Expected artifact envelopes");
     }
+    const wrongChunkCount = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.artifact.begin", {
+        sessionId: "artifact-session",
+        turnId: "artifact-turn",
+        artifact: { ...artifact, artifactId: "artifact-wrong-chunks" },
+        chunkCount: 2,
+      }),
+    );
+    if (wrongChunkCount.type !== "connector.artifact.begin") {
+      throw new Error("Expected artifact begin envelope");
+    }
+    await expect(
+      database.beginArtifact(
+        wrongChunkCount,
+        source("artifact-wrong-chunks-begin"),
+      ),
+    ).rejects.toThrow("chunk count does not match");
     await database.beginArtifact(begin, source("artifact-begin"));
     await database.appendArtifactChunk(chunk, source("artifact-chunk"));
     await expect(
       database.completeArtifact(complete, source("artifact-complete")),
     ).rejects.toThrow("Artifact integrity check failed");
     expect(database.artifact(artifact.artifactId)).toBeUndefined();
+
+    for (let index = 0; index < 3; index += 1) {
+      const declaration = ConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.artifact.begin", {
+          sessionId: "artifact-session",
+          turnId: "artifact-turn",
+          artifact: {
+            artifactId: `artifact-quota-${index}`,
+            mediaType: "text/x-diff",
+            byteLength: MAX_ARTIFACT_BYTES,
+            sha256: "a".repeat(64),
+            downloadPath: `/artifacts/artifact-quota-${index}`,
+          },
+          chunkCount: MAX_ARTIFACT_BYTES / ARTIFACT_CHUNK_BYTES,
+        }),
+      );
+      if (declaration.type !== "connector.artifact.begin") {
+        throw new Error("Expected artifact begin envelope");
+      }
+      await database.beginArtifact(declaration, source(`quota-${index}`));
+    }
+    const overQuota = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.artifact.begin", {
+        sessionId: "artifact-session",
+        turnId: "artifact-turn",
+        artifact: {
+          artifactId: "artifact-over-quota",
+          mediaType: "text/x-diff",
+          byteLength: MAX_ARTIFACT_BYTES,
+          sha256: "b".repeat(64),
+          downloadPath: "/artifacts/artifact-over-quota",
+        },
+        chunkCount: MAX_ARTIFACT_BYTES / ARTIFACT_CHUNK_BYTES,
+      }),
+    );
+    if (overQuota.type !== "connector.artifact.begin") {
+      throw new Error("Expected artifact begin envelope");
+    }
+    await expect(
+      database.beginArtifact(overQuota, source("quota-overflow")),
+    ).rejects.toThrow("Artifact quota");
   });
 });
 

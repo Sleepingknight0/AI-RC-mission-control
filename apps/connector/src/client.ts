@@ -12,6 +12,7 @@ import {
   decodeJson,
   makeEnvelope,
   utf8ByteLength,
+  websocketCapability,
   type ConnectorEnvelope,
   type CoreToConnectorEnvelope,
   type Runtime,
@@ -24,6 +25,7 @@ import { ProviderLostError, type ConnectorProvider } from "./provider.js";
 
 export interface ConnectorOptions {
   coreUrl: string;
+  connectorToken: string;
   provider: ConnectorProvider;
   providerName: string;
   healthPort?: number;
@@ -37,6 +39,7 @@ export interface ConnectorOptions {
 
 export interface MockConnectorOptions {
   coreUrl: string;
+  connectorToken: string;
   healthPort?: number;
   providerDelayMs?: number;
   reconnectDelayMs?: number;
@@ -126,7 +129,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     const artifactId = `artifact-${crypto.randomUUID()}`;
     const artifact = {
       artifactId,
-      mediaType: "text/x-diff; charset=utf-8",
+      mediaType: "text/x-diff; charset=utf-8" as const,
       byteLength: content.byteLength,
       sha256: createHash("sha256").update(content).digest("hex"),
       downloadPath: `/artifacts/${artifactId}`,
@@ -229,6 +232,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         makeEnvelope("connector.command.error", {
           commandId: command.payload.commandId,
           sessionId: command.payload.sessionId,
+          turnId: command.payload.turnId,
           code: "IDEMPOTENCY_KEY_REUSE",
           message: "Connector commandId was reused with a different payload.",
           retryable: false,
@@ -237,6 +241,17 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       return;
     }
     journal.markCommand(command.payload.commandId, "dispatching");
+
+    if (command.type === "connector.turn.start" && providerLost) {
+      journal.markCommand(command.payload.commandId, "outcome_unknown");
+      emit(
+        makeEnvelope("connector.turn.outcome_unknown", {
+          sessionId: command.payload.sessionId,
+          turnId: command.payload.turnId,
+        }),
+      );
+      return;
+    }
 
     if (command.type === "connector.turn.interrupt") {
       try {
@@ -250,15 +265,16 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
             status: "accepted" as const,
           }),
         );
-      } catch (error) {
+      } catch {
         journal.markCommand(command.payload.commandId, "outcome_unknown");
         emit(
           makeEnvelope("connector.command.error", {
             commandId: command.payload.commandId,
             sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
             code: "INTERRUPT_FAILED",
-            message: error instanceof Error ? error.message : String(error),
-            retryable: true,
+            message: "Provider interrupt delivery could not be confirmed.",
+            retryable: false,
           }),
         );
       }
@@ -277,6 +293,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
           makeEnvelope("connector.command.error", {
             commandId: command.payload.commandId,
             sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
             code: "STALE_RUNTIME_GENERATION",
             message: "Approval belongs to a different runtime generation.",
             retryable: false,
@@ -287,14 +304,22 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       try {
         await options.provider.resolveApproval(command);
         journal.markCommand(command.payload.commandId, "completed");
-      } catch (error) {
+        emit(
+          makeEnvelope("connector.command.completed", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
+          }),
+        );
+      } catch {
         journal.markCommand(command.payload.commandId, "outcome_unknown");
         emit(
           makeEnvelope("connector.command.error", {
             commandId: command.payload.commandId,
             sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
             code: "APPROVAL_DELIVERY_FAILED",
-            message: error instanceof Error ? error.message : String(error),
+            message: "Provider approval delivery could not be confirmed.",
             retryable: false,
           }),
         );
@@ -302,7 +327,6 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       return;
     }
 
-    providerLost = false;
     emitRuntime("busy");
     try {
       await options.provider.startTurn(command, emit);
@@ -329,7 +353,10 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
 
   const connect = () => {
     if (stopped) return;
-    socket = new WebSocket(options.coreUrl);
+    socket = new WebSocket(
+      options.coreUrl,
+      websocketCapability("connector", options.connectorToken),
+    );
     socket.on("open", () => {
       const readyRuntime = runtime(providerLost ? "lost" : runtimeStatus);
       sendRaw(
@@ -338,6 +365,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
             connectorId: journal.connectorId,
             bootId: journal.bootId,
             runtime: readyRuntime,
+            commandReceipts: journal.commandReceipts(),
           }),
         ),
       );
@@ -428,6 +456,7 @@ export function startMockConnector(
 ): ConnectorHandle {
   return startConnector({
     coreUrl: options.coreUrl,
+    connectorToken: options.connectorToken,
     provider: new MockProvider(options.providerDelayMs),
     providerName: "mock",
     runtimeId: "runtime-mock-1",

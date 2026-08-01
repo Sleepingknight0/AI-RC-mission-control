@@ -1,9 +1,13 @@
 import {
+  timingSafeEqual,
+} from "node:crypto";
+import {
   createServer,
   type Server as HttpServer,
   type ServerResponse,
 } from "node:http";
 import { dirname, resolve } from "node:path";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -14,8 +18,11 @@ import {
   ServerEnvelopeSchema,
   decodeJson,
   makeEnvelope,
+  redactSensitiveText,
   utf8ByteLength,
+  websocketCapability,
   type ClientEnvelope,
+  type Approval,
   type ConnectorEnvelope,
   type ProtocolError,
   type Runtime,
@@ -36,6 +43,13 @@ export interface CoreServerOptions {
   dbPath?: string;
   connectorLossGraceMs?: number;
   artifactAccessToken?: string;
+  browserToken?: string;
+  connectorToken?: string;
+  allowedBrowserOrigins?: readonly string[];
+  approvalSweepMs?: number;
+  browserMessagesPerSecond?: number;
+  connectorMessagesPerSecond?: number;
+  heartbeatIntervalMs?: number;
   beforeDurableBroadcast?: (event: ServerEnvelope) => void;
   onBroadcastError?: (error: unknown, event: ServerEnvelope) => void;
 }
@@ -46,6 +60,8 @@ export interface CoreServerHandle {
   browserUrl: string;
   connectorUrl: string;
   dbPath: string;
+  browserToken: string;
+  connectorToken: string;
   close(): Promise<void>;
 }
 
@@ -82,12 +98,29 @@ export async function startCoreServer(
   const store = new CoreDatabase({ path: dbPath });
   const artifactAccessToken =
     options.artifactAccessToken ?? `artifact-token-${crypto.randomUUID()}`;
+  const browserToken = options.browserToken ?? crypto.randomUUID();
+  const connectorToken = options.connectorToken ?? crypto.randomUUID();
+  const allowedBrowserOrigins = new Set(
+    options.allowedBrowserOrigins ?? [
+      "http://127.0.0.1:5173",
+      "http://localhost:5173",
+    ],
+  );
   const clients = new Map<WebSocket, string | null>();
   let connector: WebSocket | undefined;
   let connectorConnection: ConnectorConnection | undefined;
   let connectorLossTimer: NodeJS.Timeout | undefined;
   let lastRuntime: Runtime | undefined = store.latestRuntime();
   let closing = false;
+  const rateWindows = new WeakMap<
+    WebSocket,
+    { startedAt: number; count: number; violations: number }
+  >();
+  const liveSockets = new Map<WebSocket, boolean>();
+  const pendingExpiryDispatches: Array<{
+    approval: Approval;
+    providerCorrelationId: string;
+  }> = [];
 
   const httpServer: HttpServer = createServer((request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
@@ -122,7 +155,7 @@ export async function startCoreServer(
         response.end(JSON.stringify({ error: "AUTH_REQUIRED" }));
         return;
       }
-      const artifact = store.artifact(artifactMatch[1]!);
+      const artifact = store.artifactMetadata(artifactMatch[1]!);
       if (artifact === undefined) {
         response.writeHead(404).end();
         return;
@@ -137,11 +170,17 @@ export async function startCoreServer(
       }
       const start = range?.start ?? 0;
       const end = range?.end ?? artifact.byteLength - 1;
-      const body = artifact.content.subarray(start, end + 1);
+      const body = store.artifactContent(artifact.artifactId, start, end - start + 1);
+      if (body === undefined) {
+        response.writeHead(404).end();
+        return;
+      }
       response.writeHead(range === null ? 200 : 206, {
         "accept-ranges": "bytes",
         "content-type": artifact.mediaType,
+        "content-disposition": `attachment; filename="${artifact.artifactId}.diff"`,
         "content-length": String(body.byteLength),
+        "x-content-type-options": "nosniff",
         etag: `"sha256-${artifact.sha256}"`,
         ...(range === null
           ? {}
@@ -208,7 +247,10 @@ export async function startCoreServer(
     } catch (error) {
       options.onBroadcastError?.(error, event);
       if (options.onBroadcastError === undefined) {
-        console.error("Durable event committed but broadcast failed", error);
+        console.error(
+          "Durable event committed but broadcast failed:",
+          redactSensitiveText(error instanceof Error ? error.message : error),
+        );
       }
     }
   };
@@ -326,6 +368,23 @@ export async function startCoreServer(
           await recordOfflineRejection(socket, message);
           return;
         }
+        if (
+          connection.runtime.status !== "ready" &&
+          connection.runtime.status !== "busy"
+        ) {
+          const unavailable = await store.recordRejectedCommand(
+            message,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "RUNTIME_NOT_READY",
+              message: "Connector runtime is not ready for a new Turn.",
+            }),
+          );
+          if (unavailable.kind === "conflict") sendConflict(socket, message);
+          else send(socket, unavailable.result);
+          return;
+        }
         const turnId = `turn-${crypto.randomUUID()}`;
         const result = await store.acceptTurn({
           message,
@@ -338,6 +397,12 @@ export async function startCoreServer(
             sessionId: message.payload.sessionId,
             code: "TURN_ALREADY_ACTIVE",
             message: "This Session already has an active Turn.",
+          }),
+          runtimeBusyRejection: rejection({
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            code: "RUNTIME_BUSY",
+            message: "The Connector runtime is already executing another Turn.",
           }),
         });
         if (result.kind === "conflict") {
@@ -489,7 +554,9 @@ export async function startCoreServer(
           broadcastDurable(result.durableEvent);
         }
         if (result.dispatch === undefined) return;
-        await store.markDispatched(message.payload.commandId);
+        if (result.result.type === "command.accepted") {
+          await store.markDispatched(message.payload.commandId);
+        }
         sendConnector(
           connection.socket,
           makeEnvelope("connector.approval.resolve", {
@@ -531,19 +598,40 @@ export async function startCoreServer(
         runtime: message.payload.runtime,
       };
       lastRuntime = message.payload.runtime;
-      const recovered = await store.reconcileRuntime(message.payload.runtime);
+      const recovered = await store.reconcileRuntime(
+        message.payload.runtime,
+        message.payload.connectorId,
+        message.payload.bootId,
+        message.payload.commandReceipts,
+      );
       for (const event of recovered) broadcastDurable(event);
       broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
       broadcast(
         null,
         makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
       );
+      for (const dispatch of pendingExpiryDispatches.splice(0)) {
+        sendConnector(
+          socket,
+          makeEnvelope("connector.approval.resolve", {
+            commandId: `expiry-${dispatch.approval.approvalId}-${dispatch.approval.revision}`,
+            sessionId: dispatch.approval.sessionId,
+            turnId: dispatch.approval.turnId,
+            approvalId: dispatch.approval.approvalId,
+            providerCorrelationId: dispatch.providerCorrelationId,
+            runtimeId: dispatch.approval.runtimeId,
+            runtimeGeneration: dispatch.approval.runtimeGeneration,
+            decision: "declined",
+          }),
+        );
+      }
       return;
     }
 
     if (message.type === "connector.turn.delta") {
       if (
-        connectorConnection?.connectorId === message.connectorId &&
+        connectorConnection?.socket === socket &&
+        connectorConnection.connectorId === message.connectorId &&
         message.runtimeId !== undefined &&
         message.runtimeGeneration !== undefined &&
         store.acceptsRuntimeEvent(
@@ -564,7 +652,8 @@ export async function startCoreServer(
     if (message.type === "connector.command.output.batch") {
       if (
         utf8ByteLength(message.payload.output) <= MAX_OUTPUT_BATCH_BYTES &&
-        connectorConnection?.connectorId === message.connectorId &&
+        connectorConnection?.socket === socket &&
+        connectorConnection.connectorId === message.connectorId &&
         message.runtimeId !== undefined &&
         message.runtimeGeneration !== undefined &&
         store.acceptsRuntimeEvent(
@@ -585,7 +674,8 @@ export async function startCoreServer(
     const source = sourceOf(message);
     if (
       source === undefined ||
-      connectorConnection?.connectorId !== source.connectorId
+      connectorConnection?.socket !== socket ||
+      connectorConnection.connectorId !== source.connectorId
     ) {
       return;
     }
@@ -608,19 +698,21 @@ export async function startCoreServer(
         }
         break;
       case "connector.command.error": {
-        const isNew = await store.recordConnectorNotice(source);
-        if (isNew) {
-          broadcast(
-            message.payload.sessionId,
-            makeEnvelope("protocol.error", {
-              error: protocolError(message.payload.code, message.payload.message, {
-                commandId: message.payload.commandId,
-                sessionId: message.payload.sessionId,
-                retryable: message.payload.retryable,
-              }),
-            }),
-          );
-        }
+        const safeMessage = {
+          ...message,
+          payload: {
+            ...message.payload,
+            message: publicConnectorError(message.payload.code),
+            retryable: false,
+          },
+        } as typeof message;
+        const events = await store.failConnectorCommand(safeMessage, source);
+        if (events !== undefined) durableEvents.push(...events);
+        break;
+      }
+      case "connector.command.completed": {
+        const events = await store.completeConnectorCommand(message, source);
+        if (events !== undefined) durableEvents.push(...events);
         break;
       }
       case "connector.session.bound":
@@ -695,6 +787,8 @@ export async function startCoreServer(
 
   const attachBrowser = (socket: WebSocket) => {
     clients.set(socket, null);
+    liveSockets.set(socket, true);
+    socket.on("pong", () => liveSockets.set(socket, true));
     send(
       socket,
       makeEnvelope("server.hello", { artifactAccessToken }),
@@ -703,6 +797,10 @@ export async function startCoreServer(
       send(socket, makeEnvelope("runtime.status", { runtime: lastRuntime }));
     }
     socket.on("message", (data) => {
+      if (!withinRate(socket, options.browserMessagesPerSecond ?? 100, rateWindows)) {
+        socket.close(1008, "Browser message rate exceeded");
+        return;
+      }
       const parsed = ClientEnvelopeSchema.safeParse(parseSocketData(data.toString()));
       if (!parsed.success) {
         send(
@@ -711,10 +809,17 @@ export async function startCoreServer(
             error: protocolError("MESSAGE_INVALID", "Invalid client envelope."),
           }),
         );
+        const state = rateWindows.get(socket);
+        if (state !== undefined && ++state.violations >= 3) {
+          socket.close(1008, "Protocol violation budget exceeded");
+        }
         return;
       }
       void handleClient(socket, parsed.data).catch((error) => {
-        console.error("Core client command failed", error);
+        console.error(
+          "Core client command failed:",
+          redactSensitiveText(error instanceof Error ? error.message : error),
+        );
         send(
           socket,
           makeEnvelope("protocol.error", {
@@ -723,7 +828,10 @@ export async function startCoreServer(
         );
       });
     });
-    socket.on("close", () => clients.delete(socket));
+    socket.on("close", () => {
+      clients.delete(socket);
+      liveSockets.delete(socket);
+    });
   };
 
   const scheduleConnectorLoss = (connection: ConnectorConnection) => {
@@ -737,20 +845,90 @@ export async function startCoreServer(
     }, options.connectorLossGraceMs ?? 750);
   };
 
+  if (lastRuntime !== undefined && store.activeSnapshots().length > 0) {
+    connectorLossTimer = setTimeout(() => {
+      const runtime = lastRuntime;
+      if (runtime === undefined || connectorConnection !== undefined) return;
+      void store.markRuntimeLost(runtime).then((events) => {
+        for (const event of events) broadcastDurable(event);
+        lastRuntime = { ...runtime, status: "lost" };
+        broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
+      });
+    }, options.connectorLossGraceMs ?? 750);
+  }
+
+  const sweepApprovals = async () => {
+    const expired = await store.expireApprovals();
+    for (const item of expired) {
+      broadcastDurable(item.event);
+      if (connectorConnection?.socket.readyState === WebSocket.OPEN) {
+        sendConnector(
+          connectorConnection.socket,
+          makeEnvelope("connector.approval.resolve", {
+            commandId: `expiry-${item.approval.approvalId}-${item.approval.revision}`,
+            sessionId: item.approval.sessionId,
+            turnId: item.approval.turnId,
+            approvalId: item.approval.approvalId,
+            providerCorrelationId: item.providerCorrelationId,
+            runtimeId: item.approval.runtimeId,
+            runtimeGeneration: item.approval.runtimeGeneration,
+            decision: "declined",
+          }),
+        );
+      } else {
+        pendingExpiryDispatches.push(item);
+      }
+    }
+  };
+  await sweepApprovals();
+  const approvalTimer = setInterval(
+    () => void sweepApprovals().catch(() => undefined),
+    options.approvalSweepMs ?? 250,
+  );
+  const heartbeatTimer = setInterval(() => {
+    for (const [socket, alive] of liveSockets) {
+      if (!alive) {
+        socket.terminate();
+        liveSockets.delete(socket);
+        continue;
+      }
+      liveSockets.set(socket, false);
+      socket.ping();
+    }
+  }, options.heartbeatIntervalMs ?? 30_000);
+
   const attachConnector = (socket: WebSocket) => {
     if (connector?.readyState === WebSocket.OPEN) connector.close(1012);
     connector = socket;
+    liveSockets.set(socket, true);
+    socket.on("pong", () => liveSockets.set(socket, true));
     socket.on("message", (data) => {
+      if (!withinRate(
+        socket,
+        options.connectorMessagesPerSecond ?? 1_000,
+        rateWindows,
+      )) {
+        socket.close(1008, "Connector message rate exceeded");
+        return;
+      }
       const parsed = ConnectorEnvelopeSchema.safeParse(parseSocketData(data.toString()));
       if (!parsed.success) {
-        console.error("Core rejected an invalid Connector envelope", parsed.error);
+        console.error("Core rejected an invalid Connector envelope");
+        const state = rateWindows.get(socket);
+        if (state !== undefined && ++state.violations >= 3) {
+          socket.close(1008, "Protocol violation budget exceeded");
+        }
         return;
       }
       void handleConnector(socket, parsed.data).catch((error) => {
-        console.error("Core Connector ingest failed", error);
+        console.error(
+          "Core Connector ingest failed:",
+          redactSensitiveText(error instanceof Error ? error.message : error),
+        );
       });
     });
     socket.on("close", () => {
+      liveSockets.delete(socket);
       if (connector !== socket) return;
       connector = undefined;
       const lost = connectorConnection;
@@ -762,7 +940,19 @@ export async function startCoreServer(
   httpServer.on("upgrade", (request, socket, head) => {
     const path = new URL(request.url ?? "/", "http://localhost").pathname;
     if (path !== "/ws" && path !== "/connector") {
-      socket.destroy();
+      rejectUpgrade(socket, 404, "Not Found");
+      return;
+    }
+    const expectedProtocol = websocketCapability(
+      path === "/connector" ? "connector" : "browser",
+      path === "/connector" ? connectorToken : browserToken,
+    );
+    if (!hasCapability(request.headers["sec-websocket-protocol"], expectedProtocol)) {
+      rejectUpgrade(socket, 401, "Unauthorized");
+      return;
+    }
+    if (path === "/ws" && !isAllowedOrigin(request.headers.origin, allowedBrowserOrigins)) {
+      rejectUpgrade(socket, 403, "Forbidden");
       return;
     }
     socketServer.handleUpgrade(request, socket, head, (webSocket) => {
@@ -786,8 +976,12 @@ export async function startCoreServer(
     browserUrl: `ws://${host}:${address.port}/ws`,
     connectorUrl: `ws://${host}:${address.port}/connector`,
     dbPath,
+    browserToken,
+    connectorToken,
     async close() {
       closing = true;
+      clearInterval(approvalTimer);
+      clearInterval(heartbeatTimer);
       if (connectorLossTimer !== undefined) clearTimeout(connectorLossTimer);
       for (const client of clients.keys()) client.close();
       connector?.close();
@@ -798,6 +992,62 @@ export async function startCoreServer(
       await store.close();
     },
   };
+}
+
+function hasCapability(header: string | undefined, expected: string) {
+  if (header === undefined) return false;
+  return header
+    .split(",")
+    .map((value) => value.trim())
+    .some((value) => constantTimeEqual(value, expected));
+}
+
+function withinRate(
+  socket: WebSocket,
+  limit: number,
+  windows: WeakMap<WebSocket, { startedAt: number; count: number; violations: number }>,
+) {
+  const now = Date.now();
+  let window = windows.get(socket);
+  if (window === undefined || now - window.startedAt >= 1_000) {
+    window = { startedAt: now, count: 0, violations: 0 };
+    windows.set(socket, window);
+  }
+  window.count += 1;
+  return window.count <= limit;
+}
+
+function publicConnectorError(code: string) {
+  const messages: Record<string, string> = {
+    IDEMPOTENCY_KEY_REUSE: "Connector command identity was reused.",
+    STALE_RUNTIME_GENERATION: "Command belongs to an inactive runtime generation.",
+    INTERRUPT_FAILED: "Provider interrupt delivery could not be confirmed.",
+    APPROVAL_DELIVERY_FAILED: "Provider approval delivery could not be confirmed.",
+  };
+  return messages[code] ?? "Connector command failed.";
+}
+
+function constantTimeEqual(left: string, right: string) {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return (
+    leftBytes.byteLength === rightBytes.byteLength &&
+    timingSafeEqual(leftBytes, rightBytes)
+  );
+}
+
+function isAllowedOrigin(origin: string | undefined, allowed: ReadonlySet<string>) {
+  return origin !== undefined && allowed.has(origin);
+}
+
+function rejectUpgrade(
+  socket: Duplex,
+  status: 401 | 403 | 404,
+  reason: string,
+) {
+  socket.end(
+    `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+  );
 }
 
 function parseSocketData(value: string) {

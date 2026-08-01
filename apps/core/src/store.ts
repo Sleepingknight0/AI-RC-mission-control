@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import {
+  ARTIFACT_CHUNK_BYTES,
+  MAX_ARTIFACT_BYTES,
   MAX_INLINE_DIFF_BYTES,
   ApprovalSchema,
   ArtifactReferenceSchema,
@@ -26,7 +28,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-const CORE_SCHEMA_VERSION = 2;
+const CORE_SCHEMA_VERSION = 3;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -106,6 +108,7 @@ interface TurnRow {
   started_at: string;
   completed_at: string | null;
   failure_code: string | null;
+  display_seq: number | null;
 }
 
 interface MessageRow {
@@ -113,6 +116,7 @@ interface MessageRow {
   turn_id: string;
   content: string;
   completed: number;
+  display_seq: number | null;
 }
 
 interface RuntimeRow {
@@ -132,6 +136,7 @@ interface ActivityRow {
   exit_code: number | null;
   duration_ms: number | null;
   output_preview: string;
+  display_seq: number | null;
 }
 
 interface FileChangeRow {
@@ -143,6 +148,7 @@ interface FileChangeRow {
   additions: number;
   deletions: number;
   diff_json: string | null;
+  display_seq: number | null;
 }
 
 interface ApprovalRow {
@@ -226,27 +232,27 @@ export class CoreDatabase {
     const turns = this.#database
       .prepare(
         `SELECT id, client_command_id, provider_turn_id, state, revision, prompt,
-                started_at, completed_at, failure_code
+                started_at, completed_at, failure_code, display_seq
            FROM turns WHERE session_id = ? ORDER BY created_at, id`,
       )
       .all(sessionId) as unknown as TurnRow[];
     const messages = this.#database
       .prepare(
-        `SELECT id, turn_id, content, completed
+        `SELECT id, turn_id, content, completed, display_seq
            FROM assistant_messages WHERE session_id = ? ORDER BY created_at, id`,
       )
       .all(sessionId) as unknown as MessageRow[];
     const activities = this.#database
       .prepare(
         `SELECT id, turn_id, kind, title, cwd, state, revision, exit_code,
-                duration_ms, output_preview
+                duration_ms, output_preview, display_seq
            FROM tool_activities WHERE session_id = ? ORDER BY created_at, id`,
       )
       .all(sessionId) as unknown as ActivityRow[];
     const fileChanges = this.#database
       .prepare(
         `SELECT id, turn_id, state, revision, files_json, additions, deletions,
-                diff_json
+                diff_json, display_seq
            FROM file_changes WHERE session_id = ? ORDER BY created_at, id`,
       )
       .all(sessionId) as unknown as FileChangeRow[];
@@ -274,12 +280,14 @@ export class CoreDatabase {
         completedAt: turn.completed_at,
         failureCode: turn.failure_code,
         providerTurnId: turn.provider_turn_id,
+        eventSeq: turn.display_seq ?? 0,
       })),
       messages: messages.map((message) => ({
         messageId: message.id,
         turnId: message.turn_id,
         content: message.content,
         completed: message.completed === 1,
+        eventSeq: message.display_seq ?? 0,
       })),
       activities: activities.map(activityFromRow),
       fileChanges: fileChanges.map(fileChangeFromRow),
@@ -411,6 +419,7 @@ export class CoreDatabase {
     connectorId: string;
     bootId: string;
     activeRejection: ServerEnvelope;
+    runtimeBusyRejection?: ServerEnvelope;
   }): Promise<MutationResult> {
     return this.#write(() => {
       const payloadHash = commandHash(input.message);
@@ -423,17 +432,30 @@ export class CoreDatabase {
       const now = new Date().toISOString();
       this.#ensureSession(input.message.payload.sessionId, now);
       const active = this.#database
-        .prepare("SELECT id FROM turns WHERE session_id = ? AND state = 'running'")
-        .get(input.message.payload.sessionId);
+        .prepare(
+          `SELECT id, session_id FROM turns
+            WHERE state = 'running' AND (
+              session_id = ? OR (runtime_id = ? AND runtime_generation = ?)
+            ) LIMIT 1`,
+        )
+        .get(
+          input.message.payload.sessionId,
+          input.runtime.runtimeId,
+          input.runtime.generation,
+        ) as { id: string; session_id: string } | undefined;
       if (active !== undefined) {
+        const rejection =
+          active.session_id === input.message.payload.sessionId
+            ? input.activeRejection
+            : (input.runtimeBusyRejection ?? input.activeRejection);
         this.#insertCommand(
           input.message,
           payloadHash,
           "rejected",
-          input.activeRejection,
+          rejection,
           now,
         );
-        return { kind: "new", result: input.activeRejection };
+        return { kind: "new", result: rejection };
       }
 
       this.#attachRuntime(
@@ -484,6 +506,9 @@ export class CoreDatabase {
         }),
         now,
       });
+      this.#database
+        .prepare("UPDATE turns SET display_seq = ? WHERE id = ?")
+        .run(durableEvent.payload.seq, input.turnId);
       return { kind: "new", result: accepted, durableEvent };
     });
   }
@@ -528,12 +553,15 @@ export class CoreDatabase {
 
   async markDispatched(commandId: string) {
     await this.#write(() => {
-      this.#database
+      const updated = this.#database
         .prepare(
           `UPDATE commands SET state = 'dispatched', dispatch_attempts = dispatch_attempts + 1
             WHERE command_id = ? AND state = 'committed'`,
         )
         .run(commandId);
+      if (Number(updated.changes) !== 1) {
+        throw new Error("Command was not in the committed state before dispatch");
+      }
     });
   }
 
@@ -633,7 +661,7 @@ export class CoreDatabase {
           now,
           now,
         );
-      return this.#appendVisibleEvent({
+      const event = this.#appendVisibleEvent({
         sessionId: message.payload.sessionId,
         origin: "connector",
         runtime: {
@@ -647,6 +675,10 @@ export class CoreDatabase {
         payload: (identity) => ({ ...message.payload, ...identity }),
         now,
       });
+      this.#database
+        .prepare("UPDATE assistant_messages SET display_seq = COALESCE(display_seq, ?) WHERE id = ?")
+        .run(event.payload.seq, message.payload.messageId);
+      return event;
     });
   }
 
@@ -701,7 +733,7 @@ export class CoreDatabase {
           now,
         );
       const stored = this.#activity(activity.activityId);
-      return this.#appendVisibleEvent({
+      const event = this.#appendVisibleEvent({
         sessionId: message.payload.sessionId,
         origin: "connector",
         runtime: runtimeFromSource(source),
@@ -718,6 +750,10 @@ export class CoreDatabase {
         }),
         now,
       });
+      this.#database
+        .prepare("UPDATE tool_activities SET display_seq = COALESCE(display_seq, ?) WHERE id = ?")
+        .run(event.payload.seq, activity.activityId);
+      return event;
     });
   }
 
@@ -800,7 +836,7 @@ export class CoreDatabase {
           now,
         );
       const stored = this.#fileChange(fileChange.fileChangeId);
-      return this.#appendVisibleEvent({
+      const event = this.#appendVisibleEvent({
         sessionId: message.payload.sessionId,
         origin: "connector",
         runtime: runtimeFromSource(source),
@@ -817,6 +853,10 @@ export class CoreDatabase {
         }),
         now,
       });
+      this.#database
+        .prepare("UPDATE file_changes SET display_seq = COALESCE(display_seq, ?) WHERE id = ?")
+        .run(event.payload.seq, fileChange.fileChangeId);
+      return event;
     });
   }
 
@@ -1073,6 +1113,48 @@ export class CoreDatabase {
     });
   }
 
+  async expireApprovals(now = new Date().toISOString()) {
+    return this.#write(() => {
+      const pending = this.#database
+        .prepare(
+          `SELECT id, session_id, runtime_id, runtime_generation, turn_id,
+                  provider_correlation_id, action_type, state, revision,
+                  payload_json, expires_at, resolved_by_device_id, resolved_at
+             FROM approval_requests
+            WHERE state = 'pending' AND expires_at <= ?
+            ORDER BY expires_at, id`,
+        )
+        .all(now) as unknown as ApprovalRow[];
+      return pending.map((approval) => {
+        this.#database
+          .prepare(
+            `UPDATE approval_requests SET state = 'expired', revision = revision + 1,
+               resolved_at = ?, updated_at = ? WHERE id = ? AND state = 'pending'`,
+          )
+          .run(now, now, approval.id);
+        const expired = approvalFromRow(this.#approval(approval.id));
+        const event = this.#appendVisibleEvent({
+          sessionId: approval.session_id,
+          origin: "core",
+          runtime: runtimeFromApproval(expired),
+          turnId: approval.turn_id,
+          type: "approval.expired",
+          payload: (identity) => ({
+            sessionId: approval.session_id,
+            approval: expired,
+            ...identity,
+          }),
+          now,
+        });
+        return {
+          event,
+          approval: expired,
+          providerCorrelationId: approval.provider_correlation_id,
+        };
+      });
+    });
+  }
+
   async beginArtifact(
     message: Extract<ConnectorEnvelope, { type: "connector.artifact.begin" }>,
     source: ConnectorSource,
@@ -1089,6 +1171,21 @@ export class CoreDatabase {
         )
       ) {
         return false;
+      }
+      if (chunkCount !== Math.ceil(artifact.byteLength / ARTIFACT_CHUNK_BYTES)) {
+        throw new Error("Artifact chunk count does not match its declared length");
+      }
+      const allocated = this.#database
+        .prepare(
+          `SELECT COALESCE(SUM(byte_length), 0) AS bytes FROM (
+             SELECT byte_length FROM artifacts WHERE turn_id = ?
+             UNION ALL
+             SELECT byte_length FROM artifact_ingests WHERE turn_id = ?
+           )`,
+        )
+        .get(turnId, turnId) as { bytes: number };
+      if (allocated.bytes + artifact.byteLength > MAX_ARTIFACT_BYTES * 4) {
+        throw new Error("Artifact quota for this Turn was exceeded");
       }
       this.#database
         .prepare(
@@ -1132,10 +1229,16 @@ export class CoreDatabase {
       }
       const ingest = this.#database
         .prepare(
-          `SELECT session_id, turn_id, chunk_count FROM artifact_ingests WHERE id = ?`,
+          `SELECT session_id, turn_id, chunk_count, byte_length
+             FROM artifact_ingests WHERE id = ?`,
         )
         .get(artifactId) as
-        | { session_id: string; turn_id: string; chunk_count: number }
+        | {
+            session_id: string;
+            turn_id: string;
+            chunk_count: number;
+            byte_length: number;
+          }
         | undefined;
       if (
         ingest === undefined ||
@@ -1146,6 +1249,13 @@ export class CoreDatabase {
         throw new Error("Artifact chunk does not match an active ingest");
       }
       const content = decodeBase64(contentBase64);
+      const expectedLength = Math.min(
+        ARTIFACT_CHUNK_BYTES,
+        ingest.byte_length - chunkIndex * ARTIFACT_CHUNK_BYTES,
+      );
+      if (content.byteLength !== expectedLength) {
+        throw new Error("Artifact chunk length does not match its declaration");
+      }
       this.#database
         .prepare(
           `INSERT INTO artifact_ingest_chunks (artifact_id, chunk_index, content)
@@ -1258,6 +1368,32 @@ export class CoreDatabase {
           sha256: row.sha256,
           content: Buffer.from(row.content),
         };
+  }
+
+  artifactMetadata(artifactId: string) {
+    return this.#database
+      .prepare(
+        `SELECT id AS artifactId, session_id AS sessionId, turn_id AS turnId,
+                media_type AS mediaType, byte_length AS byteLength, sha256
+           FROM artifacts WHERE id = ?`,
+      )
+      .get(artifactId) as
+      | {
+          artifactId: string;
+          sessionId: string;
+          turnId: string;
+          mediaType: string;
+          byteLength: number;
+          sha256: string;
+        }
+      | undefined;
+  }
+
+  artifactContent(artifactId: string, start: number, length: number) {
+    const row = this.#database
+      .prepare("SELECT substr(content, ?, ?) AS content FROM artifacts WHERE id = ?")
+      .get(start + 1, length, artifactId) as { content: Uint8Array } | undefined;
+    return row === undefined ? undefined : Buffer.from(row.content);
   }
 
   async finishTurn(
@@ -1375,9 +1511,126 @@ export class CoreDatabase {
     return this.#ingestSource(source, () => true);
   }
 
-  async reconcileRuntime(runtime: Runtime) {
+  async completeConnectorCommand(
+    message: Extract<ConnectorEnvelope, { type: "connector.command.completed" }>,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      this.#database
+        .prepare(
+          `UPDATE commands SET state = 'terminal', terminal_at = ?
+            WHERE command_id = ? AND session_id = ? AND state = 'dispatched'`,
+        )
+        .run(
+          new Date().toISOString(),
+          message.payload.commandId,
+          message.payload.sessionId,
+        );
+      return [] as ServerEnvelope[];
+    });
+  }
+
+  async failConnectorCommand(
+    message: Extract<ConnectorEnvelope, { type: "connector.command.error" }>,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const now = new Date().toISOString();
+      const result = ServerEnvelopeSchema.parse(
+        makeEnvelope("command.rejected", {
+          commandId: message.payload.commandId,
+          sessionId: message.payload.sessionId,
+          error: {
+            code: message.payload.code,
+            message: message.payload.message,
+            retryable: false,
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+          },
+        }),
+      );
+      this.#database
+        .prepare(
+          `UPDATE commands SET state = 'outcome_unknown', result_json = ?, terminal_at = ?
+            WHERE command_id = ? AND session_id = ?
+              AND state IN ('committed', 'dispatched')`,
+        )
+        .run(
+          JSON.stringify(result),
+          now,
+          message.payload.commandId,
+          message.payload.sessionId,
+        );
+      const row = this.#database
+        .prepare(
+          `SELECT t.id AS turn_id, t.session_id, r.id AS runtime_id,
+                  r.generation, t.client_command_id
+             FROM turns t JOIN runtimes r ON r.id = t.runtime_id
+            WHERE t.id = ? AND t.session_id = ? AND t.state = 'running'
+              AND r.id = ? AND r.generation = ?`,
+        )
+        .get(
+          message.payload.turnId,
+          message.payload.sessionId,
+          source.runtimeId,
+          source.runtimeGeneration,
+        ) as RuntimeTurnRow | undefined;
+      return row === undefined ? [] : this.#markTurnsUnknown([row]);
+    });
+  }
+
+  async reconcileRuntime(
+    runtime: Runtime,
+    connectorId: string,
+    bootId: string,
+    commandReceipts: readonly { commandId: string; state: string }[],
+  ) {
     return this.#write(() => {
       const events = this.#markMismatchedRuntimesLost(runtime);
+      const dispatchProvenCommands = new Set(
+        commandReceipts
+          .filter(
+            (receipt) =>
+              receipt.state === "dispatching" || receipt.state === "completed",
+          )
+          .map((receipt) => receipt.commandId),
+      );
+      const unverified = this.#database
+        .prepare(
+          `SELECT t.id AS turn_id, t.session_id, r.id AS runtime_id,
+                  r.generation, t.client_command_id
+             FROM turns t JOIN runtimes r ON r.id = t.runtime_id
+            WHERE t.state = 'running' AND r.id = ? AND r.generation = ?
+              AND (r.connector_id <> ? OR r.connector_boot_id <> ?)`,
+        )
+        .all(
+          runtime.runtimeId,
+          runtime.generation,
+          connectorId,
+          bootId,
+        ) as unknown as RuntimeTurnRow[];
+      const missingReceipts = this.#database
+        .prepare(
+          `SELECT t.id AS turn_id, t.session_id, r.id AS runtime_id,
+                  r.generation, t.client_command_id
+             FROM turns t JOIN runtimes r ON r.id = t.runtime_id
+            WHERE t.state = 'running' AND r.id = ? AND r.generation = ?
+              AND r.connector_id = ? AND r.connector_boot_id = ?`,
+        )
+        .all(
+          runtime.runtimeId,
+          runtime.generation,
+          connectorId,
+          bootId,
+        ) as unknown as RuntimeTurnRow[];
+      events.push(
+        ...this.#markTurnsUnknown([
+          ...unverified,
+          ...missingReceipts.filter(
+            (row) => !dispatchProvenCommands.has(row.client_command_id),
+          ),
+        ]),
+      );
       this.#database
         .prepare(
           `UPDATE runtimes SET state = ?, revision = revision + 1, updated_at = ?
@@ -1498,7 +1751,8 @@ export class CoreDatabase {
     const row = this.#database
       .prepare(
         `SELECT id, turn_id, kind, title, cwd, state, revision, exit_code,
-                duration_ms, output_preview FROM tool_activities WHERE id = ?`,
+                duration_ms, output_preview, display_seq
+           FROM tool_activities WHERE id = ?`,
       )
       .get(activityId) as ActivityRow | undefined;
     if (row === undefined) throw new Error(`Activity not found: ${activityId}`);
@@ -1509,7 +1763,7 @@ export class CoreDatabase {
     const row = this.#database
       .prepare(
         `SELECT id, turn_id, state, revision, files_json, additions, deletions,
-                diff_json FROM file_changes WHERE id = ?`,
+                diff_json, display_seq FROM file_changes WHERE id = ?`,
       )
       .get(fileChangeId) as FileChangeRow | undefined;
     if (row === undefined) throw new Error(`File change not found: ${fileChangeId}`);
@@ -1822,7 +2076,8 @@ export class CoreDatabase {
   ): ServerEnvelope[] {
     const rows = this.#database
       .prepare(
-        `SELECT t.id AS turn_id, t.session_id, r.id AS runtime_id, r.generation
+        `SELECT t.id AS turn_id, t.session_id, r.id AS runtime_id, r.generation,
+                t.client_command_id
            FROM turns t JOIN runtimes r ON r.id = t.runtime_id
           WHERE t.state = 'running'
             AND (? IS NULL OR (r.id = ? AND r.generation = ?))
@@ -1840,7 +2095,12 @@ export class CoreDatabase {
       session_id: string;
       runtime_id: string;
       generation: number;
+      client_command_id: string;
     }>;
+    return this.#markTurnsUnknown(rows);
+  }
+
+  #markTurnsUnknown(rows: RuntimeTurnRow[]): ServerEnvelope[] {
     const events: ServerEnvelope[] = [];
     const now = new Date().toISOString();
     for (const row of rows) {
@@ -1889,6 +2149,14 @@ export class CoreDatabase {
   }
 }
 
+interface RuntimeTurnRow {
+  turn_id: string;
+  session_id: string;
+  runtime_id: string;
+  generation: number;
+  client_command_id: string;
+}
+
 function activityFromRow(row: ActivityRow) {
   return ToolActivitySchema.parse({
     activityId: row.id,
@@ -1901,6 +2169,7 @@ function activityFromRow(row: ActivityRow) {
     exitCode: row.exit_code,
     durationMs: row.duration_ms,
     outputPreview: row.output_preview,
+    eventSeq: row.display_seq ?? 0,
   });
 }
 
@@ -1914,6 +2183,7 @@ function fileChangeFromRow(row: FileChangeRow) {
     additions: row.additions,
     deletions: row.deletions,
     diff: row.diff_json === null ? null : JSON.parse(row.diff_json),
+    eventSeq: row.display_seq ?? 0,
   });
 }
 

@@ -1,7 +1,26 @@
 import { startCoreServer } from "./server.js";
 
 const port = Number(process.env.AICL_CORE_PORT ?? "8787");
-const server = await startCoreServer({ port });
+const browserToken = process.env.AICL_BROWSER_TOKEN;
+const connectorToken = process.env.AICL_CONNECTOR_TOKEN;
+
+if (browserToken === undefined || connectorToken === undefined) {
+  throw new Error("AICL_BROWSER_TOKEN and AICL_CONNECTOR_TOKEN are required");
+}
+
+const allowedBrowserOrigins = (
+  process.env.AICL_BROWSER_ORIGINS ??
+  "http://127.0.0.1:5173,http://localhost:5173"
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const server = await startCoreServer({
+  port,
+  browserToken,
+  connectorToken,
+  allowedBrowserOrigins,
+});
 console.log(`AICL Core listening on http://${server.host}:${server.port}`);
 
 const shutdown = async () => {

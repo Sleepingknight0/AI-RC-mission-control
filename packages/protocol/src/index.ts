@@ -7,9 +7,42 @@ export const MAX_PROMPT_BYTES = 256 * 1024;
 export const MAX_OUTPUT_BATCH_BYTES = 256 * 1024;
 export const MAX_INLINE_DIFF_BYTES = 512 * 1024;
 export const ARTIFACT_CHUNK_BYTES = 128 * 1024;
+export const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+export const MAX_ARTIFACT_CHUNKS = Math.ceil(
+  MAX_ARTIFACT_BYTES / ARTIFACT_CHUNK_BYTES,
+);
+export const MAX_COMPLETED_MESSAGE_BYTES = 512 * 1024;
+export const SAFE_ARTIFACT_MEDIA_TYPES = [
+  "text/plain",
+  "text/plain; charset=utf-8",
+  "text/x-diff",
+  "text/x-diff; charset=utf-8",
+] as const;
+
+export function websocketCapability(
+  audience: "browser" | "connector",
+  token: string,
+) {
+  if (!/^[A-Za-z0-9._~-]{16,200}$/u.test(token)) {
+    throw new Error("WebSocket capability token has an invalid format");
+  }
+  return `aicl.${audience}.${token}`;
+}
 
 const id = z.string().min(1).max(200);
 const timestamp = z.string().datetime({ offset: true });
+const utf8String = (maxBytes: number) =>
+  z.string().refine((value) => utf8ByteLength(value) <= maxBytes, {
+    message: `UTF-8 content exceeds ${maxBytes} bytes`,
+  });
+const base64Chunk = z
+  .string()
+  .min(4)
+  .max(Math.ceil(ARTIFACT_CHUNK_BYTES / 3) * 4)
+  .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u)
+  .refine((value) => decodedBase64Length(value) <= ARTIFACT_CHUNK_BYTES, {
+    message: `Decoded artifact chunk exceeds ${ARTIFACT_CHUNK_BYTES} bytes`,
+  });
 
 const envelope = <T extends string, S extends z.ZodTypeAny>(
   type: T,
@@ -40,6 +73,11 @@ const durableEventIdentity = {
   eventId: id,
   seq: z.number().int().positive(),
 };
+
+export const CommandReceiptSchema = z.object({
+  commandId: id,
+  state: z.enum(["received", "dispatching", "completed", "outcome_unknown"]),
+});
 
 export const ProtocolErrorSchema = z.object({
   code: z.string().min(1),
@@ -95,12 +133,13 @@ export const ToolActivitySchema = z.object({
   exitCode: z.number().int().nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
   outputPreview: z.string().max(32 * 1024),
+  eventSeq: z.number().int().nonnegative().optional(),
 });
 
 export const ArtifactReferenceSchema = z.object({
   artifactId: id,
-  mediaType: z.string().min(1).max(200),
-  byteLength: z.number().int().nonnegative(),
+  mediaType: z.enum(SAFE_ARTIFACT_MEDIA_TYPES),
+  byteLength: z.number().int().positive().max(MAX_ARTIFACT_BYTES),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   downloadPath: z.string().regex(/^\/artifacts\/[A-Za-z0-9-]+$/),
   expiresAt: timestamp.optional(),
@@ -109,8 +148,8 @@ export const ArtifactReferenceSchema = z.object({
 export const DiffReferenceSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("inline"),
-    content: z.string(),
-    byteLength: z.number().int().nonnegative(),
+    content: utf8String(MAX_INLINE_DIFF_BYTES),
+    byteLength: z.number().int().nonnegative().max(MAX_INLINE_DIFF_BYTES),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }),
   z.object({
@@ -133,6 +172,7 @@ export const FileChangeSchema = z.object({
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
   diff: DiffReferenceSchema.nullable(),
+  eventSeq: z.number().int().nonnegative().optional(),
 });
 
 export const ApprovalStateSchema = z.enum([
@@ -176,6 +216,7 @@ export const TurnSchema = z.object({
   completedAt: timestamp.nullable(),
   failureCode: z.string().nullable(),
   providerTurnId: id.nullable(),
+  eventSeq: z.number().int().nonnegative().optional(),
 });
 
 export const AssistantMessageSchema = z.object({
@@ -183,6 +224,7 @@ export const AssistantMessageSchema = z.object({
   turnId: id,
   content: z.string(),
   completed: z.boolean(),
+  eventSeq: z.number().int().nonnegative().optional(),
 });
 
 export const RuntimeSchema = z.object({
@@ -320,7 +362,7 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
       turnId: id,
       messageId: id,
       streamSeq: z.number().int().positive(),
-      text: z.string(),
+      text: utf8String(MAX_OUTPUT_BATCH_BYTES),
     }),
   ),
   envelope(
@@ -329,7 +371,7 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
       sessionId: id,
       turnId: id,
       messageId: id,
-      content: z.string(),
+      content: utf8String(MAX_COMPLETED_MESSAGE_BYTES),
       ...durableEventIdentity,
     }),
   ),
@@ -348,7 +390,7 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
       turnId: id,
       activityId: id,
       streamSeq: z.number().int().positive(),
-      output: z.string(),
+      output: utf8String(MAX_OUTPUT_BATCH_BYTES),
     }),
   ),
   envelope(
@@ -442,7 +484,12 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
 export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   connectorEnvelope(
     "connector.hello",
-    z.object({ connectorId: id, bootId: id, runtime: RuntimeSchema }),
+    z.object({
+      connectorId: id,
+      bootId: id,
+      runtime: RuntimeSchema,
+      commandReceipts: z.array(CommandReceiptSchema).max(1_000),
+    }),
   ),
   connectorEnvelope("connector.runtime.status", z.object({ runtime: RuntimeSchema })),
   connectorEnvelope(
@@ -450,10 +497,15 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
     z.object({
       commandId: id,
       sessionId: id,
+      turnId: id,
       code: z.string().min(1),
       message: z.string().min(1),
       retryable: z.boolean(),
     }),
+  ),
+  connectorEnvelope(
+    "connector.command.completed",
+    z.object({ commandId: id, sessionId: id, turnId: id }),
   ),
   connectorEnvelope(
     "connector.session.bound",
@@ -470,7 +522,7 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       turnId: id,
       messageId: id,
       streamSeq: z.number().int().positive(),
-      text: z.string(),
+      text: utf8String(MAX_OUTPUT_BATCH_BYTES),
     }),
   ),
   connectorEnvelope(
@@ -488,7 +540,7 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       turnId: id,
       activityId: id,
       streamSeq: z.number().int().positive(),
-      output: z.string(),
+      output: utf8String(MAX_OUTPUT_BATCH_BYTES),
     }),
   ),
   connectorEnvelope(
@@ -528,7 +580,7 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       sessionId: id,
       turnId: id,
       artifact: ArtifactReferenceSchema,
-      chunkCount: z.number().int().positive(),
+      chunkCount: z.number().int().positive().max(MAX_ARTIFACT_CHUNKS),
     }),
   ),
   connectorEnvelope(
@@ -538,7 +590,7 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       turnId: id,
       artifactId: id,
       chunkIndex: z.number().int().nonnegative(),
-      contentBase64: z.string().max(ARTIFACT_CHUNK_BYTES * 2),
+      contentBase64: base64Chunk,
     }),
   ),
   connectorEnvelope(
@@ -551,7 +603,7 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       sessionId: id,
       turnId: id,
       messageId: id,
-      content: z.string(),
+      content: utf8String(MAX_COMPLETED_MESSAGE_BYTES),
     }),
   ),
   connectorEnvelope(
@@ -600,6 +652,27 @@ export function makeEnvelope<T extends string, P>(type: T, payload: P) {
 
 export function utf8ByteLength(value: string) {
   return new TextEncoder().encode(value).byteLength;
+}
+
+export function redactSensitiveText(value: unknown) {
+  return String(value)
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/giu, "$1[REDACTED]")
+    .replace(/(cookie\s*:\s*)[^\r\n]+/giu, "$1[REDACTED]")
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[=:]\s*)[^\s,;]+/giu,
+      "$1[REDACTED]",
+    )
+    .replace(
+      /-----BEGIN [^-\r\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\r\n]*PRIVATE KEY-----/gu,
+      "[REDACTED PRIVATE KEY]",
+    )
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/giu, "$1[REDACTED]@")
+    .slice(0, 4_096);
+}
+
+function decodedBase64Length(value: string) {
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  return (value.length / 4) * 3 - padding;
 }
 
 export function decodeJson(

@@ -5,6 +5,7 @@ import { CodexProvider } from "@aicl/connector/codex";
 import {
   ServerEnvelopeSchema,
   makeEnvelope,
+  websocketCapability,
   type ServerEnvelope,
 } from "@aicl/protocol";
 import WebSocket from "ws";
@@ -31,13 +32,14 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     });
     const connector: ConnectorHandle = startConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       provider,
       providerName: "codex",
       journalPath: ":memory:",
     });
     handles.push(connector);
     await connector.ready;
-    const browser = await openBrowser(core.browserUrl);
+    const browser = await openBrowser(core.browserUrl, core.browserToken);
 
     send(
       browser,
@@ -171,8 +173,10 @@ interface BrowserHarness {
   messages: ServerEnvelope[];
 }
 
-async function openBrowser(url: string): Promise<BrowserHarness> {
-  const socket = new WebSocket(url);
+async function openBrowser(url: string, token: string): Promise<BrowserHarness> {
+  const socket = new WebSocket(url, websocketCapability("browser", token), {
+    origin: "http://127.0.0.1:5173",
+  });
   const messages: ServerEnvelope[] = [];
   socket.on("message", (data) => {
     messages.push(ServerEnvelopeSchema.parse(JSON.parse(data.toString())));

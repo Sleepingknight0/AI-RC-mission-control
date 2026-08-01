@@ -1,5 +1,10 @@
 import { startMockConnector } from "@aicl/connector";
-import { ServerEnvelopeSchema, makeEnvelope, type ServerEnvelope } from "@aicl/protocol";
+import {
+  ServerEnvelopeSchema,
+  makeEnvelope,
+  websocketCapability,
+  type ServerEnvelope,
+} from "@aicl/protocol";
 import { WALKING_SKELETON_FIXTURE } from "@aicl/test-fixtures";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
@@ -17,8 +22,10 @@ afterEach(async () => {
   await Promise.allSettled(openHandles.splice(0).map((handle) => handle.close()));
 });
 
-async function openBrowser(url: string): Promise<BrowserHarness> {
-  const socket = new WebSocket(url);
+async function openBrowser(url: string, token: string): Promise<BrowserHarness> {
+  const socket = new WebSocket(url, websocketCapability("browser", token), {
+    origin: "http://127.0.0.1:5173",
+  });
   const messages: ServerEnvelope[] = [];
   socket.on("message", (data) => {
     messages.push(ServerEnvelopeSchema.parse(JSON.parse(data.toString())));
@@ -60,12 +67,13 @@ describe("mock Connector to Core to browser flow", () => {
     openHandles.push(core);
     const connector = startMockConnector({
       coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
       providerDelayMs: 30,
     });
     openHandles.push(connector);
     await connector.ready;
 
-    const first = await openBrowser(core.browserUrl);
+    const first = await openBrowser(core.browserUrl, core.browserToken);
     send(first, makeEnvelope("sessions.list", {}));
     const emptyCatalog = await waitForMessage(first, "sessions.snapshot");
     expect(emptyCatalog.payload.sessions).toEqual([]);
@@ -143,6 +151,23 @@ describe("mock Connector to Core to browser flow", () => {
           message.payload.error.code === "TURN_ALREADY_ACTIVE",
       ),
     );
+    const otherSession = await openBrowser(core.browserUrl, core.browserToken);
+    send(
+      otherSession,
+      makeEnvelope("turn.submit", {
+        commandId: "command-other-session",
+        sessionId: "other-session",
+        prompt: "must not run concurrently on one runtime",
+      }),
+    );
+    await waitUntil(() =>
+      otherSession.messages.some(
+        (message) =>
+          message.type === "command.rejected" &&
+          message.payload.error.code === "RUNTIME_BUSY",
+      ),
+    );
+    otherSession.socket.close();
     expect((await waitForMessage(first, "assistant.message.delta")).payload.text).not.toBe("");
     await waitForMessage(first, "turn.completed");
     expect(JSON.stringify(first.messages)).not.toMatch(
@@ -150,7 +175,7 @@ describe("mock Connector to Core to browser flow", () => {
     );
 
     first.socket.close();
-    const refreshed = await openBrowser(core.browserUrl);
+    const refreshed = await openBrowser(core.browserUrl, core.browserToken);
     expect(
       (await waitForMessage(refreshed, "runtime.status")).payload.runtime.status,
     ).toBe("ready");
@@ -178,7 +203,10 @@ describe("mock Connector to Core to browser flow", () => {
       connectorLossGraceMs: 25,
     });
     openHandles.push(core);
-    const connector = new WebSocket(core.connectorUrl);
+    const connector = new WebSocket(
+      core.connectorUrl,
+      websocketCapability("connector", core.connectorToken),
+    );
     await new Promise<void>((resolve, reject) => {
       connector.once("open", resolve);
       connector.once("error", reject);
@@ -193,11 +221,12 @@ describe("mock Connector to Core to browser flow", () => {
             generation: 7,
             status: "ready",
           },
+          commandReceipts: [],
         }),
       ),
     );
 
-    const browser = await openBrowser(core.browserUrl);
+    const browser = await openBrowser(core.browserUrl, core.browserToken);
     send(
       browser,
       makeEnvelope("session.subscribe", { sessionId: "loss-session", afterSeq: 0 }),
@@ -224,7 +253,7 @@ describe("mock Connector to Core to browser flow", () => {
     );
     browser.socket.close();
 
-    const reconnected = await openBrowser(core.browserUrl);
+    const reconnected = await openBrowser(core.browserUrl, core.browserToken);
     expect(
       (await waitForMessage(reconnected, "runtime.status")).payload.runtime.status,
     ).toBe("lost");

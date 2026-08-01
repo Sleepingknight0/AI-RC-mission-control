@@ -16,7 +16,11 @@ import {
   type TurnStartCommand,
 } from "../provider.js";
 import { OutputBatcher } from "../output-batcher.js";
-import { CodexRpcProcess } from "./rpc-process.js";
+import { canonicalProjectRoot } from "../project-root.js";
+import {
+  CodexRpcProcess,
+  ProviderRpcTimeoutError,
+} from "./rpc-process.js";
 
 const ThreadResponseSchema = z.object({ thread: z.object({ id: z.string().min(1) }) });
 const TurnStartResponseSchema = z.object({
@@ -202,20 +206,26 @@ export class CodexProvider implements ConnectorProvider {
       throw new Error("Codex provider already has an active Turn");
     }
     const rpc = await this.#ensureProcess();
-    const providerSessionId = command.payload.providerSessionId
-      ? ThreadResponseSchema.parse(
-          await rpc.request("thread/resume", {
-            threadId: command.payload.providerSessionId,
-          }),
-        ).thread.id
-      : ThreadResponseSchema.parse(
-          await rpc.request("thread/start", {
-            cwd: this.#options.cwd,
-            approvalPolicy: "on-request",
-            sandbox: "read-only",
-            personality: "none",
-          }),
-        ).thread.id;
+    let providerSessionId: string;
+    try {
+      providerSessionId = command.payload.providerSessionId
+        ? ThreadResponseSchema.parse(
+            await rpc.request("thread/resume", {
+              threadId: command.payload.providerSessionId,
+            }),
+          ).thread.id
+        : ThreadResponseSchema.parse(
+            await rpc.request("thread/start", {
+              cwd: this.#options.cwd,
+              approvalPolicy: "on-request",
+              sandbox: "read-only",
+              personality: "none",
+            }),
+          ).thread.id;
+    } catch (error) {
+      if (error instanceof ProviderRpcTimeoutError) throw new ProviderLostError();
+      throw error;
+    }
 
     emit(
       this.#envelope("connector.session.bound", {
@@ -286,8 +296,13 @@ export class CodexProvider implements ConnectorProvider {
       for (const notification of early) this.#handleNotification(notification);
       await done;
     } catch (error) {
+      if (error instanceof ProviderRpcTimeoutError && !active.lost) {
+        this.#handleProtocolFault(error);
+      }
       if (this.#active === active) this.#active = undefined;
-      if (active.lost) throw new ProviderLostError();
+      if (active.lost || error instanceof ProviderRpcTimeoutError) {
+        throw new ProviderLostError();
+      }
       throw error;
     }
   }
@@ -647,6 +662,14 @@ export class CodexProvider implements ConnectorProvider {
       : this.#fileChangeId(active, parsed.params.itemId);
     const command = isCommand ? (parsed.params.command ?? null) : null;
     const reason = parsed.params.reason ?? null;
+    if (isCommand && parsed.params.cwd !== null && parsed.params.cwd !== undefined) {
+      try {
+        canonicalProjectRoot(parsed.params.cwd, [this.#options.cwd]);
+      } catch {
+        rpc.respond(parsed.id, { decision: "decline" });
+        return true;
+      }
+    }
     const approval: Approval = {
       approvalId,
       sessionId: active.command.payload.sessionId,

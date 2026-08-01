@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ARTIFACT_CHUNK_BYTES,
   ClientEnvelopeSchema,
+  ConnectorEnvelopeSchema,
+  MAX_ARTIFACT_BYTES,
+  MAX_OUTPUT_BATCH_BYTES,
   MAX_WEBSOCKET_MESSAGE_BYTES,
   PROTOCOL_VERSION,
   ServerEnvelopeSchema,
   decodeJson,
   makeEnvelope,
+  redactSensitiveText,
 } from "../src/index.js";
 
 describe("normalized protocol validation", () => {
@@ -112,5 +117,76 @@ describe("normalized protocol validation", () => {
     });
 
     expect(result.success).toBe(false);
+  });
+
+  it("applies semantic byte limits after UTF-8 decoding", () => {
+    const oversizedUnicode = "ก".repeat(Math.ceil(MAX_OUTPUT_BATCH_BYTES / 3) + 1);
+    const result = ConnectorEnvelopeSchema.safeParse(
+      makeEnvelope("connector.command.output.batch", {
+        sessionId: "session-1",
+        turnId: "turn-1",
+        activityId: "activity-1",
+        streamSeq: 1,
+        output: oversizedUnicode,
+      }),
+    );
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects unsafe media, oversized artifacts, and decoded oversized chunks", () => {
+    const unsafe = ConnectorEnvelopeSchema.safeParse(
+      makeEnvelope("connector.artifact.begin", {
+        sessionId: "session-1",
+        turnId: "turn-1",
+        artifact: {
+          artifactId: "artifact-1",
+          mediaType: "text/html",
+          byteLength: 1,
+          sha256: "a".repeat(64),
+          downloadPath: "/artifacts/artifact-1",
+        },
+        chunkCount: 1,
+      }),
+    );
+    const oversized = ConnectorEnvelopeSchema.safeParse(
+      makeEnvelope("connector.artifact.begin", {
+        sessionId: "session-1",
+        turnId: "turn-1",
+        artifact: {
+          artifactId: "artifact-2",
+          mediaType: "text/x-diff",
+          byteLength: MAX_ARTIFACT_BYTES + 1,
+          sha256: "a".repeat(64),
+          downloadPath: "/artifacts/artifact-2",
+        },
+        chunkCount: 1,
+      }),
+    );
+    const oversizedChunk = ConnectorEnvelopeSchema.safeParse(
+      makeEnvelope("connector.artifact.chunk", {
+        sessionId: "session-1",
+        turnId: "turn-1",
+        artifactId: "artifact-1",
+        chunkIndex: 0,
+        contentBase64: Buffer.alloc(ARTIFACT_CHUNK_BYTES + 1).toString("base64"),
+      }),
+    );
+
+    expect(unsafe.success).toBe(false);
+    expect(oversized.success).toBe(false);
+    expect(oversizedChunk.success).toBe(false);
+  });
+
+  it("redacts common credential forms from bounded diagnostics", () => {
+    const diagnostic = redactSensitiveText(
+      "Authorization: Bearer AICL_TEST_SECRET Cookie: sid=COOKIE_SECRET " +
+        "api_key=KEY_SECRET https://user:PASS_SECRET@example.test " +
+        "-----BEGIN PRIVATE KEY-----PRIVATE_SECRET-----END PRIVATE KEY-----",
+    );
+
+    expect(diagnostic).not.toMatch(
+      /AICL_TEST_SECRET|COOKIE_SECRET|KEY_SECRET|PASS_SECRET|PRIVATE_SECRET/u,
+    );
   });
 });
