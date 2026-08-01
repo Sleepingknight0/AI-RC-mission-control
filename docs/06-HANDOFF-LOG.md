@@ -616,3 +616,89 @@ and incorrect Runtime/process ownership recovery.
 
 Codex performs **M6.2** as a security/boundary self-audit, records independently
 reproducible findings, and stops before M7.1 remediation.
+
+---
+
+### 2026-08-02 03:26 — Codex — M6.2
+
+**Scope**
+
+Perform a separate security and boundary self-audit of browser/Core/Connector
+identity, Origin, schemas, payload/rate ceilings, artifact retrieval/allocation,
+project-root containment, Windows path/spawn behavior, secret handling, browser
+rendering, and approval replay. No remediation was included.
+
+**Files changed or reviewed**
+
+- `reviews/codex/M6.2-SECURITY-BOUNDARY-AUDIT.md` — separate Standards and Spec
+  findings with severity, affected symbols, reproduction, evidence, expected
+  boundary, remediation, and regression-test proposal
+- Core WebSocket/HTTP server, artifact store, normalized protocol schemas
+- Connector client/journal, Codex adapter/RPC process, process command helper
+- Web rendering and approval resolution paths
+- implementation status, execution plan, and this handoff
+
+**Commands and tests**
+
+```text
+Core targeted suites
+→ artifact flow and approval races: 2 files / 6 passed
+
+Protocol targeted suite
+→ validation: 1 file / 6 passed
+
+Connector targeted suites
+→ command construction, transport, Windows process tree: 3 files / 5 passed
+
+Hostile-Origin browser/Connector probe
+→ artifact token disclosed; cross-origin mutation accepted; forged Connector
+  received INTERCEPTED_SECRET_PROMPT
+
+Secret redaction probe
+→ provider error bearer canary reached browser protocol.error unchanged
+
+Schema/allocation probe
+→ huge artifact declaration accepted; decoded chunk 196608 > 131072;
+  completed-message envelope 1049044 > 1048576 WebSocket ceiling
+
+Browser rate probe
+→ 500 requests / 500 replies; no throttle or close
+
+pnpm check
+→ first run: one Core-restart recovery test timed out at 5 s
+→ targeted rerun: durability/reconnect 3/3 passed; affected case 208 ms
+→ full rerun: exit 0; 47 passed, one opt-in real-provider E2E skipped;
+  strict typecheck, ESLint, Windows process-tree test, and Web build passed
+```
+
+**Observable result**
+
+Open `reviews/codex/M6.2-SECURITY-BOUNDARY-AUDIT.md`. The review skill preserves
+6 Standards findings and 6 Spec findings as separate axes; their overlap maps to
+eight implementation themes. The worst Standards findings are unauthenticated
+browser control and Connector impersonation, both Critical.
+
+**Verified controls and falsification**
+
+- Loopback binding, strict normalized schemas, the 1 MiB WebSocket ceiling,
+  bounded prompt/output batching, artifact bearer/hash/range/path checks,
+  stale-approval CAS, React text escaping, no unrestricted shell endpoint, and
+  Windows process-tree termination remain verified controls.
+- No remotely controlled process-spawn argument reaches the current Windows
+  `shell: true` invocation, so command injection was not claimed without an
+  exploit. This must be revisited if command selection becomes remote.
+
+**Known limitations or uncertain outcomes**
+
+- M6.2 findings intentionally overlap between review axes and are not fix-counts.
+  M7.1 must deduplicate implementation work while retaining every source ID.
+- Application authentication can remain minimal and local for Prototype 0, but
+  hostile Origin and Connector takeover paths cannot pass the final gate.
+- One full-check run exposed a transient recovery-test timeout under concurrent
+  workspace checks. It did not reproduce alone or on the next full run; M7.1
+  should retain this evidence when touching recovery timing.
+
+**Requested next action**
+
+Codex performs **M7.1**: create a traceable remediation register, reproduce and
+resolve accepted M6.1/M6.2 findings with regression tests, and stop before M7.2.

@@ -4,10 +4,10 @@
 
 M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
 M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
-(functional, responsive, accessible mission-control frontend), and the M6.1
-correctness/recovery self-audit are complete on the target Windows host. Codex
-owns every remaining Prototype 0 phase. The next observable outcome is an
-independent-style M6.2 security/boundary self-audit.
+(functional, responsive, accessible mission-control frontend), and both M6
+self-audits are complete on the target Windows host. Codex owns every remaining
+Prototype 0 phase. The next observable outcome is M7.1 evidence-based triage,
+remediation, and regression coverage for accepted findings.
 
 ## Scope
 
@@ -21,8 +21,9 @@ independent-style M6.2 security/boundary self-audit.
 - M5.1 functional mission-control frontend — **done**
 - M5.2 responsive, accessibility, and UX polish — **done**
 - M6.1 correctness/recovery self-audit — **done**
-- Current: M6.2 security/boundary self-audit (Codex-owned)
-- Next after this run: M7.1 accepted-finding remediation
+- M6.2 security/boundary self-audit — **done**
+- Current: M7.1 accepted-finding remediation (Codex-owned)
+- Next after this run: M7.2 clean-checkout final gate
 
 ## Non-goals
 
@@ -87,18 +88,20 @@ independent-style M6.2 security/boundary self-audit.
 - [x] Trace state, ordering, idempotency, restart, fencing, approval, and artifact invariants (M6.1)
 - [x] Run targeted recovery suites and read-only journal/channel/crash-window probes (M6.1)
 - [x] Record 12 evidence-backed findings without remediation (M6.1)
+- [x] Trace browser, Connector, HTTP, filesystem, provider, and rendering boundaries (M6.2)
+- [x] Run hostile-Origin, impersonation, allocation, rate, and redaction probes (M6.2)
+- [x] Preserve 6 Standards and 6 Spec findings without reranking or remediation (M6.2)
 
-## M6.2 verification and rollback
+## M7.1 verification and rollback
 
-- Switch explicitly into reviewer mode and trace schema validation, WebSocket and
-  HTTP trust boundaries, artifact authorization, payload limits, process-spawn
-  quoting, path containment, secret/error leakage, and approval replay.
-- Every finding must include severity, file/symbol, reproduction, evidence,
-  violated invariant, remediation, and a regression-test proposal.
-- Do not implement accepted findings during M6.2; record them for M7.1 so the
-  audit remains distinct from remediation.
-- If a claimed defect cannot be reproduced, record the attempted falsification
-  rather than changing working code speculatively.
+- Build one deduplicated remediation register from both Codex audit reports;
+  retain source finding IDs and explicitly accept, reject, or defer each item.
+- Repair Critical trust-boundary findings first, then High correctness/security
+  invariants, followed by Medium/Low items justified for Prototype 0.
+- Add a failing regression before or with each accepted fix. Preserve provider
+  compatibility, no prompt replay, row-level approval CAS, and normalized Web.
+- Use small rollback-safe commits if the remediation group must be split; do not
+  mark M7.1 complete while any accepted Prototype 0 finding lacks verification.
 
 ## Protocol or schema changes
 
@@ -108,8 +111,8 @@ latest Turn/runtime status, pending approvals, cwd, activity time, Turn count,
 and durable cursor from Core projections. Durable event envelopes carry
 Session-local sequence; assistant/command deltas remain ephemeral. Generated
 Codex types, raw events, and raw provider request IDs stay under the adapter
-boundary. M6.1 added no protocol, source, or SQLite schema changes; it recorded
-remediation candidates for M7.1 only.
+boundary. M6.1 and M6.2 added no protocol, source, or SQLite schema changes;
+they recorded remediation candidates for M7.1 only.
 
 ## Tests and fault scenarios
 
@@ -165,6 +168,20 @@ remediation candidates for M7.1 only.
   incorrect `turn.outcome_unknown` despite unchanged boot and Runtime identity.
 - A Core crash-window model reproduced a committed running Turn with no dispatch
   receipt and no reconciliation event after reopen.
+- M6.2 targeted security suites passed: Core artifact/approval (2 files, 6
+  tests), protocol validation (1 file, 6 tests), and Connector command,
+  transport, and Windows process tree (3 files, 5 tests).
+- An untrusted browser Origin received the artifact bearer and committed a Turn;
+  an unauthenticated forged Connector installed its Runtime and intercepted the
+  submitted prompt.
+- Schema/allocation probes accepted effectively unlimited artifact declarations,
+  a 196,608-byte decoded chunk above the nominal 128 KiB unit, and a durable
+  completed-message envelope larger than the 1 MiB transport ceiling.
+- A 500-message browser burst received 500 replies without throttle or close.
+  A provider error containing a bearer canary reached Web unchanged.
+- The first M6.2 `pnpm check` hit one 5 s timeout in the Core-restart recovery
+  case. Its immediate targeted rerun passed all 3 tests (affected case 208 ms),
+  and the complete rerun passed all 47 tests without source changes.
 
 ## Surprises and measurements
 
@@ -181,6 +198,10 @@ remediation candidates for M7.1 only.
   outbox insertion order under burst writes.
 - The current loss timer cannot distinguish transport loss from Connector process
   death, and Core startup does not rebuild an ownership deadline for active Turns.
+- Loopback binding does not stop browser cross-site WebSocket access; Origin and
+  application identity must be enforced explicitly.
+- Per-frame WebSocket limits work, but aggregate artifact allocation, semantic
+  message ceilings, and per-connection rate limits are separate controls.
 
 ## Decision log
 
@@ -226,10 +247,12 @@ remediation candidates for M7.1 only.
   size while preserving their full normalized content.
 - Keep M6.1 review evidence separate from repair work. The 12 findings are queued
   for triage/remediation in M7.1 after the independent M6.2 boundary audit.
+- Preserve Standards and Spec M6.2 findings as separate axes. M7.1 may deduplicate
+  implementation work, but must keep traceability to every original finding.
 
 ## Final outcome
 
-M0 through M6.1 complete. Reproduce the normal and opt-in gates with:
+M0 through M6.2 complete. Reproduce the normal and opt-in gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
@@ -243,5 +266,8 @@ pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter 
 
 M6.1 evidence is recorded in
 `reviews/codex/M6.1-CORRECTNESS-RECOVERY-AUDIT.md`.
+M6.2 evidence is recorded in
+`reviews/codex/M6.2-SECURITY-BOUNDARY-AUDIT.md`.
 
-Next: Codex performs M6.2 and stops before M7.1 remediation.
+Next: Codex performs M7.1 accepted-finding remediation and stops before the
+M7.2 clean-checkout final gate.
