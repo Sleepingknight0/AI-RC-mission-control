@@ -10,9 +10,9 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M1.1 pnpm strict-TypeScript monorepo scaffolded
 - [x] M1.2 Core and Connector run as separate processes
 - [x] M1.3 Mock normalized WebSocket flow demonstrated
-- [ ] M2.1 Installed Codex schema compatibility gate implemented
-- [ ] M2.2 Real browser-to-Codex first-token path demonstrated
-- [ ] M2.3 interrupt, active-Turn rejection, and provider-loss semantics tested
+- [x] M2.1 Installed Codex schema compatibility gate implemented
+- [x] M2.2 Real browser-to-Codex first-token path demonstrated
+- [x] M2.3 interrupt, active-Turn rejection, and provider-loss semantics tested
 - [ ] M3.1 Core SQLite WAL and Connector journal implemented
 - [ ] M3.2 command idempotency and event replay implemented
 - [ ] M3.3 browser refresh during active Turn tested
@@ -28,7 +28,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current blocker
 
-None. Next milestone: **M2.1** — implement the installed Codex schema compatibility gate (`prompts/codex/03-FIRST-TOKEN-VERTICAL-SLICE.md`).
+None. Next milestone: **M3.1** — implement Core SQLite WAL and the Connector journal (`prompts/codex/04-DURABILITY-AND-RECONNECT.md`).
 
 ## Last verified demo
 
@@ -36,6 +36,7 @@ None. Next milestone: **M2.1** — implement the installed Codex schema compatib
 - Mock spike harness: `pnpm run spike:mock` — pass after Windows spawn quoting fix.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
-- Repository checks: `pnpm check` — strict typecheck, 6 tests, ESLint, and Web production build passed.
-- Walking skeleton: `pnpm dev` — Web 5173, Core 8787, and Connector 8788 started; both health endpoints returned ready and Core reported `connectorConnected: true`.
-- Mock vertical path: Core integration test streamed normalized deltas, rejected a concurrent Turn with `TURN_ALREADY_ACTIVE`, and rebuilt the completed view from a fresh WebSocket snapshot.
+- Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
+- Repository checks: `pnpm check` — strict typecheck, 19 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
+- Real Codex E2E: opt-in test passed in 71.39 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, new-process resume, and no command replay.
+- Browser demo: Playwright drove React → Core → Connector → real Codex and rendered 80 streamed lines; a fresh browser restored the completed snapshot with 0 console errors and 0 warnings.

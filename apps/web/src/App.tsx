@@ -62,6 +62,7 @@ function updateSnapshot(
         ),
       };
     case "turn.completed":
+    case "turn.interrupted":
     case "turn.outcome_unknown":
       return {
         ...current,
@@ -74,6 +75,8 @@ function updateSnapshot(
                 status:
                   message.type === "turn.completed"
                     ? "completed"
+                    : message.type === "turn.interrupted"
+                      ? "interrupted"
                     : "outcome_unknown",
                 completedAt: message.sentAt,
               }
@@ -176,6 +179,23 @@ export function App() {
     setNotice(`Submitted ${commandId}`);
   };
 
+  const interrupt = () => {
+    const socket = socketRef.current;
+    const turnId = snapshot?.activeTurnId;
+    if (turnId == null || socket?.readyState !== WebSocket.OPEN) return;
+    const commandId = crypto.randomUUID();
+    socket.send(
+      JSON.stringify(
+        makeEnvelope("turn.interrupt", {
+          commandId,
+          sessionId: SESSION_ID,
+          turnId,
+        }),
+      ),
+    );
+    setNotice(`Interrupt requested for ${turnId}`);
+  };
+
   return (
     <main>
       <header>
@@ -224,7 +244,17 @@ export function App() {
           <small>
             Submit again while streaming to observe <code>TURN_ALREADY_ACTIVE</code>.
           </small>
-          <button type="submit">Dispatch command</button>
+          <div className="actions">
+            <button
+              className="secondary"
+              type="button"
+              disabled={snapshot?.activeTurnId == null}
+              onClick={interrupt}
+            >
+              Interrupt
+            </button>
+            <button type="submit">Dispatch command</button>
+          </div>
         </div>
       </form>
     </main>

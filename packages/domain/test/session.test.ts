@@ -22,5 +22,6 @@ describe("session turn guard", () => {
 
     expect(second).toEqual({ ok: false, code: "TURN_ALREADY_ACTIVE" });
     expect(first.state.turns).toHaveLength(1);
+    expect(first.state.turns[0]?.providerTurnId).toBeNull();
   });
 });

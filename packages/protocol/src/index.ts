@@ -29,6 +29,7 @@ export const ProtocolErrorSchema = z.object({
 
 export const TurnStatusSchema = z.enum([
   "running",
+  "interrupted",
   "completed",
   "failed",
   "outcome_unknown",
@@ -42,6 +43,7 @@ export const TurnSchema = z.object({
   startedAt: timestamp,
   completedAt: timestamp.nullable(),
   failureCode: z.string().nullable(),
+  providerTurnId: id.nullable(),
 });
 
 export const AssistantMessageSchema = z.object({
@@ -54,7 +56,7 @@ export const AssistantMessageSchema = z.object({
 export const RuntimeSchema = z.object({
   runtimeId: id,
   generation: z.number().int().positive(),
-  status: z.enum(["offline", "ready", "busy", "lost"]),
+  status: z.enum(["offline", "ready", "busy", "lost", "incompatible"]),
 });
 
 export const SessionSnapshotSchema = z.object({
@@ -62,6 +64,7 @@ export const SessionSnapshotSchema = z.object({
   revision: z.number().int().nonnegative(),
   lastEventSeq: z.number().int().nonnegative(),
   activeTurnId: id.nullable(),
+  providerSessionId: id.nullable(),
   turns: z.array(TurnSchema),
   messages: z.array(AssistantMessageSchema),
 });
@@ -87,6 +90,14 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       commandId: id,
       sessionId: id,
       prompt: z.string().trim().min(1).max(20_000),
+    }),
+  ),
+  envelope(
+    "turn.interrupt",
+    z.object({
+      commandId: id,
+      sessionId: id,
+      turnId: id,
     }),
   ),
 ]);
@@ -115,6 +126,10 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
   ),
   envelope(
     "turn.completed",
+    z.object({ sessionId: id, turnId: id, seq: z.number().int().positive() }),
+  ),
+  envelope(
+    "turn.interrupted",
     z.object({ sessionId: id, turnId: id, seq: z.number().int().positive() }),
   ),
   envelope(
@@ -170,6 +185,17 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       turnId: id,
       commandId: id,
       prompt: z.string().min(1),
+      providerSessionId: id.nullable(),
+    }),
+  ),
+  envelope(
+    "connector.turn.interrupt",
+    z.object({
+      sessionId: id,
+      turnId: id,
+      commandId: id,
+      providerSessionId: id,
+      providerTurnId: id,
     }),
   ),
 ]);
@@ -177,6 +203,24 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
 export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   envelope("connector.hello", z.object({ runtime: RuntimeSchema })),
   envelope("connector.runtime.status", z.object({ runtime: RuntimeSchema })),
+  envelope(
+    "connector.command.error",
+    z.object({
+      commandId: id,
+      sessionId: id,
+      code: z.string().min(1),
+      message: z.string().min(1),
+      retryable: z.boolean(),
+    }),
+  ),
+  envelope(
+    "connector.session.bound",
+    z.object({ sessionId: id, providerSessionId: id }),
+  ),
+  envelope(
+    "connector.turn.bound",
+    z.object({ sessionId: id, turnId: id, providerTurnId: id }),
+  ),
   envelope(
     "connector.turn.delta",
     z.object({
@@ -198,6 +242,10 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   ),
   envelope(
     "connector.turn.completed",
+    z.object({ sessionId: id, turnId: id }),
+  ),
+  envelope(
+    "connector.turn.interrupted",
     z.object({ sessionId: id, turnId: id }),
   ),
   envelope(

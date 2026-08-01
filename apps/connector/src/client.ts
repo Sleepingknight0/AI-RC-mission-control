@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:http";
 
 import {
+  ConnectorEnvelopeSchema,
   CoreToConnectorEnvelopeSchema,
   RuntimeSchema,
   decodeJson,
@@ -8,7 +9,22 @@ import {
 } from "@aicl/protocol";
 import WebSocket from "ws";
 
-import { normalizeMockEvent, runMockProvider } from "./mock-provider.js";
+import { MockProvider } from "./mock-provider.js";
+import {
+  ProviderLostError,
+  type ConnectorProvider,
+} from "./provider.js";
+
+export interface ConnectorOptions {
+  coreUrl: string;
+  provider: ConnectorProvider;
+  providerName: string;
+  healthPort?: number;
+  reconnectDelayMs?: number;
+  runtimeId?: string;
+  runtimeGeneration?: number;
+  healthDetails?: Record<string, unknown>;
+}
 
 export interface MockConnectorOptions {
   coreUrl: string;
@@ -17,17 +33,14 @@ export interface MockConnectorOptions {
   reconnectDelayMs?: number;
 }
 
-export interface MockConnectorHandle {
+export interface ConnectorHandle {
   ready: Promise<void>;
   close(): Promise<void>;
 }
 
-const runtimeId = "runtime-mock-1";
-
-export function startMockConnector(
-  options: MockConnectorOptions,
-): MockConnectorHandle {
+export function startConnector(options: ConnectorOptions): ConnectorHandle {
   let stopped = false;
+  let providerLost = false;
   let socket: WebSocket | undefined;
   let reconnectTimer: NodeJS.Timeout | undefined;
   let healthServer: Server | undefined;
@@ -36,34 +49,62 @@ export function startMockConnector(
   const ready = new Promise<void>((resolve) => {
     resolveReady = resolve;
   });
+  const runtimeId = options.runtimeId ?? `runtime-${crypto.randomUUID()}`;
+  const generation = options.runtimeGeneration ?? Date.now();
 
-  const runtime = (status: "ready" | "busy") =>
-    RuntimeSchema.parse({ runtimeId, generation: 1, status });
+  const runtime = (status: "ready" | "busy" | "lost") =>
+    RuntimeSchema.parse({ runtimeId, generation, status });
 
   const send = (value: unknown) => {
+    const envelope = ConnectorEnvelopeSchema.parse(value);
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(value));
+      socket.send(JSON.stringify(envelope));
     }
   };
 
-  const runTurn = async (
+  const unsubscribeLost = options.provider.onLost(() => {
+    providerLost = true;
+    send(makeEnvelope("connector.runtime.status", { runtime: runtime("lost") }));
+  });
+
+  const handleCommand = async (
     command: ReturnType<typeof CoreToConnectorEnvelopeSchema.parse>,
   ) => {
+    if (command.type === "connector.turn.interrupt") {
+      try {
+        await options.provider.interrupt(command);
+      } catch (error) {
+        send(
+          makeEnvelope("connector.command.error", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            code: "INTERRUPT_FAILED",
+            message: error instanceof Error ? error.message : String(error),
+            retryable: true,
+          }),
+        );
+      }
+      return;
+    }
+
+    providerLost = false;
     send(makeEnvelope("connector.runtime.status", { runtime: runtime("busy") }));
-    const messageId = `message-${command.payload.turnId}`;
-    for await (const rawEvent of runMockProvider(
-      command.payload.prompt,
-      options.providerDelayMs,
-    )) {
+    try {
+      await options.provider.startTurn(command, send);
+      if (!providerLost) {
+        send(makeEnvelope("connector.runtime.status", { runtime: runtime("ready") }));
+      }
+    } catch (error) {
+      if (error instanceof ProviderLostError) return;
       send(
-        normalizeMockEvent(rawEvent, {
+        makeEnvelope("connector.turn.failed", {
           sessionId: command.payload.sessionId,
           turnId: command.payload.turnId,
-          messageId,
+          failureCode: "PROVIDER_REJECTED",
         }),
       );
+      send(makeEnvelope("connector.runtime.status", { runtime: runtime("ready") }));
     }
-    send(makeEnvelope("connector.runtime.status", { runtime: runtime("ready") }));
   };
 
   const connect = () => {
@@ -81,7 +122,7 @@ export function startMockConnector(
         const command = CoreToConnectorEnvelopeSchema.parse(
           decodeJson(data.toString()),
         );
-        void runTurn(command);
+        void handleCommand(command);
       } catch (error) {
         console.error("Connector rejected an invalid Core envelope", error);
       }
@@ -94,9 +135,7 @@ export function startMockConnector(
         );
       }
     });
-    socket.on("error", () => {
-      socket?.close();
-    });
+    socket.on("error", () => socket?.close());
   };
 
   if (options.healthPort !== undefined) {
@@ -106,7 +145,13 @@ export function startMockConnector(
         response.end(
           JSON.stringify({
             component: "connector",
-            status: socket?.readyState === WebSocket.OPEN ? "ready" : "offline",
+            provider: options.providerName,
+            status: providerLost
+              ? "lost"
+              : socket?.readyState === WebSocket.OPEN
+                ? "ready"
+                : "offline",
+            ...options.healthDetails,
           }),
         );
         return;
@@ -122,8 +167,10 @@ export function startMockConnector(
     ready,
     async close() {
       stopped = true;
+      unsubscribeLost();
       if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
       socket?.close();
+      await options.provider.close();
       if (healthServer !== undefined) {
         await new Promise<void>((resolve, reject) => {
           healthServer?.close((error) => (error ? reject(error) : resolve()));
@@ -131,4 +178,20 @@ export function startMockConnector(
       }
     },
   };
+}
+
+export function startMockConnector(
+  options: MockConnectorOptions,
+): ConnectorHandle {
+  return startConnector({
+    coreUrl: options.coreUrl,
+    provider: new MockProvider(options.providerDelayMs),
+    providerName: "mock",
+    runtimeId: "runtime-mock-1",
+    runtimeGeneration: 1,
+    ...(options.healthPort === undefined ? {} : { healthPort: options.healthPort }),
+    ...(options.reconnectDelayMs === undefined
+      ? {}
+      : { reconnectDelayMs: options.reconnectDelayMs }),
+  });
 }

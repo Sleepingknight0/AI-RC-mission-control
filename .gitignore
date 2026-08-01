@@ -4,6 +4,8 @@ build/
 coverage/
 .vite/
 .turbo/
+.playwright-cli/
+output/playwright/
 .data/
 .env
 .env.local

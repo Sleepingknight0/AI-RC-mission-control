@@ -2,10 +2,9 @@
 
 ## Purpose and observable outcome
 
-M0 (toolchain + empirical spike + measurements) and the M1 walking skeleton are
-complete on the target Windows host. The next observable outcome is the real
-browser-to-Codex first-token path, starting with the installed-schema
-compatibility gate (M2.1–M2.3).
+M0 (measurements), M1 (walking skeleton), and M2 (real first-token vertical
+slice) are complete on the target Windows host. The next observable outcome is
+durable Core/Connector recovery across process and browser restarts (M3.1–M3.3).
 
 ## Scope
 
@@ -13,7 +12,8 @@ compatibility gate (M2.1–M2.3).
 - M0.2 three real Codex app-server spikes — **done**
 - M0.3 measurement document and compatibility notes — **done**
 - M1.1–M1.3 walking skeleton — **done**
-- Next: M2.1 installed Codex schema compatibility gate (Codex-owned)
+- M2.1–M2.3 real Codex vertical slice and fault semantics — **done**
+- Next: M3.1 Core SQLite WAL and Connector journal (Codex-owned)
 
 ## Non-goals
 
@@ -31,7 +31,10 @@ compatibility gate (M2.1–M2.3).
 - Strict-TypeScript workspaces implemented under `apps/*` and `packages/*`
 - Core and Connector run as separate Node processes with independent health endpoints
 - Web consumes only `@aicl/protocol` normalized envelopes
-- Deterministic mock Connector streams through Core to WebSocket subscribers
+- Real Codex adapter owns stdio transport, normalization, supervision, and resume
+- Installed Codex 0.146.0 schema is pinned by a canonical compatibility gate
+- Deterministic mock remains available with `AICL_PROVIDER=mock`
+- Core memory state and command ledger remain intentionally non-durable until M3
 
 ## Implementation sequence
 
@@ -44,17 +47,20 @@ compatibility gate (M2.1–M2.3).
 - [x] Scaffold pnpm strict-TypeScript monorepo (M1.1)
 - [x] Run Core and Connector as separate processes (M1.2)
 - [x] Demonstrate mock normalized WebSocket flow (M1.3)
-- [ ] Add installed Codex schema compatibility gate (M2.1)
-- [ ] Demonstrate real browser-to-Codex first token (M2.2)
-- [ ] Test interrupt, active-Turn rejection, and provider-loss semantics (M2.3)
+- [x] Add installed Codex schema compatibility gate (M2.1)
+- [x] Demonstrate real browser-to-Codex first token (M2.2)
+- [x] Test interrupt, active-Turn rejection, and provider-loss semantics (M2.3)
+- [ ] Add Core SQLite WAL and Connector journal (M3.1)
+- [ ] Add durable command idempotency and event replay (M3.2)
+- [ ] Test browser refresh during an active Turn (M3.3)
 
 ## Protocol or schema changes
 
-`@aicl/protocol` now defines protocol version 1 client, server, Core-to-Connector,
-and Connector-to-Core envelopes. Every WebSocket boundary parses strict Zod
-schemas. Provider-specific mock fields terminate in `apps/connector`; frontend
-messages contain normalized fields only. Installed Codex 0.146.0 schemas remain
-spike artifacts and are not yet wired into product code.
+`@aicl/protocol` version 1 now includes provider bindings, interrupt commands,
+`interrupted`, `lost`, `incompatible`, and `outcome_unknown`. The Connector maps
+only `item/agentMessage/delta`, `item/completed`, and terminal Turn notifications
+from Codex. Generated Codex types and raw events stay under the adapter boundary;
+the Web imports only normalized protocol types.
 
 ## Tests and fault scenarios
 
@@ -62,18 +68,22 @@ spike artifacts and are not yet wired into product code.
 - Mock spike passed after harness fix.
 - Three real spikes: first-delta 4.5–6.3 s; ~55 deltas/s avg; peak 1 s up to 154;
   mid-turn kill reconstructed as `interrupted` via `thread/read` + `thread/resume`.
-- `pnpm check`: strict typecheck, 6 unit/integration tests, ESLint, and Vite
-  production build passed.
-- Core integration test: normalized mock streaming passed; concurrent submit
-  returned `TURN_ALREADY_ACTIVE`; fresh WebSocket subscription restored the
-  completed snapshot; no raw-provider keys reached browser output.
-- `pnpm dev` smoke: Web 5173, Core 8787, Connector 8788; both health endpoints
-  ready and Core observed the Connector.
+- `pnpm check`: strict typecheck, 19 unit/integration tests, ESLint, a real
+  Windows child-tree termination test, and Vite production build passed.
+- Live compatibility probe: Codex 0.146.0, 275 schema files, canonical SHA-256
+  `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`.
+- Opt-in real Codex E2E passed in 71.39 s: first delta/final, active rejection,
+  interrupt, provider death, `outcome_unknown`, new-process resume, no replay.
+- Playwright drove the real React UI and rendered 80 streamed response lines;
+  a fresh browser restored the completed timeline with 0 errors/0 warnings.
+- Process cleanup verified no listeners on 5173/8787/8788 and no project Codex
+  process remained.
 
 ## Surprises and measurements
 
 - Unquoted Windows `shell: true` spawn broke `Program Files\nodejs\node.exe`.
-- Schema fingerprint SHA-256 differed across three identical-size generations.
+- Raw schema fingerprint differed because generated object-key order varied;
+  recursive canonical JSON produces a stable fingerprint across generations.
 - Kill recovery is terminal `interrupted` on this CLI (not silent loss-only).
 - Steady agent-delta payload ~253–263 bytes; ephemeral batching is mandatory.
 
@@ -86,16 +96,22 @@ spike artifacts and are not yet wired into product code.
 - Keep M1 persistence in memory; SQLite remains M3 scope.
 - Keep provider-specific mock payloads inside the Connector adapter.
 - Use measured rates for future batching defaults (see measurement doc table).
+- Fail startup closed when Codex version or canonical schema fingerprint differs.
+- Treat provider process/protocol loss as terminal `outcome_unknown`; never
+  auto-resubmit an accepted command.
+- Keep command idempotency in memory for M2; durable replay remains M3 scope.
 
 ## Final outcome
 
-M0 and M1 complete. Reproduce with:
+M0 through M2 complete. Reproduce the normal and opt-in gates with:
 
 ```powershell
 .\scripts\Check-Toolchain.ps1
-pnpm run spike:mock
+pnpm --filter @aicl/connector codex:compatibility
 pnpm check
 pnpm dev
+$env:AICL_REAL_CODEX = '1'
+pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
 ```
 
-Next: `prompts/codex/03-FIRST-TOKEN-VERTICAL-SLICE.md` for M2.1–M2.3.
+Next: `prompts/codex/04-DURABILITY-AND-RECONNECT.md` for M3.1–M3.3.

@@ -84,14 +84,50 @@ describe("mock Connector to Core to browser flow", () => {
     send(
       first,
       makeEnvelope("turn.submit", {
+        commandId: "command-first",
+        sessionId: WALKING_SKELETON_FIXTURE.sessionId,
+        prompt: WALKING_SKELETON_FIXTURE.prompt,
+      }),
+    );
+    await waitUntil(
+      () =>
+        first.messages.filter(
+          (message) =>
+            message.type === "command.accepted" &&
+            message.payload.commandId === "command-first",
+        ).length === 2,
+    );
+    send(
+      first,
+      makeEnvelope("turn.submit", {
+        commandId: "command-first",
+        sessionId: WALKING_SKELETON_FIXTURE.sessionId,
+        prompt: "changed payload",
+      }),
+    );
+    await waitUntil(() =>
+      first.messages.some(
+        (message) =>
+          message.type === "command.rejected" &&
+          message.payload.error.code === "IDEMPOTENCY_KEY_REUSE",
+      ),
+    );
+    send(
+      first,
+      makeEnvelope("turn.submit", {
         commandId: "command-second",
         sessionId: WALKING_SKELETON_FIXTURE.sessionId,
         prompt: "must not queue",
       }),
     );
 
-    const rejected = await waitForMessage(first, "command.rejected");
-    expect(rejected.payload.error.code).toBe("TURN_ALREADY_ACTIVE");
+    await waitUntil(() =>
+      first.messages.some(
+        (message) =>
+          message.type === "command.rejected" &&
+          message.payload.error.code === "TURN_ALREADY_ACTIVE",
+      ),
+    );
     expect((await waitForMessage(first, "assistant.message.delta")).payload.text).not.toBe("");
     await waitForMessage(first, "turn.completed");
     expect(JSON.stringify(first.messages)).not.toMatch(
@@ -100,6 +136,9 @@ describe("mock Connector to Core to browser flow", () => {
 
     first.socket.close();
     const refreshed = await openBrowser(core.browserUrl);
+    expect(
+      (await waitForMessage(refreshed, "runtime.status")).payload.runtime.status,
+    ).toBe("ready");
     send(
       refreshed,
       makeEnvelope("session.subscribe", {
@@ -116,4 +155,67 @@ describe("mock Connector to Core to browser flow", () => {
 
     refreshed.socket.close();
   });
+
+  it("marks an active Turn outcome_unknown when Connector ownership is lost", async () => {
+    const core = await startCoreServer({ port: 0 });
+    openHandles.push(core);
+    const connector = new WebSocket(core.connectorUrl);
+    await new Promise<void>((resolve, reject) => {
+      connector.once("open", resolve);
+      connector.once("error", reject);
+    });
+    connector.send(
+      JSON.stringify(
+        makeEnvelope("connector.hello", {
+          runtime: {
+            runtimeId: "runtime-loss-test",
+            generation: 7,
+            status: "ready",
+          },
+        }),
+      ),
+    );
+
+    const browser = await openBrowser(core.browserUrl);
+    send(
+      browser,
+      makeEnvelope("session.subscribe", { sessionId: "loss-session", afterSeq: 0 }),
+    );
+    await waitForMessage(browser, "session.snapshot");
+    send(
+      browser,
+      makeEnvelope("turn.submit", {
+        commandId: "loss-command",
+        sessionId: "loss-session",
+        prompt: "remain unresolved",
+      }),
+    );
+    await waitForMessage(browser, "turn.started");
+    connector.close();
+
+    await waitForMessage(browser, "turn.outcome_unknown");
+    await waitUntil(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "runtime.status" &&
+          message.payload.runtime.status === "lost",
+      ),
+    );
+    browser.socket.close();
+
+    const reconnected = await openBrowser(core.browserUrl);
+    expect(
+      (await waitForMessage(reconnected, "runtime.status")).payload.runtime.status,
+    ).toBe("lost");
+    reconnected.socket.close();
+  });
 });
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for integration state");
+}

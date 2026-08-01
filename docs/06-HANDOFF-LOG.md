@@ -158,3 +158,78 @@ observe `TURN_ALREADY_ACTIVE`; refresh to restore the completed snapshot.
 **Requested next action**
 
 Execute `prompts/codex/03-FIRST-TOKEN-VERTICAL-SLICE.md` for M2.1–M2.3, beginning with schema compatibility validation.
+
+---
+
+### 2026-08-01 14:10 — Codex — M2.1–M2.3
+
+**Scope**
+
+Replace the mock-only provider path with a supervised real Codex App Server
+adapter. Add installed-schema compatibility, normalized streaming/terminal
+events, interrupt, active-Turn rejection, provider-loss semantics, resume in a
+new process, and an opt-in real fault-path test.
+
+**Files changed or reviewed**
+
+- `apps/connector/src/codex/` — generated schemas, compatibility gate, bounded
+  line framer, correlated JSON-RPC transport, process supervision, and adapter
+- `apps/connector/src/provider.ts` — provider boundary and explicit loss error
+- `packages/protocol`, `packages/domain` — normalized identity, interrupt,
+  `interrupted`, `lost`, `incompatible`, and `outcome_unknown`
+- `apps/core/src/` — provider bindings, idempotency ledger, interrupt dispatch,
+  provider-loss classification, and runtime status replay to new browsers
+- `apps/web/src/` — interrupt control and terminal rendering
+- Connector/Core tests — real-shaped fake provider, Windows child-tree kill,
+  command idempotency, refresh, loss, and opt-in real Codex E2E
+
+**Commands and tests**
+
+```text
+pnpm --filter @aicl/connector codex:compatibility
+→ compatible=true; codex-cli 0.146.0; 275 files; canonical SHA b767c116...df03
+
+pnpm check
+→ exit 0; strict typecheck; 19 tests; ESLint; Windows process-tree test;
+  Web production build; opt-in real test skipped by default
+
+$env:AICL_REAL_CODEX='1'; pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
+→ 1 passed in 71.39 s
+
+Playwright against pnpm dev with AICL_PROVIDER=codex
+→ React rendered 80 real streamed lines; refreshed snapshot complete;
+  browser console 0 errors / 0 warnings
+```
+
+**Observable result**
+
+Run `pnpm dev`, open `http://127.0.0.1:5173`, dispatch a prompt, and observe real
+Codex deltas/final output. Interrupt is available while running. A second active
+Turn is rejected, and killing the provider marks the accepted Turn
+`outcome_unknown`; the next command resumes the same provider thread in a new
+process without replaying the lost command.
+
+**Protocol/schema assumptions**
+
+- `codex-cli 0.146.0` plus canonical schema SHA `b767c116...df03` is the only
+  accepted compatibility pair.
+- Required methods: initialize, thread start/read/resume, turn start/interrupt,
+  agent-message delta/item completion, and turn completion.
+- Correct Codex sandbox wire value is `read-only`; provider IDs stay within
+  normalized binding fields, while raw Codex events never reach Web.
+- Process/protocol death after acceptance means `outcome_unknown`; no auto-replay.
+
+**Known limitations or uncertain outcomes**
+
+- Core state and the command ledger are still in memory; crash-safe idempotency
+  and replay are deliberately M3 work.
+- The original M0 spike request used invalid `readOnly` and fell back to cwd-only;
+  its resume metadata reported `dangerFullAccess`. M2 product traffic uses the
+  valid `read-only` value and must not reinterpret the old spike as sandbox proof.
+- The real fault-path test consumes Codex time/quota, so it is opt-in.
+
+**Requested next action**
+
+Execute `prompts/codex/04-DURABILITY-AND-RECONNECT.md` for M3.1–M3.3. Do not
+advance to M4 until SQLite WAL, Connector journal, durable idempotency/replay,
+and active-Turn browser refresh are verified.

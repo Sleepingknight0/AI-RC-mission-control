@@ -9,6 +9,7 @@ export interface SessionState {
   revision: number;
   lastEventSeq: number;
   activeTurnId: string | null;
+  providerSessionId: string | null;
   turns: Turn[];
   messages: AssistantMessage[];
 }
@@ -23,6 +24,7 @@ export function createSession(sessionId: string): SessionState {
     revision: 0,
     lastEventSeq: 0,
     activeTurnId: null,
+    providerSessionId: null,
     turns: [],
     messages: [],
   };
@@ -49,6 +51,7 @@ export function beginTurn(
     startedAt: input.startedAt,
     completedAt: null,
     failureCode: null,
+    providerTurnId: null,
   };
 
   return {
@@ -119,7 +122,7 @@ export function finishTurn(
   state: SessionState,
   input: {
     turnId: string;
-    status: "completed" | "failed" | "outcome_unknown";
+    status: "interrupted" | "completed" | "failed" | "outcome_unknown";
     completedAt: string;
     failureCode?: string;
   },
@@ -146,12 +149,34 @@ export function finishTurn(
   };
 }
 
+export function bindProviderSession(
+  state: SessionState,
+  providerSessionId: string,
+): SessionState {
+  if (state.providerSessionId === providerSessionId) return state;
+  return { ...state, providerSessionId, revision: state.revision + 1 };
+}
+
+export function bindProviderTurn(
+  state: SessionState,
+  turnId: string,
+  providerTurnId: string,
+): SessionState {
+  return {
+    ...state,
+    turns: state.turns.map((turn) =>
+      turn.turnId === turnId ? { ...turn, providerTurnId } : turn,
+    ),
+  };
+}
+
 export function toSnapshot(state: SessionState): SessionSnapshot {
   return {
     sessionId: state.sessionId,
     revision: state.revision,
     lastEventSeq: state.lastEventSeq,
     activeTurnId: state.activeTurnId,
+    providerSessionId: state.providerSessionId,
     turns: state.turns,
     messages: state.messages,
   };

@@ -66,6 +66,10 @@ textarea { width: 100%; resize: vertical; padding: 12px; color: #eef4f7; backgro
 small { color: #8ca0aa; }
 button { cursor: pointer; border: 1px solid #a9c0cc; background: #e7f0f4; color: #091015; padding: 10px 15px; font-weight: 800; }
 button:hover { background: #fff; }
+button:disabled { cursor: not-allowed; opacity: .45; }
+.actions { display: flex; gap: 8px; }
+button.secondary { color: #d9e2e8; background: transparent; border-color: #526976; }
+button.secondary:hover:not(:disabled) { background: #1a2830; }
 
 @media (max-width: 700px) {
   header, .panel-heading, .composer > div { align-items: flex-start; flex-direction: column; }
@@ -73,4 +77,5 @@ button:hover { background: #fff; }
   .telemetry div:nth-child(2) { border-right: 0; }
   .telemetry div:nth-child(-n + 2) { border-bottom: 1px solid #293942; }
   button { width: 100%; }
+  .actions { width: 100%; }
 }

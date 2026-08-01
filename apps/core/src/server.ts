@@ -10,6 +10,7 @@ import {
   type ClientEnvelope,
   type ConnectorEnvelope,
   type ProtocolError,
+  type Runtime,
   type ServerEnvelope,
 } from "@aicl/protocol";
 import WebSocket, { WebSocketServer } from "ws";
@@ -53,7 +54,12 @@ export async function startCoreServer(
   const host = options.host ?? "127.0.0.1";
   const store = new InMemorySessionStore();
   const clients = new Map<WebSocket, string | null>();
+  const commandLedger = new Map<
+    string,
+    { signature: string; result: ServerEnvelope }
+  >();
   let connector: WebSocket | undefined;
+  let lastRuntime: Runtime | undefined;
 
   const httpServer: HttpServer = createServer((request, response) => {
     if (request.url === "/health") {
@@ -91,12 +97,10 @@ export async function startCoreServer(
     }
   };
 
-  const rejectCommand = (
-    socket: WebSocket,
+  const rejection = (
     input: { commandId: string; sessionId: string; code: string; message: string },
-  ) => {
-    send(
-      socket,
+  ) =>
+    validatedServerEnvelope(
       makeEnvelope("command.rejected", {
         commandId: input.commandId,
         sessionId: input.sessionId,
@@ -106,9 +110,55 @@ export async function startCoreServer(
         }),
       }),
     );
+
+  const commandSignature = (message: ClientEnvelope) =>
+    JSON.stringify({ type: message.type, payload: message.payload });
+
+  const replayCommand = (socket: WebSocket, message: ClientEnvelope) => {
+    if (
+      message.type !== "turn.submit" &&
+      message.type !== "turn.interrupt"
+    ) {
+      return false;
+    }
+    const { commandId, sessionId } = message.payload;
+    const previous = commandLedger.get(commandId);
+    if (previous === undefined) return false;
+    if (previous.signature === commandSignature(message)) {
+      send(socket, previous.result);
+    } else {
+      send(
+        socket,
+        rejection({
+          commandId,
+          sessionId,
+          code: "IDEMPOTENCY_KEY_REUSE",
+          message: "This commandId was already used with a different command.",
+        }),
+      );
+    }
+    return true;
+  };
+
+  const recordCommand = (
+    socket: WebSocket,
+    message: ClientEnvelope,
+    result: ServerEnvelope,
+  ) => {
+    if (
+      message.type === "turn.submit" ||
+      message.type === "turn.interrupt"
+    ) {
+      commandLedger.set(message.payload.commandId, {
+        signature: commandSignature(message),
+        result,
+      });
+    }
+    send(socket, result);
   };
 
   const handleClient = (socket: WebSocket, message: ClientEnvelope) => {
+    if (replayCommand(socket, message)) return;
     switch (message.type) {
       case "client.hello":
         return;
@@ -140,12 +190,16 @@ export async function startCoreServer(
       case "turn.submit": {
         const { commandId, sessionId, prompt } = message.payload;
         if (connector?.readyState !== WebSocket.OPEN) {
-          rejectCommand(socket, {
-            commandId,
-            sessionId,
-            code: "CONNECTOR_OFFLINE",
-            message: "No Connector is currently available.",
-          });
+          recordCommand(
+            socket,
+            message,
+            rejection({
+              commandId,
+              sessionId,
+              code: "CONNECTOR_OFFLINE",
+              message: "No Connector is currently available.",
+            }),
+          );
           return;
         }
 
@@ -157,18 +211,25 @@ export async function startCoreServer(
           startedAt: new Date().toISOString(),
         });
         if (!started.ok) {
-          rejectCommand(socket, {
-            commandId,
-            sessionId,
-            code: started.code,
-            message: "This Session already has an active Turn.",
-          });
+          recordCommand(
+            socket,
+            message,
+            rejection({
+              commandId,
+              sessionId,
+              code: started.code,
+              message: "This Session already has an active Turn.",
+            }),
+          );
           return;
         }
 
-        send(
+        recordCommand(
           socket,
-          makeEnvelope("command.accepted", { commandId, sessionId, turnId }),
+          message,
+          validatedServerEnvelope(
+            makeEnvelope("command.accepted", { commandId, sessionId, turnId }),
+          ),
         );
         broadcast(
           sessionId,
@@ -185,6 +246,61 @@ export async function startCoreServer(
               turnId,
               commandId,
               prompt,
+              providerSessionId: store.snapshot(sessionId).providerSessionId,
+            }),
+          ),
+        );
+        return;
+      }
+      case "turn.interrupt": {
+        const { commandId, sessionId, turnId } = message.payload;
+        if (connector?.readyState !== WebSocket.OPEN) {
+          recordCommand(
+            socket,
+            message,
+            rejection({
+              commandId,
+              sessionId,
+              code: "CONNECTOR_OFFLINE",
+              message: "No Connector is currently available.",
+            }),
+          );
+          return;
+        }
+        const snapshot = store.snapshot(sessionId);
+        const turn = snapshot.turns.find((candidate) => candidate.turnId === turnId);
+        if (
+          snapshot.activeTurnId !== turnId ||
+          snapshot.providerSessionId === null ||
+          turn?.providerTurnId == null
+        ) {
+          recordCommand(
+            socket,
+            message,
+            rejection({
+              commandId,
+              sessionId,
+              code: "TURN_NOT_ACCEPTING_INPUT",
+              message: "The Turn is not bound to an active provider runtime.",
+            }),
+          );
+          return;
+        }
+        recordCommand(
+          socket,
+          message,
+          validatedServerEnvelope(
+            makeEnvelope("command.accepted", { commandId, sessionId, turnId }),
+          ),
+        );
+        connector.send(
+          JSON.stringify(
+            makeEnvelope("connector.turn.interrupt", {
+              commandId,
+              sessionId,
+              turnId,
+              providerSessionId: snapshot.providerSessionId,
+              providerTurnId: turn.providerTurnId,
             }),
           ),
         );
@@ -194,10 +310,11 @@ export async function startCoreServer(
 
   const broadcastTerminalTurn = (
     message: ConnectorEnvelope,
-    status: "completed" | "failed" | "outcome_unknown",
+    status: "interrupted" | "completed" | "failed" | "outcome_unknown",
   ) => {
     if (
       message.type !== "connector.turn.completed" &&
+      message.type !== "connector.turn.interrupted" &&
       message.type !== "connector.turn.failed" &&
       message.type !== "connector.turn.outcome_unknown"
     ) {
@@ -219,6 +336,15 @@ export async function startCoreServer(
       broadcast(
         sessionId,
         makeEnvelope("turn.completed", {
+          sessionId,
+          turnId,
+          seq: state.lastEventSeq,
+        }),
+      );
+    } else if (status === "interrupted") {
+      broadcast(
+        sessionId,
+        makeEnvelope("turn.interrupted", {
           sessionId,
           turnId,
           seq: state.lastEventSeq,
@@ -250,7 +376,33 @@ export async function startCoreServer(
     switch (message.type) {
       case "connector.hello":
       case "connector.runtime.status":
+        lastRuntime = message.payload.runtime;
         broadcast(null, makeEnvelope("runtime.status", message.payload));
+        return;
+      case "connector.command.error":
+        broadcast(
+          message.payload.sessionId,
+          makeEnvelope("protocol.error", {
+            error: protocolError(message.payload.code, message.payload.message, {
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              retryable: message.payload.retryable,
+            }),
+          }),
+        );
+        return;
+      case "connector.session.bound":
+        store.bindProviderSession(
+          message.payload.sessionId,
+          message.payload.providerSessionId,
+        );
+        return;
+      case "connector.turn.bound":
+        store.bindProviderTurn(
+          message.payload.sessionId,
+          message.payload.turnId,
+          message.payload.providerTurnId,
+        );
         return;
       case "connector.turn.delta": {
         store.appendDelta(message.payload.sessionId, message.payload);
@@ -277,6 +429,9 @@ export async function startCoreServer(
       case "connector.turn.completed":
         broadcastTerminalTurn(message, "completed");
         return;
+      case "connector.turn.interrupted":
+        broadcastTerminalTurn(message, "interrupted");
+        return;
       case "connector.turn.failed":
         broadcastTerminalTurn(message, "failed");
         return;
@@ -287,6 +442,9 @@ export async function startCoreServer(
 
   const attachBrowser = (socket: WebSocket) => {
     clients.set(socket, null);
+    if (lastRuntime !== undefined) {
+      send(socket, makeEnvelope("runtime.status", { runtime: lastRuntime }));
+    }
     socket.on("message", (data) => {
       const parsed = ClientEnvelopeSchema.safeParse(
         (() => {
@@ -329,16 +487,29 @@ export async function startCoreServer(
     socket.on("close", () => {
       if (connector === socket) {
         connector = undefined;
-        broadcast(
-          null,
-          makeEnvelope("runtime.status", {
-            runtime: {
-              runtimeId: "runtime-mock-1",
-              generation: 1,
-              status: "lost",
-            },
-          }),
-        );
+        for (const snapshot of store.activeSnapshots()) {
+          const turnId = snapshot.activeTurnId;
+          if (turnId === null) continue;
+          const state = store.finishTurn(snapshot.sessionId, {
+            turnId,
+            status: "outcome_unknown",
+            completedAt: new Date().toISOString(),
+          });
+          broadcast(
+            snapshot.sessionId,
+            makeEnvelope("turn.outcome_unknown", {
+              sessionId: snapshot.sessionId,
+              turnId,
+              seq: state.lastEventSeq,
+            }),
+          );
+        }
+        lastRuntime = {
+          runtimeId: lastRuntime?.runtimeId ?? "runtime-unknown",
+          generation: lastRuntime?.generation ?? 1,
+          status: "lost",
+        };
+        broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
       }
     });
   };

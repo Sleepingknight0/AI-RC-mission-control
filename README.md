@@ -37,14 +37,32 @@ pnpm dev
 
 คำสั่งเดียวจะเปิด Web (`http://127.0.0.1:5173`), Core
 (`http://127.0.0.1:8787/health`) และ Connector
-(`http://127.0.0.1:8788/health`) เป็น process แยกกัน หน้าเว็บส่ง prompt ผ่าน
-normalized WebSocket flow และกดส่งซ้ำระหว่าง streaming เพื่อดู
-`TURN_ALREADY_ACTIVE` ได้
+(`http://127.0.0.1:8788/health`) เป็น process แยกกัน Connector ใช้
+`codex app-server --stdio` และ repository root เป็น project path โดยค่าเริ่มต้น
+หน้าเว็บส่ง prompt ผ่าน normalized WebSocket flow, รองรับ interrupt และปฏิเสธ
+Turn ซ้อนด้วย `TURN_ALREADY_ACTIVE`
+
+ตรวจ binary/schema compatibility หรือสลับเป็น deterministic mock ได้ด้วย:
+
+```powershell
+pnpm --filter @aicl/connector codex:compatibility
+
+$env:AICL_PROVIDER = 'mock'
+pnpm dev
+```
 
 ตรวจทั้ง repository ด้วย:
 
 ```powershell
 pnpm check
+```
+
+Real Codex end-to-end test ถูกปิดใน test suite ปกติเพื่อไม่ใช้เวลา/โควตาโดยไม่ตั้งใจ
+เปิดเฉพาะเมื่อต้องการทดสอบ fault path จริง:
+
+```powershell
+$env:AICL_REAL_CODEX = '1'
+pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
 ```
 
 ## ลำดับอำนาจของเอกสาร

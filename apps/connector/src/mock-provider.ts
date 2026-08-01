@@ -4,6 +4,13 @@ import {
   type ConnectorEnvelope,
 } from "@aicl/protocol";
 
+import type {
+  ConnectorEmit,
+  ConnectorProvider,
+  TurnInterruptCommand,
+  TurnStartCommand,
+} from "./provider.js";
+
 export type RawMockProviderEvent =
   | {
       providerMethod: "mock/message/delta";
@@ -78,5 +85,75 @@ export function normalizeMockEvent(
           turnId: context.turnId,
         }),
       );
+  }
+}
+
+export class MockProvider implements ConnectorProvider {
+  #active: { command: TurnStartCommand; interrupted: boolean } | undefined;
+
+  constructor(private readonly delayMs = 20) {}
+
+  onLost() {
+    return () => undefined;
+  }
+
+  async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {
+    const providerSessionId =
+      command.payload.providerSessionId ?? `mock-thread-${command.payload.sessionId}`;
+    const providerTurnId = `mock-turn-${command.payload.turnId}`;
+    const active = { command, interrupted: false };
+    this.#active = active;
+    emit(
+      ConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.session.bound", {
+          sessionId: command.payload.sessionId,
+          providerSessionId,
+        }),
+      ),
+    );
+    emit(
+      ConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.turn.bound", {
+          sessionId: command.payload.sessionId,
+          turnId: command.payload.turnId,
+          providerTurnId,
+        }),
+      ),
+    );
+
+    const context = {
+      sessionId: command.payload.sessionId,
+      turnId: command.payload.turnId,
+      messageId: `message-${command.payload.turnId}`,
+    };
+    for await (const rawEvent of runMockProvider(
+      command.payload.prompt,
+      this.delayMs,
+    )) {
+      if (active.interrupted) break;
+      emit(normalizeMockEvent(rawEvent, context));
+    }
+    if (active.interrupted) {
+      emit(
+        ConnectorEnvelopeSchema.parse(
+          makeEnvelope("connector.turn.interrupted", {
+            sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
+          }),
+        ),
+      );
+    }
+    if (this.#active === active) this.#active = undefined;
+  }
+
+  async interrupt(command: TurnInterruptCommand) {
+    if (this.#active?.command.payload.turnId !== command.payload.turnId) {
+      throw new Error("Mock provider has no matching active Turn");
+    }
+    this.#active.interrupted = true;
+  }
+
+  async close() {
+    if (this.#active !== undefined) this.#active.interrupted = true;
   }
 }

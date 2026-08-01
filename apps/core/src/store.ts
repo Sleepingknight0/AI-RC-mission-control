@@ -1,6 +1,8 @@
 import {
   appendAssistantDelta,
   beginTurn,
+  bindProviderSession,
+  bindProviderTurn,
   completeAssistantMessage,
   createSession,
   finishTurn,
@@ -15,6 +17,28 @@ export class InMemorySessionStore {
 
   snapshot(sessionId: string): SessionSnapshot {
     return toSnapshot(this.#get(sessionId));
+  }
+
+  activeSnapshots(): SessionSnapshot[] {
+    return [...this.#sessions.values()]
+      .filter((state) => state.activeTurnId !== null)
+      .map(toSnapshot);
+  }
+
+  bindProviderSession(sessionId: string, providerSessionId: string) {
+    const state = bindProviderSession(this.#get(sessionId), providerSessionId);
+    this.#sessions.set(sessionId, state);
+    return state;
+  }
+
+  bindProviderTurn(
+    sessionId: string,
+    turnId: string,
+    providerTurnId: string,
+  ) {
+    const state = bindProviderTurn(this.#get(sessionId), turnId, providerTurnId);
+    this.#sessions.set(sessionId, state);
+    return state;
   }
 
   beginTurn(
