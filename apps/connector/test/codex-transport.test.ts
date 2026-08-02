@@ -52,5 +52,13 @@ describe("Codex JSON-lines transport", () => {
     expect(environment).not.toHaveProperty("AICL_TEST_SECRET");
     expect(environment).not.toHaveProperty("GOOGLE_APPLICATION_CREDENTIALS");
     expect(environment.NO_COLOR).toBe("1");
+
+    const configuredProfile = buildProviderEnvironment(
+      { CODEX_HOME: "C:\\Users\\Operator\\.codex-default" },
+      "C:\\Users\\Operator\\.codex-configured",
+    );
+    expect(configuredProfile.CODEX_HOME).toBe(
+      "C:\\Users\\Operator\\.codex-configured",
+    );
   });
 });

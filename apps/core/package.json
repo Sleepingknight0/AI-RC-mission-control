@@ -18,6 +18,7 @@
     "check": "pnpm run typecheck && pnpm run test && pnpm run lint"
   },
   "dependencies": {
+    "@aicl/config": "workspace:*",
     "@aicl/domain": "workspace:*",
     "@aicl/protocol": "workspace:*",
     "ws": "^8.18.3"

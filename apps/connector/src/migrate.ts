@@ -1,9 +1,12 @@
-import {
-  ConnectorJournal,
-  DEFAULT_CONNECTOR_JOURNAL_PATH,
-} from "./journal.js";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const path = process.env.AICL_CONNECTOR_DB_PATH ?? DEFAULT_CONNECTOR_JOURNAL_PATH;
+import { loadAiclConfig } from "@aicl/config";
+
+import { ConnectorJournal } from "./journal.js";
+
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const path = loadAiclConfig({ repositoryRoot }).config.paths.connectorDatabase;
 const journal = new ConnectorJournal({ path });
 console.log(JSON.stringify({ component: "connector", path, schemaVersion: journal.schemaVersion }));
 journal.close();

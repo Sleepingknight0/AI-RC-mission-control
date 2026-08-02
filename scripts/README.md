@@ -10,3 +10,7 @@
 | `Show-NextStep.ps1` | Print the first incomplete milestone and suggested prompt |
 
 All scripts resolve paths relative to the repository root. Run them from PowerShell on the target Windows host. `Invoke-Codex.ps1` defaults to the active M8 daily-use loop prompt; pass an older prompt explicitly only when reproducing historical work.
+
+`Start-Dev.ps1` supplies explicit project and Core endpoint environment
+overrides while Core and Connector load the shared versioned config under
+LocalAppData. These development overrides are never persisted.

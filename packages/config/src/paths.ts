@@ -33,7 +33,14 @@ export function canonicalProjectRoot(
 
 export function canonicalExistingDirectory(path: string, label: string) {
   assertAbsoluteLocalPath(path, label);
-  const canonical = realpathSync.native(resolve(path));
+  // Report the setting that is wrong rather than propagating a raw ENOENT that
+  // both fails to name the setting and echoes the operator's full local path.
+  let canonical: string;
+  try {
+    canonical = realpathSync.native(resolve(path));
+  } catch {
+    throw new Error(`${label} does not exist or is not accessible`);
+  }
   if (!statSync(canonical).isDirectory()) {
     throw new Error(`${label} must resolve to a directory`);
   }
@@ -42,7 +49,11 @@ export function canonicalExistingDirectory(path: string, label: string) {
 
 export function canonicalWritableDirectory(path: string, label: string) {
   assertAbsoluteLocalPath(path, label);
-  mkdirSync(path, { recursive: true });
+  try {
+    mkdirSync(path, { recursive: true });
+  } catch {
+    throw new Error(`${label} could not be created`);
+  }
   return canonicalExistingDirectory(path, label);
 }
 
@@ -62,7 +73,11 @@ export function canonicalFilePath(path: string, label: string) {
 }
 
 export function assertAbsoluteLocalPath(path: string, label: string) {
-  if (!isAbsolute(path) || isWindowsNetworkOrDevicePath(path)) {
+  if (
+    !isAbsolute(path) ||
+    isWindowsNetworkOrDevicePath(path) ||
+    (process.platform === "win32" && !/^[A-Za-z]:[\\/]/u.test(path))
+  ) {
     throw new Error(`${label} must be an absolute local path`);
   }
 }

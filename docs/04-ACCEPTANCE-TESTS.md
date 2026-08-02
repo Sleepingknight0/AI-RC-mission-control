@@ -6,7 +6,7 @@ Each milestone should automate as many checks as practical and record manual Win
 
 ### P0-ENV-001 — Toolchain probe
 
-- Git, Node 20+, and Codex are detected.
+- Git, Node 24+, and Codex are detected.
 - Missing optional Grok or Claude does not block M0–M4.
 - Tool versions are printed without exposing credentials.
 

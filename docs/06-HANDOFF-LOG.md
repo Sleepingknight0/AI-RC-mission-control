@@ -955,3 +955,147 @@ was released. The operator's pre-existing dev stack was not stopped.
 
 Execute **M8.3 persistent local configuration** only: typed versioned config
 under LocalAppData, environment overrides, and canonical path validation.
+
+---
+
+### 2026-08-03 04:16 — Codex — M8.3
+
+**Scope**
+
+Add one typed, versioned operational configuration shared by Core and Connector
+under LocalAppData. Preserve loopback/process/database boundaries, keep
+development overrides, and stop before compiled lifecycle/startup automation.
+
+**Files changed**
+
+- `packages/config` — strict schema version 1, atomic default creation,
+  environment overrides, canonical filesystem validation, and focused tests
+- Core/Connector `main.ts` and `migrate.ts` — consume shared endpoint,
+  workspace, profile, and separate database paths
+- Connector Codex transport — pass configured CODEX_HOME through the existing
+  child environment allowlist without mutating the parent environment
+- `apps/core/test/persistent-config-process.test.ts` — concurrent two-process
+  config/startup/data-separation/secret-scan smoke
+- workspace manifests, lockfile, development launcher, READMEs, architecture,
+  status, execution plan, and this handoff
+
+**Commands and tests**
+
+```text
+config red test → failed because @aicl/config implementation did not exist
+pnpm --filter @aicl/config check → 13 passed; typecheck/lint pass
+pnpm --filter @aicl/connector check → 28 passed; typecheck/lint pass
+persistent-config process smoke → 1 passed
+pnpm check → 92 passed; opt-in real Codex E2E skipped; all typecheck/lint/build gates pass
+git diff --check → exit 0
+```
+
+**Observable result**
+
+On first Core/Connector start, AICL atomically creates schema version 1 at
+`%LOCALAPPDATA%\AICL Mission Control\config.json` plus data/log/backup
+directories. A repeatable test starts both processes simultaneously on dynamic
+loopback ports with the mock provider, observes Core/Connector connected and
+same-origin Web/runtime bootstrap, and verifies two separate SQLite files.
+
+**Security and recovery evidence**
+
+- Unknown config fields, unsupported versions, non-loopback hosts, malformed
+  origins, relative/network/device paths, empty roots, colliding ports, and
+  shared database paths fail closed.
+- Allowed roots/default project resolve through the real filesystem; a Windows
+  junction escape is rejected before provider launch.
+- Environment overrides pass through the same validation and remain in memory;
+  the persisted file retains defaults.
+- Shared URL helpers bracket IPv6 loopback consistently; runtime-ticket tests
+  prove `http://[::1]:<port>` issue/upgrade succeeds.
+- Raw provider credentials and runtime/Connector capabilities have no schema
+  field. The process smoke scans the persisted file and confirms its launch
+  capability is absent.
+- Config creation uses an atomic hard-link winner so simultaneous Core and
+  Connector startup cannot overwrite an existing operator file.
+
+**Known limitations**
+
+- M8.3 startup still uses `tsx`; compiled build/start/stop, logs, scheduled task,
+  and graceful lifecycle orchestration remain M8.4.
+- Existing repository-local `.data` databases are not moved automatically.
+  Operators may use database environment overrides during development; M8.6
+  owns verified backup, upgrade migration, and restore.
+- Tailscale origin/deployment and second-device evidence remain M8.5.
+- No real Codex turn was spent for this configuration-only milestone; prior real
+  provider evidence remains valid and the configured CODEX_HOME forwarding path
+  is covered at the child-environment boundary.
+
+**Requested next action**
+
+Execute **M8.4 production lifecycle** only: compiled build/start/stop/status and
+doctor commands, interactive-user Scheduled Task, graceful process-tree cleanup,
+bounded/redacted logs, and lifecycle tests. Do not start Tailscale deployment.
+
+---
+
+### 2026-08-03 04:45 — Claude — Phase A independent verification of M8.1/M8.2
+
+**Scope**
+
+Operator-authorized implementation run (the repository default read-only Claude
+role was explicitly overridden for this task). Independently verify the M8.1
+same-origin production host and the M8.2 runtime browser tickets, repair
+confirmed defects, and close the remaining M8.3 configuration gaps. This entry
+records the verification; the M8.3 milestone entry above remains Codex-owned.
+
+**Artifact**
+
+- `reviews/claude/A-M8.1-M8.2-INDEPENDENT-VERIFICATION.md`
+
+**Result**
+
+M8.1 and M8.2 confirmed against the Phase A checklist, with one confirmed defect
+and two informational observations. No M8.1/M8.2 code was rewritten for style.
+
+- **A-01 (Medium, fixed)** — Core emitted its own IPv6 loopback origin
+  unbracketed. With `core.host = "::1"`, `browserUrl` was `ws://::1:<port>/ws`
+  and the registered origin was `http://::1:<port>`, neither of which matches
+  the `http://[::1]:<port>` Origin a browser sends, so `/runtime-config` and the
+  `/ws` upgrade would have 403'd on IPv6 loopback. Repaired with shared
+  `urlHost`/`httpOrigin`/`webSocketOrigin` helpers in `@aicl/config`, which also
+  removed a duplicated local helper in `apps/connector/src/main.ts`.
+- **A-02 (informational)** — `.map` remains a served content type while
+  `build.sourcemap` is `false`; no exposure today, but M8.4 must keep source maps
+  off deliberately.
+- **A-03 (informational)** — `serveWebRequest` stats each static file twice.
+
+**Regression evidence**
+
+```text
+runtime-auth "accepts its own bracketed origin when bound to IPv6 loopback"
+  red before fix  -> expected 'http://::1:49990' to match /^http:\/\/\[::1\]:\d+$/
+  green after fix -> 5 passed
+pnpm --filter @aicl/config exec vitest run          -> 13 passed
+pnpm --filter @aicl/core exec vitest run
+  test/persistent-config-process.test.ts            -> 1 passed
+pnpm check                                          -> 92 passed, 1 skipped
+git diff --check                                    -> exit 0
+```
+
+**M8.3 gaps closed in this run**
+
+- `core.allowedBrowserOrigins` and `connector.healthPort` were still read from
+  `process.env` in Core/Connector startup; both are now config fields with
+  validated environment overrides.
+- Browser origins are validated as exact `http(s)` origins (no path, query,
+  fragment, trailing slash, or wildcard), and Core/Connector ports must differ.
+- Missing directories reported raw `ENOENT` including the operator's full path;
+  they now raise labelled, actionable errors naming the offending setting.
+- `.env.example` still advertised the M8.2-removed browser-token variables and
+  the wrong database variable names; rewritten as override-only documentation.
+- `engines.node` and `Check-Toolchain.ps1` claimed Node 20 while `node:sqlite`
+  is only available unflagged from Node 23.4; both now require Node 24+,
+  matching the verified 24.16.0 environment.
+
+**Not verified — not claimed**
+
+Playwright desktop/mobile acceptance, the opt-in real Codex end-to-end test,
+reverse-proxy HTTPS/WSS behaviour, and any second-device/tailnet validation were
+not executed in this run.

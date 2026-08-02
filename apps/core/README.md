@@ -26,9 +26,11 @@ from bodyless `POST /runtime-config`. Issuance and upgrade both require the same
 exact allowed Origin; outstanding tickets are bounded and stored only by digest.
 Core restart invalidates them. The Connector keeps its separate launch token.
 
-Run `pnpm --filter @aicl/core migrate` before first use. Schema version 2 uses
+Run `pnpm --filter @aicl/core migrate` before first use. Schema version 4 uses
 SQLite WAL, foreign keys, strict tables, and a single serialized writer. The
-default database is `.data/aicl-core.db`; override it with `AICL_CORE_DB_PATH`.
+production entry point reads the versioned LocalAppData config and defaults to
+`%LOCALAPPDATA%\AICL Mission Control\data\aicl-core.db`; override it with
+`AICL_CORE_DB_PATH` for development or tests.
 Durable transitions commit before broadcast. High-rate assistant deltas remain
 ephemeral and the authoritative completed message is persisted for replay.
 Approval CAS is scoped to the approval revision, Turn, provider correlation,

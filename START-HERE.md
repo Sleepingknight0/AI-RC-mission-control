@@ -22,7 +22,7 @@ code .\AICL-Mission-Control.code-workspace
 
 - Windows 10/11
 - Git
-- Node.js 20+
+- Node.js 24+
 - Codex CLI ที่ login แล้ว
 
 Grok Build และ Claude Code เป็น optional สำหรับ review หลัง Prototype 0 เท่านั้น

@@ -1,14 +1,18 @@
+import { spawn } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -17,6 +21,11 @@ import {
   loadAiclConfig,
   type AiclConfig,
 } from "../src/index.js";
+
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repositoryRoot = resolve(packageRoot, "../..");
+const configEntryPoint = join(packageRoot, "src", "index.ts");
+const tsxCli = join(repositoryRoot, "node_modules/tsx/dist/cli.mjs");
 
 const temporaryDirectories: string[] = [];
 
@@ -43,7 +52,16 @@ describe("persistent AICL configuration", () => {
     );
     expect(loaded.config).toMatchObject({
       version: AICL_CONFIG_VERSION,
-      core: { host: "127.0.0.1", port: 8787 },
+      core: {
+        host: "127.0.0.1",
+        port: 8787,
+        allowedBrowserOrigins: [
+          "http://127.0.0.1:8787",
+          "http://127.0.0.1:5173",
+          "http://localhost:5173",
+        ],
+      },
+      connector: { healthPort: 8788 },
       provider: {
         name: "codex",
         profile: "default",
@@ -64,8 +82,39 @@ describe("persistent AICL configuration", () => {
         backups: join(loaded.applicationRoot, "backups"),
       },
     });
-    expect(JSON.parse(readFileSync(loaded.configPath, "utf8"))).toEqual(
-      loaded.config,
+    // The effective Core origin is derived at load time, never persisted, so
+    // changing core.port cannot strand the same-origin production host.
+    const persisted = JSON.parse(
+      readFileSync(loaded.configPath, "utf8"),
+    ) as AiclConfig;
+    expect(persisted.core.allowedBrowserOrigins).toEqual([
+      "http://127.0.0.1:5173",
+      "http://localhost:5173",
+    ]);
+    expect(persisted).toEqual({
+      ...loaded.config,
+      core: {
+        ...loaded.config.core,
+        allowedBrowserOrigins: persisted.core.allowedBrowserOrigins,
+      },
+    });
+  });
+
+  it("derives the effective Core origin after a port change", () => {
+    const fixture = makeFixture();
+    loadFixture(fixture);
+
+    const moved = loadAiclConfig({
+      repositoryRoot: fixture.repository,
+      homeDirectory: fixture.home,
+      env: { LOCALAPPDATA: fixture.localAppData, AICL_CORE_PORT: "9099" },
+    });
+
+    expect(moved.config.core.allowedBrowserOrigins[0]).toBe(
+      "http://127.0.0.1:9099",
+    );
+    expect(moved.config.core.allowedBrowserOrigins).not.toContain(
+      "http://127.0.0.1:8787",
     );
   });
 
@@ -90,6 +139,8 @@ describe("persistent AICL configuration", () => {
         LOCALAPPDATA: fixture.localAppData,
         AICL_CORE_HOST: "::1",
         AICL_CORE_PORT: "9797",
+        AICL_BROWSER_ORIGINS: "http://127.0.0.1:4173, https://mission.example.ts.net",
+        AICL_CONNECTOR_PORT: "9898",
         AICL_PROVIDER: "mock",
         AICL_CODEX_PROFILE: "alternate",
         CODEX_HOME: alternateCodexHome,
@@ -103,7 +154,16 @@ describe("persistent AICL configuration", () => {
     });
 
     expect(overridden.config).toMatchObject({
-      core: { host: "::1", port: 9797 },
+      core: {
+        host: "::1",
+        port: 9797,
+        allowedBrowserOrigins: [
+          "http://[::1]:9797",
+          "http://127.0.0.1:4173",
+          "https://mission.example.ts.net",
+        ],
+      },
+      connector: { healthPort: 9898 },
       provider: {
         name: "mock",
         profile: "alternate",
@@ -117,10 +177,15 @@ describe("persistent AICL configuration", () => {
         backups: realpathSync.native(join(fixture.base, "custom-backups")),
       },
     });
-    expect(
-      (JSON.parse(readFileSync(first.configPath, "utf8")) as AiclConfig).core
-        .port,
-    ).toBe(8787);
+    const stillPersisted = JSON.parse(
+      readFileSync(first.configPath, "utf8"),
+    ) as AiclConfig;
+    expect(stillPersisted.core.port).toBe(8787);
+    expect(stillPersisted.connector.healthPort).toBe(8788);
+    expect(stillPersisted.core.allowedBrowserOrigins).toEqual([
+      "http://127.0.0.1:5173",
+      "http://localhost:5173",
+    ]);
   });
 
   it("rejects unknown credential fields without echoing their values", () => {
@@ -165,7 +230,13 @@ describe("persistent AICL configuration", () => {
 
     writeFileSync(
       loaded.configPath,
-      JSON.stringify({ ...persisted, core: { host: "0.0.0.0", port: 8787 } }),
+      JSON.stringify({
+        ...persisted,
+        core: {
+          ...(persisted.core as Record<string, unknown>),
+          host: "0.0.0.0",
+        },
+      }),
     );
     expect(() => loadFixture(fixture)).toThrow("Invalid AICL config");
 
@@ -203,6 +274,135 @@ describe("persistent AICL configuration", () => {
       "outside the configured allowlist",
     );
   });
+
+  it("keeps the Core and Connector databases physically separate", () => {
+    const fixture = makeFixture();
+    const loaded = loadFixture(fixture);
+    const persisted = JSON.parse(readFileSync(loaded.configPath, "utf8")) as {
+      paths: Record<string, unknown>;
+    };
+    persisted.paths.connectorDatabase = persisted.paths.coreDatabase;
+    writeFileSync(loaded.configPath, JSON.stringify(persisted));
+
+    expect(() => loadFixture(fixture)).toThrow(
+      "Core and Connector database paths must be different",
+    );
+  });
+
+  it("keeps Core and Connector listening ports distinct", () => {
+    const fixture = makeFixture();
+    loadFixture(fixture);
+
+    expect(() =>
+      loadAiclConfig({
+        repositoryRoot: fixture.repository,
+        homeDirectory: fixture.home,
+        env: {
+          LOCALAPPDATA: fixture.localAppData,
+          AICL_CONNECTOR_PORT: "8787",
+        },
+      }),
+    ).toThrow("Core and Connector health ports must be different");
+  });
+
+  it("rejects browser origins that are not exact http(s) origins", () => {
+    const fixture = makeFixture();
+    loadFixture(fixture);
+
+    for (const origin of [
+      "http://127.0.0.1:5173/",
+      "http://127.0.0.1:5173/app",
+      "*",
+      "ws://127.0.0.1:5173",
+      "127.0.0.1:5173",
+    ]) {
+      expect(() =>
+        loadAiclConfig({
+          repositoryRoot: fixture.repository,
+          homeDirectory: fixture.home,
+          env: {
+            LOCALAPPDATA: fixture.localAppData,
+            AICL_BROWSER_ORIGINS: origin,
+          },
+        }),
+      ).toThrow("Invalid AICL config");
+    }
+  });
+
+  it("reuses an existing config on repeated startup without rewriting it", () => {
+    const fixture = makeFixture();
+    const first = loadFixture(fixture);
+    const firstRaw = readFileSync(first.configPath, "utf8");
+    const firstStat = statSync(first.configPath);
+
+    const second = loadFixture(fixture);
+
+    expect(second.config).toEqual(first.config);
+    expect(readFileSync(second.configPath, "utf8")).toBe(firstRaw);
+    expect(statSync(second.configPath).mtimeMs).toBe(firstStat.mtimeMs);
+  });
+
+  it("reports invalid JSON without falling back to defaults", () => {
+    const fixture = makeFixture();
+    const loaded = loadFixture(fixture);
+    writeFileSync(loaded.configPath, "{ not valid json");
+
+    expect(() => loadFixture(fixture)).toThrow("AICL config is not valid JSON");
+  });
+
+  it("fails with an actionable error when required directories are missing", () => {
+    const fixture = makeFixture();
+
+    expect(() =>
+      loadAiclConfig({
+        repositoryRoot: fixture.repository,
+        homeDirectory: fixture.home,
+        env: {},
+      }),
+    ).toThrow("LOCALAPPDATA is required");
+
+    const homeWithoutCodex = join(fixture.base, "home-without-codex");
+    mkdirSync(homeWithoutCodex);
+    expect(() =>
+      loadAiclConfig({
+        repositoryRoot: fixture.repository,
+        homeDirectory: homeWithoutCodex,
+        env: { LOCALAPPDATA: join(fixture.base, "fresh-app-data") },
+      }),
+    ).toThrow(/Codex home/u);
+  });
+
+  it("creates exactly one config when processes start concurrently", async () => {
+    const fixture = makeFixture();
+    const loaderScript = join(fixture.base, "load-config.ts");
+    writeFileSync(
+      loaderScript,
+      [
+        `import { loadAiclConfig } from ${JSON.stringify(configEntryPoint)};`,
+        `const loaded = loadAiclConfig({`,
+        `  repositoryRoot: ${JSON.stringify(fixture.repository)},`,
+        `  homeDirectory: ${JSON.stringify(fixture.home)},`,
+        `  env: { LOCALAPPDATA: ${JSON.stringify(fixture.localAppData)} },`,
+        `});`,
+        `process.stdout.write(JSON.stringify(loaded.config));`,
+      ].join("\n"),
+    );
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => runLoader(loaderScript)),
+    );
+
+    const applicationRoot = join(fixture.localAppData, "AICL Mission Control");
+    for (const result of results) {
+      expect(result.code, result.output).toBe(0);
+    }
+    const configs = results.map((result) => result.output);
+    expect(new Set(configs).size).toBe(1);
+    expect(
+      readdirSync(applicationRoot).filter((name) => name.endsWith(".tmp")),
+    ).toEqual([]);
+    expect(readdirSync(applicationRoot)).toContain("config.json");
+  });
 });
 
 interface Fixture {
@@ -224,6 +424,20 @@ function makeFixture(): Fixture {
   mkdirSync(codexHome, { recursive: true });
   mkdirSync(localAppData);
   return { base, repository, home, codexHome, localAppData };
+}
+
+function runLoader(scriptPath: string) {
+  return new Promise<{ code: number | null; output: string }>((resolvePromise) => {
+    const child = spawn(process.execPath, [tsxCli, scriptPath], {
+      cwd: repositoryRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
+    child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString("utf8")));
+    child.once("exit", (code) => resolvePromise({ code, output }));
+  });
 }
 
 function loadFixture(fixture: Fixture) {

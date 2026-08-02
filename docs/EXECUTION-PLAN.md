@@ -7,8 +7,8 @@ M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
 (functional, responsive, accessible mission-control frontend), and both M6
 self-audits, M7.1 accepted-finding remediation, and the M7.2 final gate are
 complete on the target Windows host. Prototype 0 is complete. M8 now turns that
-baseline into a loopback-only Windows daily-use host; M8.1 and M8.2 are complete
-and M8.3 persistent local configuration is the next single milestone.
+baseline into a loopback-only Windows daily-use host; M8.1 through M8.3 are
+complete and M8.4 production lifecycle is the next single milestone.
 
 ## Scope
 
@@ -27,8 +27,8 @@ and M8.3 persistent local configuration is the next single milestone.
 - M7.2 clean-checkout final gate — **done**
 - M8.1 same-origin production Web host — **done**
 - M8.2 runtime browser authentication — **done**
-- M8.3 persistent LocalAppData configuration — **current**
-- M8.4 compiled lifecycle and Windows startup task — pending
+- M8.3 persistent LocalAppData configuration — **done**
+- M8.4 compiled lifecycle and Windows startup task — **current**
 - M8.5 private Tailscale Serve deployment — pending
 - M8.6 backup/restore and clean-install gate — pending
 
@@ -53,8 +53,10 @@ and M8.3 persistent local configuration is the next single milestone.
 - Real Codex adapter owns stdio transport, normalization, supervision, and resume
 - Installed Codex 0.146.0 schema is pinned by a canonical compatibility gate
 - Deterministic mock remains available with `AICL_PROVIDER=mock`
-- Core owns authoritative SQLite projections and events under `.data/aicl-core.db`
-- Connector owns a separate inbox/outbox journal under `.data/aicl-connector.db`
+- Core owns authoritative SQLite projections and events under the configured
+  LocalAppData data directory
+- Connector owns a separate inbox/outbox journal under the same configured data
+  directory, never the Core database file
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
 - Core schema v4 projects tool activities, file changes, approvals, artifacts,
   cross-type display sequence, guarded transitions, and terminal work settlement
@@ -72,6 +74,9 @@ and M8.3 persistent local configuration is the next single milestone.
   development launcher supplies `VITE_CORE_WS_URL` as an explicit override
 - Browser connections bootstrap through `POST /runtime-config`; Core binds each
   one-time ticket to the exact Origin and stores only a bounded ticket digest
+- Core and Connector load strict config version 1 from LocalAppData; atomic
+  creation, canonical workspace containment, separate database paths, and
+  non-persistent environment overrides are covered by process-level tests
 - Web exposes Mission Overview, selectable Session rail, normalized timeline,
   recovery truth, a non-modal approval dock, command activity, and verified
   unified/side-by-side artifact-backed diffs
@@ -119,6 +124,9 @@ and M8.3 persistent local configuration is the next single milestone.
 - [x] Run frozen clean-checkout install, migrations, and complete checks (M7.2)
 - [x] Run the opt-in real provider lifecycle and Playwright browser gate (M7.2)
 - [x] Repair final-gate terminal activity and diff normalization gaps (M7.2)
+- [x] Serve the production Web build from the Core origin (M8.1)
+- [x] Replace production browser tokens with bounded runtime tickets (M8.2)
+- [x] Add shared versioned LocalAppData configuration and process smoke (M8.3)
 
 ## M7.1 completed verification
 
@@ -217,6 +225,16 @@ remain idempotent.
   missing-receipt and startup-lease convergence, RPC timeout ambiguity, one
   active Turn per Runtime, passive approval expiry, durable command failure,
   cross-type display order, and database transition guards.
+- M8.3 config tests cover atomic defaults, strict/secret-free schema parsing,
+  unsupported versions, environment override non-persistence, exact origins,
+  canonical roots, junction escape, loopback/absolute path validation, and
+  port/database separation.
+- A process-level M8.3 test starts Core and Connector concurrently against one
+  temporary config, connects the mock Runtime, serves Web/runtime bootstrap,
+  creates separate SQLite stores, scans the file for capabilities/credentials,
+  and removes the temporary processes and files. Bracketed IPv6 loopback origin
+  and WebSocket URLs are regression-tested. The complete gate passes 92
+  automated tests; the real-provider test remains opt-in and skipped.
 
 ## Surprises and measurements
 
@@ -299,6 +317,10 @@ remain idempotent.
 - Issue browser tickets only from an exact-Origin, bodyless POST. Tickets expire
   after 30 seconds, are consumed once, never enter URLs/storage/logs, and do not
   replace the independent Connector capability.
+- Keep operational configuration in one strict, versioned LocalAppData file
+  shared by Core and Connector. Persist no credentials or launch capabilities;
+  validate environment overrides without writing them back, resolve project
+  junctions before launch, and keep both SQLite files physically separate.
 
 ## Latest verified outcome
 
@@ -324,11 +346,14 @@ M7.2 clean-checkout and browser evidence is recorded in
 `reviews/codex/M7.2-FINAL-GATE.md`.
 
 M8.1 adds a same-origin production Web host. M8.2 adds bounded runtime browser
-authentication without a build-time capability. `pnpm check` passes 77 tests
-plus strict typecheck, lint, and a source-map-free Vite production build.
-Playwright observed fresh bootstrap POSTs on initial load and reload, an online
-UI, zero console errors/warnings, and no localStorage secret. The next milestone
-is M8.3 persistent LocalAppData configuration; remote deployment remains M8.5.
+authentication without a build-time capability. M8.3 adds atomic, strict,
+secret-free LocalAppData configuration shared by Core and Connector, with
+canonical workspace/path enforcement and in-memory environment overrides.
+`pnpm check` passes 92 tests plus strict typecheck, lint, Windows process-tree
+coverage, and a source-map-free Vite production build. A two-process mock smoke
+proved config creation, connection, Web bootstrap, data separation, and cleanup.
+The next milestone is M8.4 compiled production lifecycle; remote deployment
+remains M8.5.
 
 Prototype 0 remains complete. Grok visual refinement, Claude independent audit,
 and Codex integration of reproducible feedback remain optional P1–P3 work and

@@ -1,26 +1,30 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { httpOrigin, loadAiclConfig } from "@aicl/config";
+
 import { startCoreServer } from "./server.js";
 
-const port = Number(process.env.AICL_CORE_PORT ?? "8787");
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const loadedConfig = loadAiclConfig({ repositoryRoot });
+const config = loadedConfig.config;
 const connectorToken = process.env.AICL_CONNECTOR_TOKEN;
 
 if (connectorToken === undefined) {
   throw new Error("AICL_CONNECTOR_TOKEN is required");
 }
 
-const allowedBrowserOrigins = (
-  process.env.AICL_BROWSER_ORIGINS ??
-  "http://127.0.0.1:5173,http://localhost:5173"
-)
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
 const server = await startCoreServer({
-  port,
+  host: config.core.host,
+  port: config.core.port,
+  dbPath: config.paths.coreDatabase,
   legacyBrowserTokenEnabled: false,
   connectorToken,
-  allowedBrowserOrigins,
+  allowedBrowserOrigins: config.core.allowedBrowserOrigins,
 });
-console.log(`AICL Core listening on http://${server.host}:${server.port}`);
+console.log(
+  `AICL Core listening on ${httpOrigin(server.host, server.port)} using ${loadedConfig.configPath}`,
+);
 
 const shutdown = async () => {
   await server.close();

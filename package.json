@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.14.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "toolchain": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Check-Toolchain.ps1",

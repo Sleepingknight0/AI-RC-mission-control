@@ -42,12 +42,12 @@ pnpm dev
 หน้าเว็บส่ง prompt ผ่าน normalized WebSocket flow, รองรับ interrupt และปฏิเสธ
 Turn ซ้อนด้วย `TURN_ALREADY_ACTIVE` รวมทั้งแสดง command output, file diff และ
 approval dock สำหรับ approve-once/decline โดยไม่เปิดเผย raw provider request ID
-สคริปต์พัฒนาจะสร้าง browser/Connector capability ใหม่ทุกครั้ง จำกัด browser
-Origin แบบ exact match และส่งให้แต่ละ process โดยไม่ต้องเก็บ token ถาวร
+สคริปต์พัฒนาจะสร้าง Connector capability ใหม่ทุกครั้ง ส่วน browser ขอ ticket
+อายุสั้นแบบใช้ครั้งเดียว จำกัด Origin แบบ exact match และไม่เก็บ token ถาวร
 
 ## M8 Daily-Use Operationalization
 
-M8.1–M8.2 เสร็จแล้ว: หลัง Web build แล้ว Core จะเสิร์ฟ `apps/web/dist` พร้อม
+M8.1–M8.3 เสร็จแล้ว: หลัง Web build แล้ว Core จะเสิร์ฟ `apps/web/dist` พร้อม
 hashed assets และ SPA fallback บน origin เดียวกับ `/ws`; production browser
 จึงเลือก `ws:`/`wss:` จาก URL ของหน้าเว็บโดยอัตโนมัติ และขอ short-lived,
 one-time ticket จาก `POST /runtime-config` ทุกครั้งที่ connect/reconnect โดยไม่
@@ -61,11 +61,59 @@ pnpm --filter @aicl/web build
 pnpm --filter @aicl/core exec vitest run test/production-host.test.ts
 ```
 
-ยังไม่ควรถือว่า daily-use/mobile เสร็จ: M8.3–M8.6 ยังต้องเพิ่ม persistent config,
-compiled lifecycle, Tailscale deployment, backup/restore และ clean-install gate
+config version 1 ถูกสร้างแบบ atomic เมื่อเริ่ม Core/Connector ครั้งแรกที่:
 
-Core และ Connector ใช้ SQLite คนละไฟล์ โดยค่าเริ่มต้นอยู่ที่
-`.data/aicl-core.db` และ `.data/aicl-connector.db` ตามลำดับ คำสั่ง
+```text
+%LOCALAPPDATA%\AICL Mission Control\config.json
+```
+
+ไฟล์นี้กำหนด Core loopback host/port, Codex profile/CODEX_HOME, canonical
+project allowlist/default project และตำแหน่ง Core DB, Connector DB, logs และ
+backups โดยไม่เก็บ credential หรือ runtime capability ค่า environment สำหรับ
+development/test จะ override เฉพาะใน memory และไม่ถูกเขียนกลับลงไฟล์
+
+```json
+{
+  "version": 1,
+  "core": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "allowedBrowserOrigins": [
+      "http://127.0.0.1:5173",
+      "http://localhost:5173"
+    ]
+  },
+  "connector": { "healthPort": 8788 },
+  "provider": {
+    "name": "codex",
+    "profile": "default",
+    "codexHome": "C:\\Users\\Operator\\.codex"
+  },
+  "workspace": {
+    "allowedRoots": ["C:\\Projects"],
+    "defaultProject": "C:\\Projects\\AI-RC-mission-control"
+  },
+  "paths": {
+    "coreDatabase": "C:\\Users\\Operator\\AppData\\Local\\AICL Mission Control\\data\\aicl-core.db",
+    "connectorDatabase": "C:\\Users\\Operator\\AppData\\Local\\AICL Mission Control\\data\\aicl-connector.db",
+    "logs": "C:\\Users\\Operator\\AppData\\Local\\AICL Mission Control\\logs",
+    "backups": "C:\\Users\\Operator\\AppData\\Local\\AICL Mission Control\\backups"
+  }
+}
+```
+
+environment override ที่รองรับคือ `AICL_CONFIG_PATH`, `AICL_CORE_HOST`,
+`AICL_CORE_PORT`, `AICL_BROWSER_ORIGINS`, `AICL_CONNECTOR_PORT`,
+`AICL_PROVIDER`, `AICL_CODEX_PROFILE`, `CODEX_HOME`, `AICL_PROJECT_ROOTS`,
+`AICL_PROJECT_PATH`, `AICL_CORE_DB_PATH`, `AICL_CONNECTOR_DB_PATH`,
+`AICL_LOG_DIR` และ `AICL_BACKUP_DIR` โดย Core origin ปัจจุบันจะถูกเพิ่มใน
+effective allowlist อัตโนมัติโดยไม่เขียนค่าที่ derive แล้วกลับลงไฟล์
+
+ยังไม่ควรถือว่า daily-use/mobile เสร็จ: M8.4–M8.6 ยังต้องเพิ่ม compiled
+lifecycle, Tailscale deployment, backup/restore และ clean-install gate
+
+Core และ Connector ใช้ SQLite คนละไฟล์ โดยค่าเริ่มต้นอยู่ใต้
+`%LOCALAPPDATA%\AICL Mission Control\data` ตามลำดับ คำสั่ง
 `pnpm migrate` รัน schema migrations ของทั้งสอง process ซ้ำได้อย่างปลอดภัย
 Core commit durable state/event ก่อน broadcast ส่วน token deltas เป็น ephemeral
 และ browser จะขอ replay จาก durable sequence ล่าสุดเมื่อ reconnect
@@ -93,6 +141,10 @@ $env:AICL_CORE_DB_PATH = 'C:\path\to\core.db'
 $env:AICL_CONNECTOR_DB_PATH = 'C:\path\to\connector.db'
 pnpm dev
 ```
+
+ฐานข้อมูล Prototype เดิมใต้ `.data` จะไม่ถูกย้ายอัตโนมัติใน M8.3 หากต้องใช้
+ข้อมูลเดิมระหว่าง development ให้ตั้งสอง override ข้างบนก่อน `pnpm dev`;
+M8.6 เป็นเจ้าของ backup, upgrade migration และ restore gate
 
 ตรวจ binary/schema compatibility หรือสลับเป็น deterministic mock ได้ด้วย:
 

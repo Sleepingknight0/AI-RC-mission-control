@@ -51,6 +51,26 @@ describe("runtime browser authentication", () => {
     );
   });
 
+  it("accepts its own bracketed origin when bound to IPv6 loopback", async () => {
+    const core = await startCoreServer({
+      host: "::1",
+      port: 0,
+      dbPath: ":memory:",
+      legacyBrowserTokenEnabled: false,
+    });
+    handles.push(core);
+    const origin = coreOrigin(core);
+
+    // A browser on ::1 sends Origin: http://[::1]:<port>; an unbracketed
+    // authority never matches and would strand the same-origin production host.
+    expect(origin).toMatch(/^http:\/\/\[::1\]:\d+$/u);
+
+    const issued = await issueTicket(core, origin);
+    expect(issued.response.status).toBe(200);
+    const socket = await connectBrowser(core, issued.config.ticket, origin);
+    socket.close();
+  });
+
   it("rejects hostile Origins without consuming the valid ticket", async () => {
     const core = await startCoreServer({
       port: 0,

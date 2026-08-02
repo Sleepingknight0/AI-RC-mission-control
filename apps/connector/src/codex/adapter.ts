@@ -180,6 +180,7 @@ interface PendingApproval {
 
 export interface CodexProviderOptions {
   cwd: string;
+  codexHome?: string;
   command?: string;
   timeoutMs?: number;
   approvalTimeoutMs?: number;
@@ -373,6 +374,9 @@ export class CodexProvider implements ConnectorProvider {
     this.#closing = false;
     const rpc = new CodexRpcProcess({
       cwd: this.#options.cwd,
+      ...(this.#options.codexHome === undefined
+        ? {}
+        : { codexHome: this.#options.codexHome }),
       ...(this.#options.command === undefined
         ? {}
         : { command: this.#options.command }),

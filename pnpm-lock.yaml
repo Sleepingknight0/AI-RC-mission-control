@@ -35,6 +35,9 @@ importers:
 
   apps/connector:
     dependencies:
+      '@aicl/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@aicl/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -51,6 +54,9 @@ importers:
 
   apps/core:
     dependencies:
+      '@aicl/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@aicl/domain':
         specifier: workspace:*
         version: link:../../packages/domain

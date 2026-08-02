@@ -117,3 +117,21 @@ to an exact allowed Origin, stored only as SHA-256 digests, bounded in count,
 and invalidated by use, expiry, or Core restart. Connector authentication stays
 separate. Direct test harnesses may explicitly retain the legacy browser token;
 the production entry point disables it.
+
+## AD-017 — Operational configuration is versioned, shared, and secret-free
+
+Core and Connector load one strict JSON configuration from
+`%LOCALAPPDATA%\AICL Mission Control\config.json`. The file is created atomically,
+has an explicit schema version, rejects unknown fields, and contains only
+loopback endpoint settings, exact browser origins, provider profile paths,
+canonical workspace paths, and operational data/log/backup paths. The active
+same-origin Core URL is always derived into the effective allowlist after
+overrides. Provider credentials and runtime capabilities are not configuration
+fields.
+
+Environment variables may override individual fields for development and tests,
+but overrides are validated through the same schema and never persisted. Project
+roots and the default project resolve through real filesystem paths before the
+Connector starts, including junction containment. Core and Connector database
+paths must remain distinct. Migration of the prior repository-local databases
+is deferred to the explicit backup/upgrade gate in M8.6.

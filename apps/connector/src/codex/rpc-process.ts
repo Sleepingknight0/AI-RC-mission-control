@@ -57,6 +57,7 @@ const PROVIDER_ENVIRONMENT_KEYS = [
 
 export function buildProviderEnvironment(
   source: NodeJS.ProcessEnv = process.env,
+  codexHome?: string,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     NO_COLOR: "1",
@@ -66,6 +67,7 @@ export function buildProviderEnvironment(
     const value = source[key];
     if (value !== undefined) environment[key] = value;
   }
+  if (codexHome !== undefined) environment.CODEX_HOME = codexHome;
   return environment;
 }
 
@@ -125,6 +127,7 @@ export class RpcRequestBroker {
 export interface CodexRpcProcessOptions {
   command?: string;
   cwd: string;
+  codexHome?: string;
   timeoutMs?: number;
   maxLineBytes?: number;
 }
@@ -136,7 +139,9 @@ export class CodexRpcProcess {
   readonly #exits = new Set<ExitListener>();
   readonly #faults = new Set<FaultListener>();
   readonly #stderr: string[] = [];
-  readonly #options: Required<CodexRpcProcessOptions>;
+  readonly #options: Required<Omit<CodexRpcProcessOptions, "codexHome">> & {
+    codexHome?: string;
+  };
   #child: ChildProcessWithoutNullStreams | undefined;
   #exitPromise: Promise<void> = Promise.resolve();
 
@@ -146,6 +151,9 @@ export class CodexRpcProcess {
       cwd: options.cwd,
       timeoutMs: options.timeoutMs ?? 180_000,
       maxLineBytes: options.maxLineBytes ?? 8 * 1024 * 1024,
+      ...(options.codexHome === undefined
+        ? {}
+        : { codexHome: options.codexHome }),
     };
   }
 
@@ -196,7 +204,7 @@ export class CodexRpcProcess {
       invocation.args,
       {
         cwd: this.#options.cwd,
-        env: buildProviderEnvironment(),
+        env: buildProviderEnvironment(process.env, this.#options.codexHome),
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         detached: process.platform !== "win32",

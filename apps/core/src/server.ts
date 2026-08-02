@@ -10,6 +10,7 @@ import { dirname, resolve } from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+import { httpOrigin, webSocketOrigin } from "@aicl/config";
 import {
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
@@ -1050,7 +1051,8 @@ export async function startCoreServer(
   if (address === null || typeof address === "string") {
     throw new Error("Core failed to bind a TCP port");
   }
-  allowedBrowserOrigins.add(`http://${host}:${address.port}`);
+  // IPv6 literals must be bracketed to match the Origin header a browser sends.
+  allowedBrowserOrigins.add(httpOrigin(host, address.port));
   if (host === "127.0.0.1") {
     allowedBrowserOrigins.add(`http://localhost:${address.port}`);
   }
@@ -1058,8 +1060,8 @@ export async function startCoreServer(
   return {
     host,
     port: address.port,
-    browserUrl: `ws://${host}:${address.port}/ws`,
-    connectorUrl: `ws://${host}:${address.port}/connector`,
+    browserUrl: `${webSocketOrigin(host, address.port)}/ws`,
+    connectorUrl: `${webSocketOrigin(host, address.port)}/connector`,
     dbPath,
     browserToken,
     connectorToken,

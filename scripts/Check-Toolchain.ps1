@@ -79,15 +79,15 @@ if ($null -ne $nodeCommand) {
     try {
         $nodeVersionText = (& node --version).TrimStart('v')
         $nodeVersion = [version]$nodeVersionText
-        if ($nodeVersion.Major -lt 20) {
-            $requiredFailures.Add('Node.js 20+')
+        if ($nodeVersion.Major -lt 24) {
+            $requiredFailures.Add('Node.js 24+')
             $rows.Add([pscustomobject]@{
                 Status   = 'INVALID'
                 Tool     = 'node-version'
                 Required = $true
                 Version  = $nodeVersionText
                 Path     = $nodeCommand.Source
-                Note     = 'AICL requires Node.js 20 or newer.'
+                Note     = 'AICL requires Node.js 24+; node:sqlite needs --experimental-sqlite before 23.4.'
             })
         }
     }

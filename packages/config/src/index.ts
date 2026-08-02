@@ -25,13 +25,26 @@ export { canonicalProjectRoot } from "./paths.js";
 export const AICL_CONFIG_VERSION = 1 as const;
 export const AICL_APPLICATION_DIRECTORY = "AICL Mission Control";
 
+const PortSchema = z.number().int().min(1).max(65_535);
+
+const BrowserOriginSchema = z.string().min(1).refine(isExactOrigin, {
+  message:
+    "must be an exact http(s) origin without path, query, fragment, or trailing slash",
+});
+
 const AiclConfigSchema = z
   .object({
     version: z.literal(AICL_CONFIG_VERSION),
     core: z
       .object({
         host: z.enum(["127.0.0.1", "::1"]),
-        port: z.number().int().min(1).max(65_535),
+        port: PortSchema,
+        allowedBrowserOrigins: z.array(BrowserOriginSchema).min(1),
+      })
+      .strict(),
+    connector: z
+      .object({
+        healthPort: PortSchema,
       })
       .strict(),
     provider: z
@@ -129,7 +142,15 @@ function defaultConfig(input: {
   );
   return {
     version: AICL_CONFIG_VERSION,
-    core: { host: "127.0.0.1", port: 8787 },
+    core: {
+      host: "127.0.0.1",
+      port: 8787,
+      allowedBrowserOrigins: [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+      ],
+    },
+    connector: { healthPort: 8788 },
     provider: { name: "codex", profile: "default", codexHome },
     workspace: {
       allowedRoots: [repositoryRoot],
@@ -191,7 +212,11 @@ function applyEnvironmentOverrides(
 ): AiclConfig {
   const overridden: AiclConfig = {
     ...config,
-    core: { ...config.core },
+    core: {
+      ...config.core,
+      allowedBrowserOrigins: [...config.core.allowedBrowserOrigins],
+    },
+    connector: { ...config.connector },
     provider: { ...config.provider },
     workspace: {
       ...config.workspace,
@@ -205,6 +230,14 @@ function applyEnvironmentOverrides(
   }
   if (env.AICL_CORE_PORT !== undefined) {
     overridden.core.port = Number(env.AICL_CORE_PORT);
+  }
+  if (env.AICL_BROWSER_ORIGINS !== undefined) {
+    overridden.core.allowedBrowserOrigins = env.AICL_BROWSER_ORIGINS.split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean);
+  }
+  if (env.AICL_CONNECTOR_PORT !== undefined) {
+    overridden.connector.healthPort = Number(env.AICL_CONNECTOR_PORT);
   }
   if (env.AICL_PROVIDER !== undefined) {
     overridden.provider.name =
@@ -268,9 +301,24 @@ function canonicalizeConfig(config: AiclConfig): AiclConfig {
   if (samePath(coreDatabase, connectorDatabase)) {
     throw new Error("Core and Connector database paths must be different");
   }
+  if (config.core.port === config.connector.healthPort) {
+    throw new Error("Core and Connector health ports must be different");
+  }
 
   return {
     ...config,
+    core: {
+      ...config.core,
+      // The same-origin production host (M8.1) is only reachable when the Core
+      // origin itself is allowed, so admit it regardless of operator edits to
+      // the port. Operator entries are preserved for split-origin development.
+      allowedBrowserOrigins: [
+        ...new Set([
+          httpOrigin(config.core.host, config.core.port),
+          ...config.core.allowedBrowserOrigins,
+        ]),
+      ],
+    },
     provider: {
       ...config.provider,
       codexHome: canonicalExistingDirectory(
@@ -312,6 +360,30 @@ function rejectLinkedConfig(configPath: string) {
   if (existsSync(configPath) && lstatSync(configPath).isSymbolicLink()) {
     throw new Error("AICL config file must not be a symbolic link or junction");
   }
+}
+
+/** Bare IPv6 literals must be bracketed to form a valid URL authority. */
+export function urlHost(host: string) {
+  return host.includes(":") ? `[${host}]` : host;
+}
+
+export function httpOrigin(host: string, port: number) {
+  return `http://${urlHost(host)}:${port}`;
+}
+
+export function webSocketOrigin(host: string, port: number) {
+  return `ws://${urlHost(host)}:${port}`;
+}
+
+function isExactOrigin(candidate: string) {
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  return url.origin === candidate;
 }
 
 function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
