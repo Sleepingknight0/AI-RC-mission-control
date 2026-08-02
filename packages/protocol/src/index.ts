@@ -19,18 +19,37 @@ export const SAFE_ARTIFACT_MEDIA_TYPES = [
   "text/x-diff; charset=utf-8",
 ] as const;
 
+const WEBSOCKET_CAPABILITY_TOKEN_PATTERN = /^[A-Za-z0-9._~-]{16,200}$/u;
+
 export function websocketCapability(
   audience: "browser" | "connector",
   token: string,
 ) {
-  if (!/^[A-Za-z0-9._~-]{16,200}$/u.test(token)) {
+  if (!WEBSOCKET_CAPABILITY_TOKEN_PATTERN.test(token)) {
     throw new Error("WebSocket capability token has an invalid format");
   }
   return `aicl.${audience}.${token}`;
 }
 
+export function websocketCapabilityToken(
+  value: string,
+  audience: "browser" | "connector",
+): string | null {
+  const prefix = `aicl.${audience}.`;
+  if (!value.startsWith(prefix)) return null;
+  const token = value.slice(prefix.length);
+  return WEBSOCKET_CAPABILITY_TOKEN_PATTERN.test(token) ? token : null;
+}
+
 const id = z.string().min(1).max(200);
 const timestamp = z.string().datetime({ offset: true });
+
+export const BrowserRuntimeConfigSchema = z.object({
+  webSocketPath: z.literal("/ws"),
+  ticket: z.string().regex(WEBSOCKET_CAPABILITY_TOKEN_PATTERN),
+  expiresAt: timestamp,
+}).strict();
+export type BrowserRuntimeConfig = z.infer<typeof BrowserRuntimeConfigSchema>;
 const utf8String = (maxBytes: number) =>
   z.string().refine((value) => utf8ByteLength(value) <= maxBytes, {
     message: `UTF-8 content exceeds ${maxBytes} bytes`,

@@ -1,0 +1,19 @@
+{
+  "name": "@aicl/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "eslint src test --max-warnings 0",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run lint"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  }
+}

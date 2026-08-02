@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import {
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
+  BrowserRuntimeConfigSchema,
   MAX_OUTPUT_BATCH_BYTES,
   MAX_WEBSOCKET_MESSAGE_BYTES,
   ServerEnvelopeSchema,
@@ -31,19 +32,29 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 
 import { CoreDatabase, type ConnectorSource } from "./store.js";
+import { BrowserTicketRegistry } from "./browser-tickets.js";
+import { isReservedHttpPath, serveWebRequest } from "./static-host.js";
 
 export const DEFAULT_CORE_DB_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../../.data/aicl-core.db",
+);
+export const DEFAULT_WEB_DIST_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../web/dist",
 );
 
 export interface CoreServerOptions {
   host?: string;
   port?: number;
   dbPath?: string;
+  webDistPath?: string;
   connectorLossGraceMs?: number;
   artifactAccessToken?: string;
   browserToken?: string;
+  legacyBrowserTokenEnabled?: boolean;
+  browserTicketTtlMs?: number;
+  browserTicketLimit?: number;
   connectorToken?: string;
   allowedBrowserOrigins?: readonly string[];
   approvalSweepMs?: number;
@@ -95,11 +106,18 @@ export async function startCoreServer(
 ): Promise<CoreServerHandle> {
   const host = options.host ?? "127.0.0.1";
   const dbPath = options.dbPath ?? process.env.AICL_CORE_DB_PATH ?? DEFAULT_CORE_DB_PATH;
+  const webDistPath =
+    options.webDistPath ?? process.env.AICL_WEB_DIST_PATH ?? DEFAULT_WEB_DIST_PATH;
   const store = new CoreDatabase({ path: dbPath });
   const artifactAccessToken =
     options.artifactAccessToken ?? `artifact-token-${crypto.randomUUID()}`;
   const browserToken = options.browserToken ?? crypto.randomUUID();
+  const legacyBrowserTokenEnabled = options.legacyBrowserTokenEnabled ?? true;
   const connectorToken = options.connectorToken ?? crypto.randomUUID();
+  const browserTickets = new BrowserTicketRegistry(
+    options.browserTicketTtlMs ?? 30_000,
+    options.browserTicketLimit ?? 128,
+  );
   const allowedBrowserOrigins = new Set(
     options.allowedBrowserOrigins ?? [
       "http://127.0.0.1:5173",
@@ -135,6 +153,49 @@ export async function startCoreServer(
           databaseSchemaVersion: store.schemaVersion,
         }),
       );
+      return;
+    }
+    if (requestUrl.pathname === "/runtime-config") {
+      const origin = request.headers.origin;
+      const originAllowed = isAllowedOrigin(origin, allowedBrowserOrigins);
+      if (originAllowed && origin !== undefined) {
+        applyRuntimeConfigCors(origin, response);
+      }
+      if (request.method === "OPTIONS") {
+        response.writeHead(originAllowed ? 204 : 403).end();
+        return;
+      }
+      if (request.method !== "POST") {
+        response.writeHead(405, { allow: "POST, OPTIONS" }).end();
+        return;
+      }
+      if (!originAllowed || origin === undefined) {
+        response.writeHead(403, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "ORIGIN_NOT_ALLOWED" }));
+        return;
+      }
+      if (hasRequestBody(request.headers["content-length"], request.headers["transfer-encoding"])) {
+        response.writeHead(413, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "PAYLOAD_NOT_ALLOWED" }));
+        return;
+      }
+      const runtimeConfig = browserTickets.issue(origin);
+      if (runtimeConfig === undefined) {
+        response.writeHead(503, {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+          "retry-after": "1",
+        });
+        response.end(JSON.stringify({ error: "TICKET_CAPACITY_REACHED" }));
+        return;
+      }
+      response.writeHead(200, {
+        "cache-control": "no-store",
+        "content-type": "application/json",
+        pragma: "no-cache",
+        "x-content-type-options": "nosniff",
+      });
+      response.end(JSON.stringify(BrowserRuntimeConfigSchema.parse(runtimeConfig)));
       return;
     }
     const artifactMatch = /^\/artifacts\/([A-Za-z0-9-]+)$/.exec(
@@ -189,7 +250,18 @@ export async function startCoreServer(
       response.end(request.method === "HEAD" ? undefined : body);
       return;
     }
-    response.writeHead(404).end();
+    if (isReservedHttpPath(requestUrl.pathname)) {
+      response.writeHead(404).end();
+      return;
+    }
+    void serveWebRequest(request, response, webDistPath).catch((error: unknown) => {
+      console.error(
+        "Core static host failed:",
+        redactSensitiveText(error instanceof Error ? error.message : error),
+      );
+      if (!response.headersSent) response.writeHead(500).end();
+      else response.destroy(error instanceof Error ? error : undefined);
+    });
   });
   const socketServer = new WebSocketServer({
     noServer: true,
@@ -943,17 +1015,26 @@ export async function startCoreServer(
       rejectUpgrade(socket, 404, "Not Found");
       return;
     }
-    const expectedProtocol = websocketCapability(
-      path === "/connector" ? "connector" : "browser",
-      path === "/connector" ? connectorToken : browserToken,
-    );
-    if (!hasCapability(request.headers["sec-websocket-protocol"], expectedProtocol)) {
-      rejectUpgrade(socket, 401, "Unauthorized");
-      return;
-    }
-    if (path === "/ws" && !isAllowedOrigin(request.headers.origin, allowedBrowserOrigins)) {
-      rejectUpgrade(socket, 403, "Forbidden");
-      return;
+    if (path === "/connector") {
+      const expectedProtocol = websocketCapability("connector", connectorToken);
+      if (!hasCapability(request.headers["sec-websocket-protocol"], expectedProtocol)) {
+        rejectUpgrade(socket, 401, "Unauthorized");
+        return;
+      }
+    } else {
+      const origin = request.headers.origin;
+      if (!isAllowedOrigin(origin, allowedBrowserOrigins) || origin === undefined) {
+        rejectUpgrade(socket, 403, "Forbidden");
+        return;
+      }
+      const header = request.headers["sec-websocket-protocol"];
+      const legacyAccepted =
+        legacyBrowserTokenEnabled &&
+        hasCapability(header, websocketCapability("browser", browserToken));
+      if (!legacyAccepted && !browserTickets.consume(header, origin)) {
+        rejectUpgrade(socket, 401, "Unauthorized");
+        return;
+      }
     }
     socketServer.handleUpgrade(request, socket, head, (webSocket) => {
       if (path === "/connector") attachConnector(webSocket);
@@ -968,6 +1049,10 @@ export async function startCoreServer(
   const address = httpServer.address();
   if (address === null || typeof address === "string") {
     throw new Error("Core failed to bind a TCP port");
+  }
+  allowedBrowserOrigins.add(`http://${host}:${address.port}`);
+  if (host === "127.0.0.1") {
+    allowedBrowserOrigins.add(`http://localhost:${address.port}`);
   }
 
   return {
@@ -985,6 +1070,7 @@ export async function startCoreServer(
       if (connectorLossTimer !== undefined) clearTimeout(connectorLossTimer);
       for (const client of clients.keys()) client.close();
       connector?.close();
+      browserTickets.clear();
       socketServer.close();
       await new Promise<void>((resolveClose, reject) => {
         httpServer.close((error) => (error ? reject(error) : resolveClose()));
@@ -1038,6 +1124,15 @@ function constantTimeEqual(left: string, right: string) {
 
 function isAllowedOrigin(origin: string | undefined, allowed: ReadonlySet<string>) {
   return origin !== undefined && allowed.has(origin);
+}
+
+function hasRequestBody(
+  contentLength: string | undefined,
+  transferEncoding: string | undefined,
+): boolean {
+  if (transferEncoding !== undefined) return true;
+  if (contentLength === undefined) return false;
+  return contentLength !== "0";
 }
 
 function rejectUpgrade(
@@ -1111,6 +1206,13 @@ function applyArtifactCors(
     response.setHeader("access-control-allow-headers", "Authorization, Range");
     response.setHeader("access-control-allow-methods", "GET, HEAD, OPTIONS");
   }
+}
+
+function applyRuntimeConfigCors(origin: string, response: ServerResponse) {
+  response.setHeader("access-control-allow-origin", origin);
+  response.setHeader("access-control-allow-methods", "POST, OPTIONS");
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("vary", "Origin");
 }
 
 function parseByteRange(

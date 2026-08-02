@@ -9,4 +9,4 @@
 | `Invoke-ClaudeReview.ps1` | Optional post-prototype read-only audit |
 | `Show-NextStep.ps1` | Print the first incomplete milestone and suggested prompt |
 
-All scripts resolve paths relative to the repository root. Run them from PowerShell on the target Windows host. `Invoke-Codex.ps1` defaults to the reusable Codex-only Prototype 0 loop prompt.
+All scripts resolve paths relative to the repository root. Run them from PowerShell on the target Windows host. `Invoke-Codex.ps1` defaults to the active M8 daily-use loop prompt; pass an older prompt explicitly only when reproducing historical work.

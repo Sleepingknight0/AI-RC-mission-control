@@ -45,6 +45,25 @@ approval dock สำหรับ approve-once/decline โดยไม่เป�
 สคริปต์พัฒนาจะสร้าง browser/Connector capability ใหม่ทุกครั้ง จำกัด browser
 Origin แบบ exact match และส่งให้แต่ละ process โดยไม่ต้องเก็บ token ถาวร
 
+## M8 Daily-Use Operationalization
+
+M8.1–M8.2 เสร็จแล้ว: หลัง Web build แล้ว Core จะเสิร์ฟ `apps/web/dist` พร้อม
+hashed assets และ SPA fallback บน origin เดียวกับ `/ws`; production browser
+จึงเลือก `ws:`/`wss:` จาก URL ของหน้าเว็บโดยอัตโนมัติ และขอ short-lived,
+one-time ticket จาก `POST /runtime-config` ทุกครั้งที่ connect/reconnect โดยไม่
+ฝัง browser token ใน JavaScript build ส่วน `pnpm dev` ใช้ `VITE_CORE_WS_URL`
+เป็น development override เพื่อคง workflow แยกพอร์ตเดิม
+
+ตรวจ production-host slice ได้ด้วย:
+
+```powershell
+pnpm --filter @aicl/web build
+pnpm --filter @aicl/core exec vitest run test/production-host.test.ts
+```
+
+ยังไม่ควรถือว่า daily-use/mobile เสร็จ: M8.3–M8.6 ยังต้องเพิ่ม persistent config,
+compiled lifecycle, Tailscale deployment, backup/restore และ clean-install gate
+
 Core และ Connector ใช้ SQLite คนละไฟล์ โดยค่าเริ่มต้นอยู่ที่
 `.data/aicl-core.db` และ `.data/aicl-connector.db` ตามลำดับ คำสั่ง
 `pnpm migrate` รัน schema migrations ของทั้งสอง process ซ้ำได้อย่างปลอดภัย

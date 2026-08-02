@@ -15,3 +15,9 @@ Prototype responsibilities:
 - bounded DOM rendering for 100,000-record timelines
 
 It must not import Codex provider types or database modules.
+
+Production builds connect to `${window.location.host}/ws`, selecting `wss:` on
+HTTPS pages and `ws:` otherwise. `VITE_CORE_WS_URL` is only an explicit
+development/test override. Each connect/reconnect obtains a validated one-time
+ticket from `/runtime-config`; the ticket remains in memory and is never placed
+in a URL or browser storage.

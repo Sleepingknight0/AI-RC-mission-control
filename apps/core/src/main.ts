@@ -1,11 +1,10 @@
 import { startCoreServer } from "./server.js";
 
 const port = Number(process.env.AICL_CORE_PORT ?? "8787");
-const browserToken = process.env.AICL_BROWSER_TOKEN;
 const connectorToken = process.env.AICL_CONNECTOR_TOKEN;
 
-if (browserToken === undefined || connectorToken === undefined) {
-  throw new Error("AICL_BROWSER_TOKEN and AICL_CONNECTOR_TOKEN are required");
+if (connectorToken === undefined) {
+  throw new Error("AICL_CONNECTOR_TOKEN is required");
 }
 
 const allowedBrowserOrigins = (
@@ -17,7 +16,7 @@ const allowedBrowserOrigins = (
   .filter(Boolean);
 const server = await startCoreServer({
   port,
-  browserToken,
+  legacyBrowserTokenEnabled: false,
   connectorToken,
   allowedBrowserOrigins,
 });

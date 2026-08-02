@@ -102,3 +102,18 @@ Test process-tree termination, stdio closure, restart, and path handling on Wind
 ## AD-015 — Prototype scope overrides broad enterprise scope
 
 Do not implement excluded features merely because the full specification describes them. Every milestone must end with a runnable, observable vertical slice.
+
+## AD-016 — Daily-use deployment is same-origin and loopback-only
+
+Post-Prototype M8 places the built React application, `/ws`, `/health`, and
+authenticated artifacts behind one Core origin. Core and Connector continue to
+bind loopback; private remote access is delegated to Tailscale Serve, never
+Funnel. Missing static assets return 404, and SPA fallback is limited to HTML
+navigation so it cannot conceal malformed API or artifact requests.
+
+M8.2 replaces production build-time browser capability injection with a
+30-second, one-time ticket issued by `POST /runtime-config`. Tickets are bound
+to an exact allowed Origin, stored only as SHA-256 digests, bounded in count,
+and invalidated by use, expiry, or Core restart. Connector authentication stays
+separate. Direct test harnesses may explicitly retain the legacy browser token;
+the production entry point disables it.

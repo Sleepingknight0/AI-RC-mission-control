@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ARTIFACT_CHUNK_BYTES,
+  BrowserRuntimeConfigSchema,
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
   MAX_ARTIFACT_BYTES,
@@ -12,9 +13,32 @@ import {
   decodeJson,
   makeEnvelope,
   redactSensitiveText,
+  websocketCapabilityToken,
 } from "../src/index.js";
 
 describe("normalized protocol validation", () => {
+  it("validates bounded browser runtime bootstrap data", () => {
+    const runtimeConfig = {
+      webSocketPath: "/ws",
+      ticket: "runtime-ticket-1234567890",
+      expiresAt: "2026-08-03T01:02:03.000Z",
+    };
+
+    expect(BrowserRuntimeConfigSchema.safeParse(runtimeConfig).success).toBe(true);
+    expect(
+      BrowserRuntimeConfigSchema.safeParse({ ...runtimeConfig, secret: "leak" }).success,
+    ).toBe(false);
+    expect(
+      websocketCapabilityToken(
+        "aicl.browser.runtime-ticket-1234567890",
+        "browser",
+      ),
+    ).toBe("runtime-ticket-1234567890");
+    expect(
+      websocketCapabilityToken("aicl.connector.runtime-ticket-1234567890", "browser"),
+    ).toBeNull();
+  });
+
   it("accepts a supported client hello", () => {
     const result = ClientEnvelopeSchema.safeParse(
       makeEnvelope("client.hello", {

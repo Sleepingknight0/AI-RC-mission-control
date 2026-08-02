@@ -28,6 +28,7 @@ $promptSuggestion = switch -Regex ($label) {
     '^M3\.' { 'prompts/codex/04-DURABILITY-AND-RECONNECT.md'; break }
     '^M4\.' { 'prompts/codex/05-APPROVAL-INTERRUPT-AND-DIFF.md'; break }
     '^M5\.|^M6\.|^M7\.' { 'prompts/codex/08-CODEX-ONLY-PROTOTYPE-LOOP.md'; break }
+    '^M8\.' { 'prompts/codex/09-DAILY-USE-OPERATIONALIZATION.md'; break }
     default { 'prompts/codex/00-MASTER-NEXT-MILESTONE.md' }
 }
 

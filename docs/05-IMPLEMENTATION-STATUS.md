@@ -26,6 +26,15 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M7.1 Codex resolved accepted self-audit findings with regression tests
 - [x] M7.2 clean-checkout prototype demo and final gate completed
 
+## M8 — Daily-Use Operationalization
+
+- [x] M8.1 same-origin production Web host implemented and smoke-tested
+- [x] M8.2 bounded runtime browser authentication implemented
+- [ ] M8.3 typed persistent LocalAppData configuration implemented
+- [ ] M8.4 compiled production lifecycle and Windows startup task implemented
+- [ ] M8.5 private Tailscale Serve deployment implemented and device-tested
+- [ ] M8.6 backup, restore, migration, and clean-install gate completed
+
 ## Optional post-Prototype phases
 
 - P1 Grok visual hierarchy and UX refinement
@@ -34,8 +43,8 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**Prototype 0 complete.** No external AI gate remains. P1–P3 are optional
-post-Prototype review/refinement phases and are not required for this baseline.
+**M8.3 — Persistent local configuration.** Prototype 0 remains complete. M8 is
+the active post-Prototype daily-use phase; external AI reviews remain optional.
 
 ## Last verified demo
 
@@ -56,3 +65,5 @@ post-Prototype review/refinement phases and are not required for this baseline.
 - M6.2 audit: `reviews/codex/M6.2-SECURITY-BOUNDARY-AUDIT.md` preserves 6 Standards and 6 Spec findings (8 distinct remediation themes). In-memory probes reproduced hostile-Origin browser control, Connector impersonation with prompt interception, artifact allocation gaps, missing rate throttling, and raw secret leakage. No remediation was mixed into the review milestone.
 - M7.1 remediation: `reviews/codex/M7.1-REMEDIATION-REGISTER.md` maps all 17 accepted security/recovery themes to implemented controls and regression evidence. Per-launch WebSocket capabilities, canonical project roots, payload/allocation/rate limits, redaction, FIFO receipts, startup ownership expiry, passive approval expiry, durable command outcomes, timeline sequencing, and SQLite transition guards are verified.
 - M7.2 final gate: `reviews/codex/M7.2-FINAL-GATE.md` records the canonical-path clean checkout, frozen install, compatibility/migration/full-check gates, opt-in real-provider lifecycle, and Playwright browser acceptance. Codex 0.146 terminal items are reconciled when a dedicated completion notification is absent; plain add/delete file bodies are normalized into reviewable unified diffs.
+- M8.1 same-origin host: Core serves the Vite production build, hashed assets, and HTML-navigation SPA fallback while reserving `/health`, `/ws`, `/connector`, and `/artifacts/*`. Web derives `ws:`/`wss:` from `window.location` unless development explicitly sets `VITE_CORE_WS_URL`. Targeted production-host/security tests, a real built-dist process smoke, and `pnpm check` passed with 70 automated tests; the opt-in real-provider test remained skipped.
+- M8.2 runtime browser auth: `POST /runtime-config` issues a 30-second, exact-Origin, one-time WebSocket ticket from a bounded in-memory registry that stores only ticket digests. Production Core disables the legacy browser token; Connector authentication remains separate. Expiry, replay, hostile-Origin, request-body, capacity, and Core-restart tests pass. Playwright loaded and reloaded the same-origin production build with two fresh bootstrap requests, an online UI, zero console errors/warnings, and no localStorage secret. `pnpm check` passed 77 automated tests; the opt-in real-provider test remained skipped.

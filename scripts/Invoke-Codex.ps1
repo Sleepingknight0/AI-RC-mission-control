@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string] $PromptPath = 'prompts/codex/08-CODEX-ONLY-PROTOTYPE-LOOP.md',
+    [string] $PromptPath = 'prompts/codex/09-DAILY-USE-OPERATIONALIZATION.md',
 
     [ValidateSet('read-only', 'workspace-write', 'danger-full-access')]
     [string] $Sandbox = 'workspace-write',

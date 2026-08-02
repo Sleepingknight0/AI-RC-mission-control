@@ -6,8 +6,9 @@ M0 (measurements), M1 (walking skeleton), M2 (real first-token vertical slice),
 M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
 (functional, responsive, accessible mission-control frontend), and both M6
 self-audits, M7.1 accepted-finding remediation, and the M7.2 final gate are
-complete on the target Windows host. Prototype 0 is complete; P1–P3 are
-optional operator-selected follow-up phases.
+complete on the target Windows host. Prototype 0 is complete. M8 now turns that
+baseline into a loopback-only Windows daily-use host; M8.1 and M8.2 are complete
+and M8.3 persistent local configuration is the next single milestone.
 
 ## Scope
 
@@ -24,13 +25,20 @@ optional operator-selected follow-up phases.
 - M6.2 security/boundary self-audit — **done**
 - M7.1 accepted-finding remediation — **done**
 - M7.2 clean-checkout final gate — **done**
-- Current: Prototype 0 complete; no blocking milestone
+- M8.1 same-origin production Web host — **done**
+- M8.2 runtime browser authentication — **done**
+- M8.3 persistent LocalAppData configuration — **current**
+- M8.4 compiled lifecycle and Windows startup task — pending
+- M8.5 private Tailscale Serve deployment — pending
+- M8.6 backup/restore and clean-install gate — pending
 
 ## Non-goals
 
 - Anything excluded by `docs/00-PROTOTYPE-0-SCOPE.md`
 - Optional external visual/audit passes before Prototype 0 is complete
 - Claude provider integration, multi-user, cloud control plane
+- M9 project/profile/session product operations, PWA, installer, and updater
+- Tailscale Funnel or any public Internet exposure
 
 ## Current repository state
 
@@ -58,6 +66,12 @@ optional operator-selected follow-up phases.
   launches the provider with an explicit environment allowlist
 - Core publishes a normalized durable Session catalog; Web never reads SQLite or
   provider-specific state
+- Core serves `apps/web/dist` on the same HTTP origin as `/ws`, preserving
+  protocol/artifact routes and falling back to the SPA only for HTML navigation
+- Web derives its default `ws:`/`wss:` endpoint from `window.location`; the Vite
+  development launcher supplies `VITE_CORE_WS_URL` as an explicit override
+- Browser connections bootstrap through `POST /runtime-config`; Core binds each
+  one-time ticket to the exact Origin and stores only a bounded ticket digest
 - Web exposes Mission Overview, selectable Session rail, normalized timeline,
   recovery truth, a non-modal approval dock, command activity, and verified
   unified/side-by-side artifact-backed diffs
@@ -279,8 +293,14 @@ remain idempotent.
   restart ambiguity conservatively; missing proof always means unknown, never replay.
 - Assign one Core display sequence to every durable projected timeline record;
   Web ordering never falls back to independent type/timestamp groups.
+- Keep Core and Connector on loopback while consolidating Web and browser
+  WebSocket traffic onto the Core origin. Do not treat static hosting as runtime
+  authentication; M8.2 owns bounded bootstrap tickets and replay/expiry tests.
+- Issue browser tickets only from an exact-Origin, bodyless POST. Tickets expire
+  after 30 seconds, are consumed once, never enter URLs/storage/logs, and do not
+  replace the independent Connector capability.
 
-## Final outcome
+## Latest verified outcome
 
 M0 through M7.2 complete. Reproduce the final gates with:
 
@@ -303,5 +323,13 @@ M7.1 decisions and evidence are recorded in
 M7.2 clean-checkout and browser evidence is recorded in
 `reviews/codex/M7.2-FINAL-GATE.md`.
 
-Prototype 0 is complete. Grok visual refinement, Claude independent audit, and
-Codex integration of reproducible feedback remain optional P1–P3 work.
+M8.1 adds a same-origin production Web host. M8.2 adds bounded runtime browser
+authentication without a build-time capability. `pnpm check` passes 77 tests
+plus strict typecheck, lint, and a source-map-free Vite production build.
+Playwright observed fresh bootstrap POSTs on initial load and reload, an online
+UI, zero console errors/warnings, and no localStorage secret. The next milestone
+is M8.3 persistent LocalAppData configuration; remote deployment remains M8.5.
+
+Prototype 0 remains complete. Grok visual refinement, Claude independent audit,
+and Codex integration of reproducible feedback remain optional P1–P3 work and
+do not replace the active M8 operationalization sequence.

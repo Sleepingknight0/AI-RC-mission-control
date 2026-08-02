@@ -13,6 +13,7 @@
 | `codex/06-INTEGRATE-GROK-AND-CLAUDE-FEEDBACK.md` | Integrate frontend and triage audits |
 | `codex/07-FINAL-PROTOTYPE-GATE.md` | Run clean-checkout release gate |
 | `codex/08-CODEX-ONLY-PROTOTYPE-LOOP.md` | Reusable owner loop for every remaining Prototype 0 milestone |
+| `codex/09-DAILY-USE-OPERATIONALIZATION.md` | Execute one M8 Windows daily-use milestone |
 
 ## Grok — optional post-prototype UX reviewer
 
@@ -31,4 +32,4 @@
 
 ## Selection rule
 
-Codex owns all Prototype 0 milestones through M7.2. Run Grok or Claude only as optional sequential reviews after Prototype 0; Codex remains the integration authority.
+Codex owns Prototype 0 and M8 daily-use implementation. Run Grok or Claude only as optional sequential reviews; Codex remains the integration authority.

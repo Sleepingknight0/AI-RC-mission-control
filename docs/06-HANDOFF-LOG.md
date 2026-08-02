@@ -838,3 +838,120 @@ reported zero errors and zero warnings.
 
 Prototype 0 is complete. Stop here. P1 Grok refinement, P2 Claude independent
 audit, and P3 Codex feedback integration are optional operator-selected phases.
+
+---
+
+### 2026-08-02 23:49 — Codex — M8.1
+
+**Scope**
+
+Start the post-Prototype daily-use phase with one same-origin production-host
+slice. Do not begin runtime ticket authentication or Windows lifecycle work.
+
+**Files changed**
+
+- `apps/core/src/static-host.ts`, `apps/core/src/server.ts` — serve the built Web
+  root safely, reserve protocol routes, and admit the exact Core HTTP Origin
+- `apps/web/src/runtime.ts`, `apps/web/src/App.tsx` — derive same-origin `ws/wss`
+  while preserving an explicit Vite override
+- `scripts/Start-Dev.ps1` — keep the existing split-port development flow
+- `scripts/Invoke-Codex.ps1`, `scripts/Show-NextStep.ps1` — make one-round
+  automation select the active M8 prompt
+- Core/Web tests and M8 status, plan, prompt, README, and architecture notes
+
+**Commands and tests**
+
+```text
+targeted red tests → root 404 and same-origin WebSocket 403 reproduced
+targeted Core/Web tests → 7 passed
+pnpm --filter @aicl/web build → pass, 42 modules
+real built-dist process smoke → health/index/asset/fallback 200; listener cleaned
+pnpm check → 70 passed; opt-in real Codex E2E skipped; typecheck/lint/build pass
+git diff --check → exit 0
+```
+
+The first full gate exposed SPA fallback masking the existing normalized
+artifact-traversal probe with HTTP 200. Fallback is now limited to requests that
+accept `text/html`; the artifact test and production navigation smoke both pass.
+
+**Observable result**
+
+Core serves `index.html`, immutable Vite assets, and HTML navigation fallback
+from the same loopback origin as `/ws`. Health, Connector, WebSocket, and
+artifact paths are not shadowed. Missing assets and traversal-shaped requests
+remain 404.
+
+**Known limitations**
+
+- Production Web authentication still depends on the existing build-time
+  browser capability. Do not expose M8.1 remotely before M8.2.
+- Production compiled start/stop, persistent config, Tailscale, and backup are
+  intentionally deferred to M8.3–M8.6.
+- No second-device/tailnet claim was made in this milestone.
+
+**Requested next action**
+
+Execute **M8.2 runtime browser authentication** only: bounded same-origin
+bootstrap tickets with expiry, replay, hostile-Origin, and restart coverage.
+
+---
+
+### 2026-08-03 03:55 — Codex — M8.2
+
+**Scope**
+
+Replace production build-time browser capability injection with bounded runtime
+WebSocket tickets. Preserve Connector authentication and all prior trust tests;
+do not begin LocalAppData configuration.
+
+**Files changed**
+
+- `apps/core/src/browser-tickets.ts`, `apps/core/src/server.ts`, `main.ts` —
+  bounded digest-only ticket registry, exact-Origin bootstrap, one-time consume,
+  and production legacy-token disablement
+- `packages/protocol` — strict runtime-config schema and capability parser
+- `apps/web/src/runtime.ts`, `App.tsx` — validated ticket fetch on every
+  connect/reconnect without URL or browser-storage persistence
+- `scripts/Start-Dev.ps1`, Vite config — remove legacy browser env and explicitly
+  disable production source maps
+- runtime auth, protocol, Web tests and milestone documentation
+
+**Commands and tests**
+
+```text
+runtime-auth red test → 4/4 failed against missing endpoint/ticket path
+Core runtime-auth + security → 7 passed
+Protocol runtime schema → 10 passed
+Web runtime bootstrap → 4 passed
+pnpm check → 77 passed; opt-in real Codex E2E skipped; typecheck/lint/build pass
+git diff --check → exit 0
+```
+
+Playwright loaded the built app from Core at `http://127.0.0.1:8797`, observed
+`POST /runtime-config` 200 on initial load and again after reload, and rendered
+Core online/synchronized. Console reported zero errors and zero warnings;
+localStorage was empty. The temporary Core/browser were closed and port 8797
+was released. The operator's pre-existing dev stack was not stopped.
+
+**Security and recovery evidence**
+
+- Ticket TTL is 30 seconds; outstanding allocation defaults to 128.
+- Core stores SHA-256 ticket digests, not bearer values.
+- Ticket use is exact-Origin and one-time; hostile Origin does not consume it.
+- Body-bearing bootstrap requests fail 413 and capacity excess fails 503.
+- Expired, replayed, legacy-production, and pre-restart tickets fail 401.
+- Connector capability logic is unchanged and separate.
+- Production build contains no legacy browser env name/value and emits no maps.
+
+**Known limitations**
+
+- The ticket proves a same-origin runtime bootstrap, not a passkey/operator
+  identity. Core remains loopback-only; M8.5 owns private tailnet exposure.
+- A dev stack started before M8.1 must be restarted so Vite receives the explicit
+  Core URL override; hot reload cannot add environment variables retroactively.
+- Persistent paths/configuration remain shell/environment driven until M8.3.
+
+**Requested next action**
+
+Execute **M8.3 persistent local configuration** only: typed versioned config
+under LocalAppData, environment overrides, and canonical path validation.

@@ -33,6 +33,10 @@ import {
   type ConnectionState,
   type TimelineItem,
 } from "./state.js";
+import {
+  requestBrowserRuntimeConfig,
+  resolveCoreWebSocketUrl,
+} from "./runtime.js";
 
 const SESSION_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 const requestedSessionId = new URLSearchParams(window.location.search).get("session");
@@ -40,7 +44,10 @@ const INITIAL_SESSION_ID =
   requestedSessionId !== null && SESSION_PATTERN.test(requestedSessionId)
     ? requestedSessionId
     : "session-demo";
-const CORE_URL = import.meta.env.VITE_CORE_WS_URL ?? "ws://127.0.0.1:8787/ws";
+const CORE_URL = resolveCoreWebSocketUrl(
+  import.meta.env.VITE_CORE_WS_URL,
+  window.location,
+);
 const CORE_HTTP_ORIGIN = new URL(CORE_URL).origin.replace(/^ws/, "http");
 const DEVICE_KEY = "aicl:device-id";
 
@@ -305,19 +312,40 @@ export function App() {
     let disposed = false;
     let reconnectTimer: number | undefined;
     let reconnectAttempt = 0;
+    let bootstrapController: AbortController | undefined;
 
-    const connect = () => {
+    const scheduleReconnect = () => {
+      reconnectAttempt += 1;
+      const delay = Math.min(5_000, 500 * 2 ** Math.min(reconnectAttempt - 1, 3));
+      reconnectTimer = window.setTimeout(() => void connect(), delay);
+    };
+
+    const connect = async () => {
       if (disposed) return;
       setConnection(connectedBeforeRef.current ? "reconnecting" : "connecting");
-      const browserToken = import.meta.env.VITE_AICL_BROWSER_TOKEN;
-      if (browserToken === undefined || browserToken.length === 0) {
+      bootstrapController = new AbortController();
+      let browserTicket: string;
+      try {
+        browserTicket = (
+          await requestBrowserRuntimeConfig(
+            CORE_HTTP_ORIGIN,
+            bootstrapController.signal,
+          )
+        ).ticket;
+      } catch {
+        if (disposed) return;
         setConnection("offline");
-        setNotice("VITE_AICL_BROWSER_TOKEN is required to connect to Core.");
+        setArtifactAccessToken(null);
+        setNotice(
+          "Core runtime authentication unavailable. Draft retained; retrying safely.",
+        );
+        scheduleReconnect();
         return;
       }
+      if (disposed) return;
       const socket = new WebSocket(
         CORE_URL,
-        websocketCapability("browser", browserToken),
+        websocketCapability("browser", browserTicket),
       );
       socketRef.current = socket;
       socket.addEventListener("open", () => {
@@ -428,16 +456,15 @@ export function App() {
         setConnection("offline");
         setArtifactAccessToken(null);
         setNotice("Core connection lost. Draft retained; no command will auto-send.");
-        reconnectAttempt += 1;
-        const delay = Math.min(5_000, 500 * 2 ** Math.min(reconnectAttempt - 1, 3));
-        reconnectTimer = window.setTimeout(connect, delay);
+        scheduleReconnect();
       });
       socket.addEventListener("error", () => socket.close());
     };
 
-    connect();
+    void connect();
     return () => {
       disposed = true;
+      bootstrapController?.abort();
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       socketRef.current?.close();
     };

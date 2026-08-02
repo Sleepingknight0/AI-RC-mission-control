@@ -16,6 +16,16 @@ Prototype responsibilities:
 
 Core does not access arbitrary project files or spawn provider CLIs.
 
+After `pnpm --filter @aicl/web build`, Core serves `apps/web/dist` with hashed
+asset caching and an HTML-only SPA fallback. `/health`, `/ws`, `/connector`, and
+`/artifacts/*` remain reserved. Override the build directory for a packaged or
+test layout with `AICL_WEB_DIST_PATH`.
+
+Production browser connections obtain a 30-second, one-time WebSocket ticket
+from bodyless `POST /runtime-config`. Issuance and upgrade both require the same
+exact allowed Origin; outstanding tickets are bounded and stored only by digest.
+Core restart invalidates them. The Connector keeps its separate launch token.
+
 Run `pnpm --filter @aicl/core migrate` before first use. Schema version 2 uses
 SQLite WAL, foreign keys, strict tables, and a single serialized writer. The
 default database is `.data/aicl-core.db`; override it with `AICL_CORE_DB_PATH`.
