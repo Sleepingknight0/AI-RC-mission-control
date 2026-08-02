@@ -157,8 +157,9 @@ pnpm run doctor
 http://127.0.0.1:<core-port>` ถ้า tailnet ยังไม่เปิด HTTPS ให้ทำ consent ตาม
 [Tailscale Serve documentation](https://tailscale.com/docs/features/tailscale-serve)
 
-จาก Windows/laptop อีกเครื่องใน tailnet เดียวกัน ให้ copy script แล้วรัน probe
-(ห้ามรันบน host เดิม):
+จาก Windows/laptop อีกเครื่องใน tailnet เดียวกัน ให้ใช้ checkout ของ repository
+หรือ copy ทั้ง `Test-TailscaleRemote.ps1` และ `Aicl-Tailscale.ps1` ไว้ในโฟลเดอร์
+เดียวกัน แล้วรัน probe (ห้ามรันบน host เดิม):
 
 ```powershell
 .\scripts\Test-TailscaleRemote.ps1 `

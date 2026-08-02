@@ -8,7 +8,9 @@ M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
 self-audits, M7.1 accepted-finding remediation, and the M7.2 final gate are
 complete on the target Windows host. Prototype 0 is complete. M8 now turns that
 baseline into a loopback-only Windows daily-use host; M8.1 through M8.4 are
-complete and M8.5 private Tailscale deployment is the next single milestone.
+complete. M8.5 automation is implemented, but real Serve deployment and the
+second-device gate are blocked until Tailscale is installed and online on the
+target host. M8.5 remains the current single milestone.
 
 ## Scope
 
@@ -29,7 +31,7 @@ complete and M8.5 private Tailscale deployment is the next single milestone.
 - M8.2 runtime browser authentication — **done**
 - M8.3 persistent LocalAppData configuration — **done**
 - M8.4 compiled lifecycle and Windows startup task — **done**
-- M8.5 private Tailscale Serve deployment — **current**
+- M8.5 private Tailscale Serve deployment — **current; external validation blocked**
 - M8.6 backup/restore and clean-install gate — pending
 
 ## Non-goals
@@ -82,6 +84,12 @@ complete and M8.5 private Tailscale deployment is the next single milestone.
   per-launch Connector capability, bounded redacted logs, and IPC shutdown
 - Windows startup runs as the interactive limited operator and stays attached
   to the Host so Task Scheduler can apply its restart-on-failure policy
+- Private deployment automation derives and persists one exact ts.net Origin,
+  configures only a loopback Tailscale Serve target, and contains no Funnel path
+- Doctor distinguishes local app/Connector/database/Codex failures from missing
+  or offline Tailscale, missing Serve, and an exact-Origin mismatch
+- A second-device probe validates HTTPS, runtime-ticket bootstrap, and WSS while
+  refusing same-host evidence and omitting the ticket from its output
 - Web exposes Mission Overview, selectable Session rail, normalized timeline,
   recovery truth, a non-modal approval dock, command activity, and verified
   unified/side-by-side artifact-backed diffs
@@ -133,6 +141,11 @@ complete and M8.5 private Tailscale deployment is the next single milestone.
 - [x] Replace production browser tokens with bounded runtime tickets (M8.2)
 - [x] Add shared versioned LocalAppData configuration and process smoke (M8.3)
 - [x] Add compiled production supervisor, lifecycle commands, logs, and startup task (M8.4)
+- [x] Add exact-origin private Serve configuration and status automation (M8.5)
+- [x] Add separated Doctor diagnostics and fake-CLI regression coverage (M8.5)
+- [x] Add a ticket-safe probe that must run on a second tailnet device (M8.5)
+- [ ] Install/sign in Tailscale, enable tailnet HTTPS, and configure real Serve (M8.5)
+- [ ] Record successful evidence from a real second tailnet device (M8.5)
 
 ## M7.1 completed verification
 
@@ -357,11 +370,13 @@ M7.2 clean-checkout and browser evidence is recorded in
 M8.1 adds a same-origin production Web host. M8.2 adds bounded runtime browser
 authentication. M8.3 adds strict secret-free LocalAppData configuration. M8.4
 adds source-map-free compiled bundles, a Host supervisor, root lifecycle/doctor
-commands, bounded redacted logs, and an interactive-user Scheduled Task.
-`pnpm check` passes 96 tests plus strict typecheck, lint, Web/Node production
-builds, Windows process-tree coverage, and an isolated compiled lifecycle smoke.
-Backup/restore remain fail-closed until M8.6. The next milestone is M8.5 private
-Tailscale Serve deployment and second-device validation.
+commands, bounded redacted logs, and an interactive-user Scheduled Task. M8.5
+now has exact-origin Serve automation, separated diagnostics, and a second-device
+probe. `pnpm check` passes 100 tests plus strict typecheck, lint, Web/Node
+production builds, Windows process-tree coverage, compiled lifecycle smoke, and
+fake-CLI Serve smoke. The target reports Tailscale missing, so real Serve and
+second-device validation remain unchecked. Backup/restore remain fail-closed;
+do not begin M8.6 until the M8.5 external gate is proven.
 
 Prototype 0 remains complete. Grok visual refinement, Claude independent audit,
 and Codex integration of reproducible feedback remain optional P1–P3 work and

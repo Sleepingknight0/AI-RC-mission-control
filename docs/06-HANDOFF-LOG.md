@@ -1184,3 +1184,72 @@ pnpm stop
 Execute **M8.5 private Tailscale Serve deployment** only: exact ts.net Origin,
 Serve automation without Funnel, diagnostics, and proof from a second tailnet
 device. Do not start M8.6 backup/restore work.
+
+---
+
+### 2026-08-03 05:32 — Codex — M8.5 deployment readiness (blocked)
+
+**Scope**
+
+Implement the private Tailscale Serve boundary, exact-Origin configuration,
+separated operational diagnostics, and a second-device proof harness. Stop
+without M8.6 if the real tailnet/device gate cannot be demonstrated.
+
+**Files changed**
+
+- Added Host Tailscale diagnostics and four unit tests; Doctor now reports CLI,
+  connection, exact Origin, and Serve independently from Core, Connector, Codex,
+  and both databases.
+- Added private configuration/status automation, fake-CLI smoke, and a remote
+  HTTPS/runtime-ticket/WSS probe that refuses the host device and records no
+  ticket.
+- Added root `remote:configure`, `remote:status`, and `remote:test` commands.
+- Recorded AD-019, remote acceptance criteria, operator instructions, status,
+  execution-plan progress, and `reviews/codex/M8.5-DEPLOYMENT-READINESS.md`.
+
+**Verification**
+
+```text
+pnpm --filter @aicl/host check                         -> 8 passed; typecheck/lint pass
+.\scripts\Test-TailscaleAutomation.ps1                -> pass; exact Origin/private target/no Funnel
+pnpm build                                             -> Web + 4 source-map-free JS bundles
+pnpm run doctor                                        -> ready; DB/Codex/local health pass; Tailscale missing warnings
+pnpm remote:status                                     -> app/Connector online; Tailscale missing; no evidence
+targeted persistent-config process test                -> pass after cleanup-race reproduction
+pnpm check (second full run)                           -> 100 passed; lifecycle + Serve smoke pass
+git diff --check                                       -> pass
+```
+
+The first full check failed only while Windows removed an already-stopped M8.3
+temporary process-test directory (`EPERM`). Its unchanged targeted rerun and the
+next complete gate passed. No assertion, retry setting, or test was changed.
+
+**Security and recovery evidence**
+
+- Configuration accepts only the online device's exact HTTPS ts.net Origin and
+  only when AICL is stopped, so Core reloads the allowlist on restart.
+- The only deployment command is `tailscale serve --bg --yes
+  http://127.0.0.1:<core-port>`; Funnel is absent and both app processes remain
+  loopback-only.
+- Serve status is verified before the Origin is persisted. The second-device
+  probe consumes its ticket in memory and emits only non-secret pass evidence.
+- Official Tailscale documentation was checked for the current post-1.52 Serve
+  syntax, HTTPS requirement, private-tailnet semantics, status command, and
+  background persistence.
+
+**Blocked evidence / known limitations**
+
+- No `tailscale.exe` was found in PATH or common install locations, and no
+  Tailscale service was present on this Windows host.
+- Therefore no real Serve configuration was attempted, no ts.net URL exists,
+  and mobile/second-device access is not claimed.
+- The current local Core and Connector were observed online and were not stopped
+  or mutated by this run.
+- M8.6 verified backup/restore and clean-install work remains untouched.
+
+**Requested next action**
+
+Remain on **M8.5**. Install/sign in Tailscale on the host and another device,
+enable tailnet HTTPS, stop the local stack, run `pnpm remote:configure`, restart
+with `pnpm start`, then execute `Test-TailscaleRemote.ps1` from the second device.
+Only after that evidence passes should M8.5 be checked and M8.6 begin.
