@@ -47,7 +47,7 @@ approval dock สำหรับ approve-once/decline โดยไม่เป�
 
 ## M8 Daily-Use Operationalization
 
-M8.1–M8.3 เสร็จแล้ว: หลัง Web build แล้ว Core จะเสิร์ฟ `apps/web/dist` พร้อม
+M8.1–M8.4 เสร็จแล้ว: หลัง Web build แล้ว Core จะเสิร์ฟ `apps/web/dist` พร้อม
 hashed assets และ SPA fallback บน origin เดียวกับ `/ws`; production browser
 จึงเลือก `ws:`/`wss:` จาก URL ของหน้าเว็บโดยอัตโนมัติ และขอ short-lived,
 one-time ticket จาก `POST /runtime-config` ทุกครั้งที่ connect/reconnect โดยไม่
@@ -109,8 +109,66 @@ environment override ที่รองรับคือ `AICL_CONFIG_PATH`, `A
 `AICL_LOG_DIR` และ `AICL_BACKUP_DIR` โดย Core origin ปัจจุบันจะถูกเพิ่มใน
 effective allowlist อัตโนมัติโดยไม่เขียนค่าที่ derive แล้วกลับลงไฟล์
 
-ยังไม่ควรถือว่า daily-use/mobile เสร็จ: M8.4–M8.6 ยังต้องเพิ่ม compiled
-lifecycle, Tailscale deployment, backup/restore และ clean-install gate
+สร้างและควบคุม production processes ได้ด้วย:
+
+```powershell
+pnpm build
+pnpm start
+pnpm status
+pnpm doctor
+pnpm stop
+```
+
+`pnpm start` ใช้ JavaScript bundles ใต้ `build/production` โดยไม่เปิด Vite หรือ
+`tsx watch`; หน้า production คือ `http://127.0.0.1:8787/` ตาม config ค่าเริ่มต้น
+และ log แบบ JSON อยู่ใต้ LocalAppData ตาม `paths.logs` จำกัด 5 ไฟล์ × 5 MiB
+ต่อ service พร้อม redaction ก่อนเขียน disk หากต้องการ build แล้ว start ในคำสั่ง
+เดียวใช้ `pnpm start:production`
+
+ติดตั้ง/ถอด auto-start สำหรับบัญชี operator ปัจจุบัน:
+
+```powershell
+pnpm startup:install
+pnpm startup:uninstall
+```
+
+Task ใช้ interactive logon และ limited privilege เท่านั้น ไม่ใช้ LocalSystem
+ตรวจ milestone ถัดไปด้วย `pnpm next` ส่วน `pnpm status` ใช้ดู production state
+
+`pnpm backup` และ `pnpm restore` มี safety gate และจะหยุดด้วย exit code 2 จนกว่า
+M8.6 จะเพิ่ม verified SQLite backup/restore; ห้ามแทนที่ด้วยการ copy ไฟล์ WAL ตรง ๆ
+
+M8.5 มี private deployment automation แล้ว แต่ยังไม่ถือว่าเสร็จจนกว่าเครื่อง host
+จะติดตั้ง/ล็อกอิน Tailscale เปิด HTTPS certificates ใน tailnet และผ่าน probe จาก
+อุปกรณ์ตัวที่สองจริง ระบบจะไม่เรียก Funnel และ Core/Connector ยัง bind เฉพาะ
+`127.0.0.1`
+
+หลังติดตั้ง Tailscale และหยุดทั้ง `pnpm dev`/production stack ให้ตั้งค่าและเริ่มใหม่:
+
+```powershell
+pnpm remote:configure
+pnpm start
+pnpm remote:status
+pnpm run doctor
+```
+
+คำสั่งแรก derive ชื่อเครื่องจาก `tailscale status --json`, persist เฉพาะ Origin
+`https://<device>.<tailnet>.ts.net` และใช้ `tailscale serve --bg --yes
+http://127.0.0.1:<core-port>` ถ้า tailnet ยังไม่เปิด HTTPS ให้ทำ consent ตาม
+[Tailscale Serve documentation](https://tailscale.com/docs/features/tailscale-serve)
+
+จาก Windows/laptop อีกเครื่องใน tailnet เดียวกัน ให้ copy script แล้วรัน probe
+(ห้ามรันบน host เดิม):
+
+```powershell
+.\scripts\Test-TailscaleRemote.ps1 `
+  -Origin 'https://<device>.<tailnet>.ts.net' `
+  -EvidencePath '.\reviews\codex\M8.5-SECOND-DEVICE.json'
+```
+
+probe ตรวจ production HTML, Core/Connector health, short-lived runtime ticket และ
+authenticated WSS โดยไม่บันทึก ticket ระยะ M8.6 ยังต้องเพิ่ม verified
+backup/restore และ clean-install gate
 
 Core และ Connector ใช้ SQLite คนละไฟล์ โดยค่าเริ่มต้นอยู่ใต้
 `%LOCALAPPDATA%\AICL Mission Control\data` ตามลำดับ คำสั่ง

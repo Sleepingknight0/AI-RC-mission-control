@@ -5,7 +5,9 @@ import { loadAiclConfig } from "@aicl/config";
 
 import { CoreDatabase } from "./store.js";
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const repositoryRoot =
+  process.env.AICL_REPOSITORY_ROOT ??
+  resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const path = loadAiclConfig({ repositoryRoot }).config.paths.coreDatabase;
 const database = new CoreDatabase({ path });
 console.log(JSON.stringify({ component: "core", path, schemaVersion: database.schemaVersion }));

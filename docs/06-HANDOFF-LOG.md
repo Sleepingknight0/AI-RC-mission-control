@@ -1099,3 +1099,88 @@ git diff --check                                    -> exit 0
 Playwright desktop/mobile acceptance, the opt-in real Codex end-to-end test,
 reverse-proxy HTTPS/WSS behaviour, and any second-device/tailnet validation were
 not executed in this run.
+
+---
+
+### 2026-08-03 05:10 — Codex — M8.4
+
+**Scope**
+
+Implement compiled production build/start/stop/status/doctor commands,
+interactive-user Windows startup, graceful process-tree shutdown, bounded
+redacted logs, and lifecycle verification. Stop before Tailscale deployment.
+
+**Files changed**
+
+- Added `apps/host` supervisor, doctor, runtime-state/logging modules, and four
+  unit tests.
+- Added production build/lifecycle/doctor/task/smoke PowerShell scripts and root
+  commands; `pnpm next` now owns milestone display while `pnpm status` reports
+  production state.
+- Core and Connector accept supervisor IPC shutdown and an explicit production
+  repository root; Connector exports its compatibility probe for Doctor.
+- Updated architecture, acceptance criteria, operator documentation, status,
+  execution plan, and this handoff.
+
+**Verification**
+
+```text
+pnpm --filter @aicl/host check                         -> 4 passed; typecheck/lint pass
+pnpm --filter @aicl/core test                         -> 29 passed; real Codex test skipped
+persistent-config process test x5                     -> 5/5 passed
+pnpm build                                             -> Web + 4 source-map-free JS bundles
+.\scripts\Test-ProductionLifecycle.ps1                -> pass
+.\scripts\Install-AiclStartupTask.ps1 -WhatIf         -> interactive/limited operator confirmed
+.\scripts\Doctor-Aicl.ps1                             -> ready; config/DB/Codex/local health pass
+backup/restore guard probes                           -> expected exit 2, no files changed
+pnpm check                                             -> 96 passed; lifecycle smoke pass; real test skipped
+```
+
+The isolated Windows smoke used dynamic loopback ports and mock provider. It
+proved compiled Core/Connector startup, both health gates, same-origin HTML,
+status, graceful IPC stop, process/PID cleanup, and state cleanup without
+touching the operator's development stack. The existing Windows provider-tree
+test remains green. The M8.3 process cleanup gained bounded Windows retries after
+a reproducible post-exit SQLite/AV directory-release race; five repetitions and
+the parallel Core suite passed.
+
+**Security and recovery evidence**
+
+- The Host creates a fresh Connector capability in memory; state stores only
+  PIDs, local URLs, timestamps, config path, and build path.
+- Output is line-buffered to 64 KiB, redacted, written as JSON, and rotated to
+  five 5 MiB generations per service. Split-token and oversized-line tests pass.
+- Normal stop uses parent-owned IPC and waits ten seconds before verified tree
+  termination. Connector closes its provider tree before Core exits.
+- The startup task is bound to the current interactive identity with
+  `LogonType=Interactive`, `RunLevel=Limited`, and restart-on-failure settings;
+  no task was installed during verification.
+- Backup/restore refuse operation until M8.6 rather than copying a live WAL DB.
+
+**Observable path**
+
+After stopping any dev stack that owns the default ports:
+
+```powershell
+pnpm build
+pnpm start
+pnpm status
+# http://127.0.0.1:8787/
+pnpm stop
+```
+
+**Known limitations**
+
+- Tailscale Serve, exact `https://*.ts.net` Origin, and second-device proof are
+  M8.5 and were not attempted.
+- Verified SQLite backup/restore, pre-migration backup, retention, and clean
+  install remain M8.6; `pnpm backup`/`pnpm restore` intentionally exit 2.
+- The Scheduled Task was validated with `-WhatIf`, not installed on the host.
+- The production smoke used mock provider; the prior real Codex evidence remains
+  valid and the opt-in real test was not rerun.
+
+**Requested next action**
+
+Execute **M8.5 private Tailscale Serve deployment** only: exact ts.net Origin,
+Serve automation without Funnel, diagnostics, and proof from a second tailnet
+device. Do not start M8.6 backup/restore work.

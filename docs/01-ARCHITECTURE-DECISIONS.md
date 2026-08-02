@@ -135,3 +135,36 @@ roots and the default project resolve through real filesystem paths before the
 Connector starts, including junction containment. Core and Connector database
 paths must remain distinct. Migration of the prior repository-local databases
 is deferred to the explicit backup/upgrade gate in M8.6.
+
+## AD-018 — Production lifecycle is supervised and compiled
+
+Production runs source-map-free JavaScript bundles under one lightweight Host
+supervisor; neither Vite nor `tsx watch` participates. The Host creates the
+per-launch Connector capability in memory, starts Core before Connector, waits
+for both health gates, and records only non-secret PID/endpoint state beneath
+LocalAppData. Stop requests are local files; the Host sends authenticated-parent
+IPC to close Connector (including its provider tree) before Core, then uses a
+bounded verified process-tree kill only after graceful timeout.
+
+Child output becomes bounded JSON operational logs (five 5 MiB generations per
+service). Complete lines are buffered only to 64 KiB before being discarded, and
+known secrets are redacted before disk writes. The Windows logon task runs under
+the current interactive operator with limited privileges and remains attached to
+the supervisor so Task Scheduler can restart failures. LocalSystem is rejected.
+Backup and restore commands fail closed until M8.6 rather than copying a live WAL
+database and presenting it as a verified backup.
+
+## AD-019 — Tailnet exposure is explicit, exact-origin, and privately verified
+
+Tailscale Serve is the only supported M8 remote ingress. Deployment derives the
+device DNS name from an online `tailscale status --json`, requires an exact
+HTTPS `*.ts.net` Origin, persists that Origin in the existing strict Core
+allowlist, and proxies only to `http://127.0.0.1:<core-port>`. AICL never invokes
+Funnel and never changes Core or Connector away from loopback.
+
+Local diagnostics and remote acceptance are separate claims. Doctor reports
+application, Connector, database, Codex, Tailscale, Origin, and Serve state
+independently. Remote completion additionally requires a probe executed from a
+different online tailnet device that completes HTTPS, runtime-ticket, and WSS
+authentication without persisting the ticket. Automation alone is not evidence
+that mobile or second-device access works.

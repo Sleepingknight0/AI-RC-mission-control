@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/client.ts",
     "./codex": "./src/codex/adapter.ts",
+    "./compatibility": "./src/codex/compatibility.ts",
     "./journal": "./src/journal.ts",
     "./mock-provider": "./src/mock-provider.ts",
     "./provider": "./src/provider.ts"

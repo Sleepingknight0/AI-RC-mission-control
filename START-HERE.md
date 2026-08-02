@@ -77,7 +77,35 @@ spikes/codex-app-server/artifacts/<timestamp>/
 
 ตรวจ `pnpm check`, `git diff --check` และ `Show-NextStep.ps1` หลังแต่ละรอบ
 
-## 6. Optional review หลัง Prototype 0
+## 6. รันแบบ production บนเครื่องเดียว
+
+หยุด `pnpm dev` ก่อนหากยังใช้พอร์ตค่าเริ่มต้น แล้วรัน:
+
+```powershell
+pnpm build
+pnpm start
+pnpm status
+pnpm doctor
+```
+
+เปิด `http://127.0.0.1:8787/` และหยุดอย่างสงบด้วย `pnpm stop` หากต้องการเปิด
+อัตโนมัติเมื่อ operator login ให้ใช้ `pnpm startup:install` ซึ่งไม่ใช้
+LocalSystem
+
+M8.5 private remote automation ใช้ได้หลังติดตั้ง/ล็อกอิน Tailscale และเปิด HTTPS
+certificates ใน tailnet ต้องหยุด app ก่อนเพิ่ม exact Origin แล้ว start ใหม่:
+
+```powershell
+pnpm remote:configure
+pnpm start
+pnpm remote:status
+pnpm run doctor
+```
+
+ระบบใช้ Serve เท่านั้น ไม่ใช้ Funnel และยังไม่ถือว่า remote เสร็จจนกว่า
+`Test-TailscaleRemote.ps1` จะผ่านจากอุปกรณ์ที่สองจริง
+
+## 7. Optional review หลัง Prototype 0
 
 ```powershell
 .\scripts\Invoke-GrokFrontend.ps1
@@ -86,7 +114,7 @@ spikes/codex-app-server/artifacts/<timestamp>/
 
 Grok/Claude ไม่ใช่ blocking gate Codex ต้อง reproduce และ triage feedback ก่อนรวม
 
-## 7. ให้ Codex รวมผล optional review
+## 8. ให้ Codex รวมผล optional review
 
 ```powershell
 .\scripts\Invoke-Codex.ps1 `

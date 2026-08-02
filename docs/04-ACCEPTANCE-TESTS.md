@@ -150,6 +150,45 @@ This may be completed in a later milestone, but the protocol must not make it im
 - Config examples contain no credentials.
 - Raw provider traces are disabled by default and retention is bounded.
 
+## Daily-use lifecycle
+
+### M8-LIFE-001 — Compiled production start and stop
+
+- `pnpm build` emits Web/Core/Connector/Host JavaScript without source maps or
+  runtime `.ts` imports.
+- Host starts Core before Connector and reports ready only after reconciliation.
+- `pnpm stop` closes Connector/provider before Core and leaves no owned PID or
+  production-state file.
+
+### M8-LIFE-002 — Operational boundary
+
+- Production state/logs contain no Connector capability.
+- JSON logs redact known secret forms, cap input lines, and retain at most five
+  5 MiB generations per service.
+- The startup task names the current interactive operator, limited privilege,
+  and never LocalSystem.
+- Backup/restore fail closed until the verified M8.6 gate exists.
+
+### M8-REMOTE-001 — Private Serve boundary
+
+- Core and Connector remain bound to `127.0.0.1`; no application port is opened
+  directly to the LAN or tailnet.
+- Deployment invokes `tailscale serve --bg --yes
+  http://127.0.0.1:<core-port>` and never invokes Tailscale Funnel.
+- Core persists only the exact `https://<device>.<tailnet>.ts.net` Origin; paths,
+  wildcards, HTTP origins, and arbitrary domains are rejected.
+- Doctor distinguishes application offline, Connector offline, Tailscale
+  missing/offline, Serve not configured, exact-Origin mismatch, Codex
+  incompatibility, and database failure.
+
+### M8-REMOTE-002 — Second-device proof
+
+- The probe runs on a different online tailnet device and refuses the AICL host.
+- HTTPS production HTML, `/health`, bodyless `/runtime-config`, and authenticated
+  WSS `/ws` all pass through the ts.net origin.
+- The one-time browser ticket is kept in memory and omitted from evidence.
+- M8.5 remains incomplete until this proof is recorded from a real second device.
+
 ## UX
 
 ### P0-UI-001 — Stable stream

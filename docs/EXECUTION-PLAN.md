@@ -7,8 +7,8 @@ M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
 (functional, responsive, accessible mission-control frontend), and both M6
 self-audits, M7.1 accepted-finding remediation, and the M7.2 final gate are
 complete on the target Windows host. Prototype 0 is complete. M8 now turns that
-baseline into a loopback-only Windows daily-use host; M8.1 through M8.3 are
-complete and M8.4 production lifecycle is the next single milestone.
+baseline into a loopback-only Windows daily-use host; M8.1 through M8.4 are
+complete and M8.5 private Tailscale deployment is the next single milestone.
 
 ## Scope
 
@@ -28,8 +28,8 @@ complete and M8.4 production lifecycle is the next single milestone.
 - M8.1 same-origin production Web host — **done**
 - M8.2 runtime browser authentication — **done**
 - M8.3 persistent LocalAppData configuration — **done**
-- M8.4 compiled lifecycle and Windows startup task — **current**
-- M8.5 private Tailscale Serve deployment — pending
+- M8.4 compiled lifecycle and Windows startup task — **done**
+- M8.5 private Tailscale Serve deployment — **current**
 - M8.6 backup/restore and clean-install gate — pending
 
 ## Non-goals
@@ -77,6 +77,11 @@ complete and M8.4 production lifecycle is the next single milestone.
 - Core and Connector load strict config version 1 from LocalAppData; atomic
   creation, canonical workspace containment, separate database paths, and
   non-persistent environment overrides are covered by process-level tests
+- Production bundles Core, Connector, Host, and Doctor as JavaScript without
+  runtime TypeScript/Vite; the Host owns ordered startup, health gating,
+  per-launch Connector capability, bounded redacted logs, and IPC shutdown
+- Windows startup runs as the interactive limited operator and stays attached
+  to the Host so Task Scheduler can apply its restart-on-failure policy
 - Web exposes Mission Overview, selectable Session rail, normalized timeline,
   recovery truth, a non-modal approval dock, command activity, and verified
   unified/side-by-side artifact-backed diffs
@@ -127,6 +132,7 @@ complete and M8.4 production lifecycle is the next single milestone.
 - [x] Serve the production Web build from the Core origin (M8.1)
 - [x] Replace production browser tokens with bounded runtime tickets (M8.2)
 - [x] Add shared versioned LocalAppData configuration and process smoke (M8.3)
+- [x] Add compiled production supervisor, lifecycle commands, logs, and startup task (M8.4)
 
 ## M7.1 completed verification
 
@@ -321,6 +327,9 @@ remain idempotent.
   shared by Core and Connector. Persist no credentials or launch capabilities;
   validate environment overrides without writing them back, resolve project
   junctions before launch, and keep both SQLite files physically separate.
+- Bundle the production Node entry points and keep the Scheduled Task attached
+  to a foreground Host supervisor. Stop Connector/provider before Core through
+  IPC; persist no launch capability and fail closed on unverified backup/restore.
 
 ## Latest verified outcome
 
@@ -346,14 +355,13 @@ M7.2 clean-checkout and browser evidence is recorded in
 `reviews/codex/M7.2-FINAL-GATE.md`.
 
 M8.1 adds a same-origin production Web host. M8.2 adds bounded runtime browser
-authentication without a build-time capability. M8.3 adds atomic, strict,
-secret-free LocalAppData configuration shared by Core and Connector, with
-canonical workspace/path enforcement and in-memory environment overrides.
-`pnpm check` passes 92 tests plus strict typecheck, lint, Windows process-tree
-coverage, and a source-map-free Vite production build. A two-process mock smoke
-proved config creation, connection, Web bootstrap, data separation, and cleanup.
-The next milestone is M8.4 compiled production lifecycle; remote deployment
-remains M8.5.
+authentication. M8.3 adds strict secret-free LocalAppData configuration. M8.4
+adds source-map-free compiled bundles, a Host supervisor, root lifecycle/doctor
+commands, bounded redacted logs, and an interactive-user Scheduled Task.
+`pnpm check` passes 96 tests plus strict typecheck, lint, Web/Node production
+builds, Windows process-tree coverage, and an isolated compiled lifecycle smoke.
+Backup/restore remain fail-closed until M8.6. The next milestone is M8.5 private
+Tailscale Serve deployment and second-device validation.
 
 Prototype 0 remains complete. Grok visual refinement, Claude independent audit,
 and Codex integration of reproducible feedback remain optional P1–P3 work and

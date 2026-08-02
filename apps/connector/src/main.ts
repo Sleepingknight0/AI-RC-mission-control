@@ -8,7 +8,9 @@ import { CodexProvider } from "./codex/adapter.js";
 import { probeInstalledCodex } from "./codex/compatibility.js";
 import { MockProvider } from "./mock-provider.js";
 
-const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const repositoryRoot =
+  process.env.AICL_REPOSITORY_ROOT ??
+  resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const loadedConfig = loadAiclConfig({ repositoryRoot });
 const config = loadedConfig.config;
 const coreUrl =
@@ -59,10 +61,30 @@ console.log(
   `AICL Connector connected to ${coreUrl}; health on ${healthPort} using ${loadedConfig.configPath}`,
 );
 
-const shutdown = async () => {
-  await connector.close();
-  process.exit(0);
+let shutdownPromise: Promise<void> | undefined;
+const shutdown = (reason: string) => {
+  shutdownPromise ??= connector
+    .close()
+    .then(() => console.log(`AICL Connector stopped: ${reason}`))
+    .catch((error: unknown) => {
+      console.error("AICL Connector shutdown failed", error);
+      process.exitCode = 1;
+    })
+    .finally(() => {
+      if (process.connected) process.disconnect();
+    });
+  return shutdownPromise;
 };
 
-process.once("SIGINT", () => void shutdown());
-process.once("SIGTERM", () => void shutdown());
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("message", (message: unknown) => {
+  if (
+    typeof message === "object" &&
+    message !== null &&
+    "type" in message &&
+    message.type === "aicl.shutdown"
+  ) {
+    void shutdown("production supervisor request");
+  }
+});

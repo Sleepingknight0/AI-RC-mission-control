@@ -101,7 +101,12 @@ it(
       expect(existsSync(persisted.paths.connectorDatabase)).toBe(true);
     } finally {
       await Promise.all([stopProcess(connector), stopProcess(core)]);
-      rmSync(temporaryRoot, { recursive: true, force: true });
+      rmSync(temporaryRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 50,
+        retryDelay: 100,
+      });
     }
   },
   20_000,
