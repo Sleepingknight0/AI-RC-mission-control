@@ -1971,3 +1971,93 @@ a new Runtime generation without replay, and exposes no raw provider events.
   branch onto final `master`; do not cherry-pick the checkpoint again or apply
   `stash@{0}`. Audit `docs/M9-WEB-INTEGRATION-CONTRACT.md` coverage and run full
   Web/browser/final-gate verification before merge.
+
+---
+
+### 2026-08-03 20:52 — Codex — Claude M9 audit remediation gate
+
+**Outcome**
+
+- Independently reproduced and remediated every accepted frontend-blocking and
+  High/security Claude finding without merging the audit-only commits.
+- Core schema 12 fails legacy, unbound, ambiguous, invalid, and null-project
+  Sessions closed with read-only/network-denied defaults. No implicit Session
+  creation remains in Turn submission or subscription.
+- Catalog pagination now uses a catalog-visible revision rather than the durable
+  event sequence, and `session.capabilities.snapshot` supplies authoritative
+  per-Session control, provider/account/model, execution, attachment, approval,
+  lease, reason, and freshness data.
+- Codex account parsing accepts the installed nullish schema safely; failed,
+  stale, logged-out, or malformed probes revoke control until fresh validation.
+  Active native threads are not advertised for resume.
+- Hardened concurrent native import settlement, strict Core-to-Connector sends,
+  poison-journal acknowledgement, lifetime protocol-violation budgets, canonical
+  approval cwd reuse, and a realistic indexed 1,000-Session fixture.
+- The final Real Codex run uncovered and fixed redundant same-process
+  `thread/resume` after `thread/start`; the adapter now reuses the prepared
+  thread and still resumes after a new provider process starts.
+- General durable retention is the only deferred Claude finding. It is Medium:
+  long-lived database growth remains possible, but deleting evidence without an
+  accepted duration/export/replay-floor/legal-hold policy would weaken safety.
+
+**Implementation commits**
+
+```text
+7cc955a  fix(connector): fail closed on unverified Codex authority
+02af515  fix(core): close Claude M9 authority and recovery gaps
+1d888b1  fix(connector): reuse prepared Codex thread in process
+0b70ba7  test: align M9 audit gate with authoritative lifecycle
+```
+
+**Verification**
+
+```text
+pnpm install --frozen-lockfile
+  passed; lockfile unchanged
+pnpm migrate; pnpm migrate
+  Core 12 / Connector 3; migrated=false twice
+pnpm build
+  passed
+pnpm check
+  184 automated tests passed; 1 opt-in Real Codex test skipped in the ordinary
+  suite; compiled lifecycle, maintenance/restore, clean install, and private-
+  Serve automation passed
+git diff --check
+  passed
+
+explicit AICL_REAL_CODEX=1
+  1 passed; test body 68.413 s; Vitest 69.29 s; command wall 73.8 s
+```
+
+The 184 tests are Config 13, Protocol 33, Domain 4, frozen Web 11, Connector 50,
+Core 58, and Host 15. Fresh and upgraded schema-12 databases, repeat migration,
+legacy Session safety, unknown/invalid Session submission, active Catalog
+pagination, account omission/logout/probe failure, concurrent resume, malformed
+durable ingest, and the installed provider lifecycle are covered.
+
+**Observable result**
+
+A controllable Session must now be created through the authoritative path and
+must retain a fresh exact provider/account/project/model capability projection.
+The real lifecycle creates that Session, streams and completes a Turn, rejects
+concurrency, interrupts, fences provider death/restart, waits for fresh authority,
+resumes in a new Runtime generation without prompt replay, and tears down cleanly.
+
+**Files changed**
+
+- Core/Connector/protocol/domain implementation and focused regression tests
+- Core migration `012_audit_fail_closed_sessions.sql`
+- M9 capability, Catalog, settings, workspace, Web integration, security, final-
+  gate, remediation, execution, status, and handoff documents
+- No frozen frontend source, visual asset, or Grok branch file
+
+**Next**
+
+After the completion commit is pushed, Grok must rebase
+`grok/m9-frontend-integration` from `8d792cdd` onto the new final master SHA and
+adapt it to the authoritative Session capability and Catalog contracts. Review
+session-specific gating, stale auth, duplicate same-name/same-size attachments,
+attachment counts, stale-cursor recovery, filter throttling, and migration-
+checksum recovery guidance. Rerun Web tests/build, responsive/accessibility
+browser acceptance, `pnpm check`, and Real Codex E2E; review the complete rebased
+range and merge only after the combined gate passes. Preserve `stash@{0}`.

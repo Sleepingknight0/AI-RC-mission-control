@@ -31,8 +31,10 @@ global Session property.
 `sessions.catalog.list` carries a request ID, device ID, explicit page size,
 opaque cursor, and strict filters. Core orders by `lastActivityAt DESC,
 sessionId ASC`. A cursor embeds the current catalog revision and is rejected as
-stale after any Session mutation rather than returning a page with omissions or
-duplicates. The current response contains AICL/imported rows only; native rows
+stale after a catalog ordering/filter-visible mutation rather than returning a
+page with omissions or duplicates. Ordinary durable timeline events do not
+change this revision; Turn/approval state, metadata, binding, settings, and
+other catalog-visible changes do. The current response contains AICL/imported rows only; native rows
 arrive from M9.4 discovery and remain separately identified.
 
 `session.rename`, `session.pin`, and `session.archive` use Session metadata CAS.
@@ -68,6 +70,8 @@ timeout after dispatch produces `outcome_unknown`. Neither state is retried
 automatically. Resume is allowed only from a current authoritative native
 snapshot and never merges by title or project path.
 
-Catalog rows expose `providerBindingStatus`. Pending, failed, and ambiguous
-bindings fail closed for control. Legacy unbound Sessions remain compatible;
-new create/import rows become controllable only after the binding is ready.
+Catalog rows expose `providerBindingStatus`. Pending, failed, ambiguous, and
+legacy-unbound bindings fail closed for control. Legacy rows remain readable
+but are never remotely controllable; new create/import rows become controllable
+only after the authoritative creation path validates provider/account/project
+authority and the binding is ready.

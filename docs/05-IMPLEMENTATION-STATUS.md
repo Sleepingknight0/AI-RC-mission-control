@@ -44,9 +44,11 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Optional post-Prototype phases
 
-- P1 Grok visual hierarchy and UX refinement
-- P2 Claude independent correctness/security audit
-- P3 Codex triage of reproducible external feedback
+- P1 Grok frontend integration — isolated branch complete against the old M9
+  contract; remediation rebase, adaptation, and combined review pending
+- P2 Claude independent correctness/security audit — complete
+- P3 Codex triage of reproducible external feedback — accepted High/security
+  findings remediated; retention policy deferred with explicit bounded risk
 
 ## M9 — Remote AI Workspace (non-visual backend)
 
@@ -65,15 +67,17 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**M9.11 is complete.** The new Codex account passed the unchanged Real Codex E2E
-in 70.50 seconds after a measured account-probe incompatibility was fixed with
-regression coverage: installed app-server can return a non-null authenticated
-ChatGPT account with `requiresOpenaiAuth: true`, because that flag describes the
-configured authentication mode rather than missing login state. Frozen install,
-repeated schema 11/3 migration, build, 173 automated tests, compiled production
-lifecycle, maintenance/restore, clean-install, and diff checks pass. The Grok
-visual checkpoint remains isolated and frozen. M8.5 and Google/Cloudflare
-identity remain deferred outside M9.
+**M9.11 and the accepted Claude backend audit remediation are complete.** The
+installed account schema is handled nullishly, and only a valid present account
+plus a fresh successful capability probe grants control; no semantics are
+invented for `requiresOpenaiAuth`. Schema 12 fails legacy and unconfigured
+Sessions closed, Turn submission requires authoritative Session creation,
+Catalog cursors use catalog-visible revision changes, and Core publishes an
+authoritative per-Session capability projection. Frozen install, repeated
+schema 12/3 migration, build, 184 automated tests, compiled production
+lifecycle, maintenance/restore, clean-install, diff checks, and the unchanged
+Real Codex E2E all pass. The Grok branch remains isolated. M8.5,
+Google/Cloudflare identity, and a product retention policy remain deferred.
 
 ## Last verified demo
 
@@ -82,9 +86,9 @@ identity remain deferred outside M9.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 11 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, and bounded terminal evidence; Connector retains strict FIFO journal sequence.
-- M9.11 repository checks: `pnpm check` — strict typecheck, ESLint, production builds, 173 automated tests, compiled production lifecycle, maintenance/restore, clean-install, and private-Serve automation passed; the opt-in real test was separately enabled and passed.
-- M9.11 Real Codex E2E: the unchanged opt-in test passed in 70.50 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, generation-incremented new-process resume, no command replay, normalized-event isolation, and deterministic provider teardown.
+- Database schema: Core schema version 12 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, and bounded terminal evidence; Connector retains strict FIFO journal sequence.
+- Post-audit repository checks: `pnpm check` — strict typecheck, ESLint, production builds, 184 automated tests, compiled production lifecycle, maintenance/restore, clean-install, and private-Serve automation passed; the opt-in real test was separately enabled and passed.
+- Post-audit Real Codex E2E: the unchanged opt-in test passed with a 68.413 s test body (Vitest 69.29 s; wall 73.8 s), covering authoritative Session creation, first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, fresh capability validation, generation-incremented new-process resume, no command replay, normalized-event isolation, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
 - M4 race/fault tests: exactly one of two tabs wins approval CAS; duplicate command IDs replay; expiry/provider loss/runtime restart reject stale decisions; interrupt, UTF-8 batching, inline/large diff thresholds, artifact integrity/auth/range/traversal all pass.
 - Mobile approval demo: Playwright at 390×844 used real Codex command approvals. Approve-once created only `output/playwright/provider-approval-proof.txt`; decline produced activity state `declined` and did not create its target file.
@@ -133,8 +137,9 @@ identity remain deferred outside M9.
   a Turn runs. Provider/account/project remain binding-owned and immutable.
   Core validates current provider/account/model/reasoning evidence, and Codex
   validates again before forwarding the model, effort, and canonical cwd.
-  Legacy Turn submissions remain compatible while new submissions may fence
-  the settings revision. `pnpm check` passed 150 automated tests plus compiled
+  Every Turn submission requires an existing authoritative ready binding; an
+  unknown or legacy-unbound Session fails closed. `pnpm check` passed 150
+  automated tests plus compiled
   lifecycle/maintenance gates; one opt-in real-provider test remained skipped.
   Frozen Web source remains unchanged.
 - M9.6 execution modes: provider capabilities now explicitly report

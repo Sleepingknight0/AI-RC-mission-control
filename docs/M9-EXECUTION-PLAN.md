@@ -21,9 +21,14 @@
 - [x] M9.10 security, recovery, fault, and performance gate
 - [x] M9.11 non-visual final gate and Grok handoff
 
-M9.11 passed the unchanged Real Codex E2E in 70.50 seconds after correcting the
-installed account-probe interpretation with regression coverage. The final
-local gate passed 173 automated tests at Core schema 11 / Connector schema 3.
+M9.11 passed the unchanged Real Codex E2E after correcting the installed
+account-probe interpretation with regression coverage. The original gate was
+followed by Claude's independent audit as a post-M9 hardening gate.
+Frontend-blocking authority, creation-bypass, catalog-revision, capability-
+projection, authentication, concurrency, journal, and performance findings are
+remediated at Core schema 12 / Connector schema 3. The final local gate passed
+184 automated tests and the unchanged Real Codex E2E passed with a 68.413-
+second test body; exact evidence is recorded in the remediation report.
 
 ## Checkpoint rule
 

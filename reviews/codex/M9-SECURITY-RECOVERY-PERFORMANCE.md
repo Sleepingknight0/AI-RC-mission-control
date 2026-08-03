@@ -28,8 +28,9 @@ is not claimed by this checkpoint.
 | Secret/path leakage, bounded terminal output and logs | provider, Codex adapter, terminal evidence, and Host logging tests |
 
 All browser/provider payloads remain strict and bounded. Unknown or unsupported
-capabilities fail closed; a failed inventory refresh does not stop an accepted
-Turn. Full Auto authority still requires the exact live Session settings,
+capabilities fail closed; a failed inventory refresh revokes authority for a
+new Session operation or Turn, while an already accepted Turn retains its
+immutable settings and settles normally. Full Auto authority still requires the exact live Session settings,
 device, provider, account, project, Runtime generation, lease revision, and Core
 boot. Changing approval policy while a Turn executes returns `SESSION_BUSY`.
 
@@ -40,11 +41,11 @@ boot. Changing approval policy while a Turn executes returns `SESSION_BUSY`.
 - Connector parsed the real terminal registry without path leakage in 264 ms.
 - Inventory timeout settled unavailable without blocking Turn completion in
   214 ms in the integrated Core/Connector test.
-- A fresh SQLite catalog created and queried 1,000 Sessions in 650 ms in the
-  combined targeted run. The first page remained capped at 250, unique, and
-  deterministic. The regression budget is 20 seconds and less than 256 MiB
-  observed heap growth so slow or unbounded behavior fails loudly while leaving
-  adequate shared-runner margin.
+- The remediated SQLite catalog fixture contains 1,000 Sessions, 100 historical
+  Turns, and 10 pending approvals. Its indexed first-page query remains capped
+  at 250, unique, and deterministic with a 2-second query budget and less than
+  256 MiB observed heap growth. Active Turn/timeline events no longer invalidate
+  page two unless a catalog-visible value changes.
 - The existing frozen Web state tests retain a bounded render window for a
   100,000-item timeline. This checkpoint did not modify or reformat them.
 - Provider output, attachment allocation, WebSocket message rate, outstanding

@@ -20,6 +20,15 @@ After `server.hello`, Core sends:
 
 Live refresh uses the same full-snapshot envelopes. Stale data is carried with `freshness: stale`; it is never silently reused as live authority.
 
+`session.capabilities.snapshot` is Core's authoritative projection for the
+selected Session. It includes the settings revision and observation freshness;
+provider, account, and selected/default-model support with bounded reasons;
+the provider-binding state and `canControl`; support rows for ask/plan/auto,
+text/image attachments, and all four approval policies; and current scoped
+Full Auto lease support. Core republishes it after settings, binding, provider
+inventory, logout/probe-failure, and Connector-loss changes. `unknown` and
+`unsupported` are distinct and neither grants control.
+
 ## Commands
 
 All mutations carry stable `commandId`.
@@ -82,6 +91,12 @@ command acknowledgement; `session.provider.status` then reports `ready`,
 `providerBindingStatus = unbound | pending | ready | failed | outcome_unknown`.
 Web must keep pending controls disabled and must never automatically retry a
 failed or ambiguous provider operation.
+
+`turn.submit` never creates a Session. The Session must already exist with a
+`ready` provider binding whose provider, account, project, model, capabilities,
+and current control authority match fresh inventory. Unknown, legacy-unbound,
+failed, ambiguous, inventory-only, logged-out, and stale Sessions reject before
+a Turn or Connector dispatch is created.
 
 ## Settings and conflicts
 
@@ -185,8 +200,12 @@ attachments per Session/device, and eight attachments per Turn. A rejected
 oversized snapshot or page must render the last authoritative state plus a
 bounded error; it must not clear healthy state or synthesize empty telemetry.
 Inventory refresh and native discovery are independent of Turn control. Web
-must leave Session controls usable when either resource is stale or unavailable
-and disable only the controls whose live capability evidence is required.
+must preserve the last rendered data when either resource is stale or
+unavailable, but it must disable every control whose live capability evidence
+is required. Current Session create/resume, Turn submission, attachment input,
+settings selection, and approval/lease controls all require the corresponding
+fresh supported projection; the UI must never promote retained inventory into
+authority.
 
 ## Frozen-Web integration checklist
 
