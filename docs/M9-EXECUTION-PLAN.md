@@ -31,14 +31,32 @@ and Spec reviews pass. The final local gate passed 185 automated tests and the
 unchanged Real Codex E2E passed with a 71.228-second test body; exact evidence
 is recorded in the remediation report.
 
+## P1 integrated frontend closure
+
+- [x] review the complete rebased Grok frontend range
+- [x] consume `session.capabilities.snapshot` as selected-Session authority
+- [x] fail closed for stale/cross-Session provider, native, settings, lease,
+  attachment, and Catalog evidence
+- [x] verify cursor recovery, filter throttling, per-Turn attachment accounting,
+  metadata CAS controls, and migration/startup guidance
+- [x] pass independent Standards and Spec re-reviews
+- [x] pass compiled-production responsive/accessibility/refresh acceptance
+- [x] pass the combined 203-test local gate and unchanged Real Codex E2E
+
+The rebased frontend range `edb07ee..4b2618b` is integrated on `master` with
+Codex hardening commits `bc53e83` and `d8527d7`. The final enabled provider run
+passed with a 69.899-second test body (70.72-second Vitest duration; 72.221-second
+command wall time). Detailed evidence is in
+`reviews/codex/M9-FRONTEND-INTEGRATION-GATE.md`.
+
 ## Checkpoint rule
 
 Each slice updates this file, implementation status, and the handoff log; runs targeted tests plus the relevant package gate; checks the frozen-file diff; commits; and immediately proceeds. Full `pnpm check` runs at architecture-changing checkpoints and the final gate.
 
 ## Hard boundaries
 
-- No edits to frozen Web visual files or Grok evidence/worktree.
-- No merge/cherry-pick of Grok or Claude branches.
+- Web edits require complete normalized-contract and browser verification.
+- Grok and Claude evidence/worktrees remain read-only after integration.
 - No remote identity/ingress work.
 - No unsupported provider control or invented telemetry.
 - No prompt replay, unrestricted shell, raw project file endpoint, or weakened M8 guarantees.

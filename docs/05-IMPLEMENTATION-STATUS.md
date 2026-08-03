@@ -44,8 +44,9 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Optional post-Prototype phases
 
-- P1 Grok frontend integration — isolated branch complete against the old M9
-  contract; remediation rebase, adaptation, and combined review pending
+- P1 Grok frontend integration — complete on `master`; rebased contract
+  adaptation, Codex authority review, responsive/accessibility acceptance,
+  combined repository gate, and unchanged Real Codex E2E all pass
 - P2 Claude independent correctness/security audit — complete
 - P3 Codex triage of reproducible external feedback — accepted High/security
   findings remediated; retention policy deferred with explicit bounded risk
@@ -67,7 +68,8 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**M9.11 and the accepted Claude backend audit remediation are complete.** The
+**M9.11, the accepted Claude backend audit remediation, and P1 frontend
+integration are complete.** The
 installed account schema is handled nullishly, and only a valid present account
 plus a fresh successful capability probe grants control; no semantics are
 invented for `requiresOpenaiAuth`. Schema 13 fails legacy and unconfigured
@@ -76,10 +78,15 @@ Catalog cursors use catalog-visible revision changes, and Core publishes an
 authoritative per-Session capability projection. Catalog control uses that same
 Session-specific authority, and invalid durable Connector evidence is consumed
 with bounded stable diagnostics. Frozen install, backup-backed 12→13 migration,
-repeat no-op, build, 185 automated tests, compiled production
+repeat no-op, build, 203 automated tests, compiled production
 lifecycle, maintenance/restore, clean-install, diff checks, and the unchanged
-Real Codex E2E all pass. Independent post-fix Standards and Spec reviews pass.
-The Grok branch remains isolated. M8.5,
+Real Codex E2E all pass. The selected-Session capability projection and exact
+Catalog authority now gate the integrated Web; stale evidence, cross-Session
+snapshots, unsupported attachments, and a missing clean-install placeholder
+Session all fail closed. Independent post-integration Standards and Spec
+reviews pass, and compiled-production Playwright acceptance passes from
+375×812 through 2560×1440, at 200% text and reduced motion, with no console
+errors or horizontal overflow. M8.5,
 Google/Cloudflare identity, and a product retention policy remain deferred.
 
 ## Last verified demo
@@ -90,7 +97,9 @@ Google/Cloudflare identity, and a product retention policy remain deferred.
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
 - Database schema: Core schema version 13 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, and bounded terminal evidence; Connector retains strict FIFO journal sequence.
-- Post-audit repository checks: `pnpm check` — strict typecheck, ESLint, production builds, 185 automated tests, compiled production lifecycle, maintenance/restore, clean-install, and private-Serve automation passed; the opt-in real test was separately enabled and passed.
+- Post-integration repository checks: `pnpm check` — strict typecheck, ESLint, production builds, 203 automated tests, compiled production lifecycle, maintenance/restore, clean-install, and private-Serve automation passed; the unchanged opt-in real test was separately enabled and passed.
+- P1 frontend integration: the complete `edb07ee..4b2618b` Grok range was reviewed, fast-forwarded, and hardened in `bc53e83` and `d8527d7`. Web authority is Session-specific and fail-closed; Catalog filters/cursors, native resume, settings, leases, attachments, metadata actions, startup diagnostics, and clean-install replay recovery are wired to normalized contracts. Playwright compiled-production evidence is summarized in `reviews/codex/M9-FRONTEND-INTEGRATION-GATE.md`.
+- Post-integration Real Codex E2E: the unchanged opt-in test passed with a 69.899 s test body (Vitest 70.72 s; wall 72.221 s) on the combined frontend head.
 - Post-audit Real Codex E2E: the unchanged opt-in test passed with a 71.228 s test body (Vitest 72.16 s; wall 76.4 s), covering authoritative Session creation, first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, fresh capability validation, generation-incremented new-process resume, no command replay, normalized-event isolation, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
 - M4 race/fault tests: exactly one of two tabs wins approval CAS; duplicate command IDs replay; expiry/provider loss/runtime restart reject stale decisions; interrupt, UTF-8 batching, inline/large diff thresholds, artifact integrity/auth/range/traversal all pass.

@@ -113,7 +113,7 @@ regression. Two Low maintainability judgments remain (capability projection
 module size and policy scattering); neither has a demonstrated security or
 behavior effect and neither blocks the frontend integration review.
 
-## Frozen Web and Grok handoff
+## Historical frozen Web and Grok handoff (completed below)
 
 The frozen main-worktree visual files remain byte-for-byte equal to the audit
 baseline. The preserved visual checkpoint is commit
@@ -144,8 +144,9 @@ Integration sequence:
 
 ## Known limitations and exclusions
 
-- The Grok frontend integration branch is complete only against the old
-  contracts; its remediation rebase/adaptation and combined review are pending.
+- At this backend-only gate, the Grok frontend branch still targeted the old
+  contracts; its remediation rebase/adaptation and combined review were
+  pending. The integrated follow-up below closes that work.
 - General durable command/event/artifact/approval-audit retention remains a
   bounded Medium policy gap. Defining deletion without retention duration,
   export, replay-floor, legal-hold, and audit-preservation rules would weaken
@@ -153,3 +154,17 @@ Integration sequence:
 - M8.5 second-device acceptance remains operator-deferred.
 - Google identity, Cloudflare, Tailscale redesign, remote identity, non-Codex
   control adapters, and sustained soak testing remain outside M9.
+
+## Integrated frontend follow-up
+
+The backend handoff was subsequently consumed by the rebased Grok frontend
+range `edb07ee..4b2618b`. Codex independently reviewed the complete range,
+integrated it, and closed authority, snapshot-fencing, attachment, Catalog,
+startup-recovery, accessibility, and clean-install replay findings in
+`bc53e83` and `d8527d7`.
+
+The combined gate passes Core schema 13 / Connector schema 3, 203 automated
+tests, all compiled lifecycle and maintenance checks, responsive/accessibility
+Playwright acceptance, and the unchanged Real Codex E2E (69.899-second test
+body). The former frozen-Web handoff steps above are retained as historical
+evidence and are no longer pending. See `M9-FRONTEND-INTEGRATION-GATE.md`.

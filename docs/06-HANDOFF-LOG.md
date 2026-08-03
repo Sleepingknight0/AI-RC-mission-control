@@ -2123,3 +2123,84 @@ cursor recovery, filter throttling, and migration-checksum recovery guidance;
 then rerun Web tests/build, browser accessibility/responsiveness, `pnpm check`,
 and the unchanged Real Codex E2E before the combined range is reviewed or
 merged.
+
+---
+
+### 2026-08-03 23:29 — Codex — M9 frontend integration complete
+
+**Outcome**
+
+- Reviewed the complete rebased Grok range `edb07ee..4b2618b` on both repository
+  Standards and M9 Spec axes before integration. The original range failed both
+  axes on evidence-backed authority and lifecycle gaps; no backend, protocol,
+  or out-of-scope provider code was introduced by the frontend range.
+- Integrated the eight frontend commits and added Codex hardening commits
+  `bc53e83` and `d8527d7`. Existing Session control now requires the exact fresh
+  `session.capabilities.snapshot`, current settings revision, exact Catalog
+  authority, and ready binding. Fleet evidence is never used to fabricate
+  Session control.
+- Fenced native/settings/lease/attachment responses by selected identity,
+  validated nested settings conflicts and attachment MIME, counted attachments
+  per Turn, exposed account/state filters, kept sandbox/network controls disabled
+  without option-level support, and decoupled Core-owned rename/pin/archive from
+  provider control.
+- Classified and surfaced local attachment read/hash failures without sending,
+  documented the safe read-only Catalog retry, made startup migration/checksum
+  recovery guidance reachable, removed non-critical continuous pulses, and
+  restored 44px control targets.
+- Compiled-production browser acceptance found and reproduced one additional
+  clean-install defect: a missing placeholder `session-demo` left the entire Web
+  locked in replay and disabled Session creation. `connectionAfterProtocolError`
+  now releases only that replay lock for the exact missing selected Session;
+  other identities/errors remain fenced. A regression test and real reload
+  acceptance prove the fix.
+- Final independent Standards and Spec re-reviews both pass with no merge
+  blockers. The unchanged Real Codex E2E passes on the combined head.
+
+**Verification**
+
+```text
+pnpm install --frozen-lockfile  PASS
+pnpm migrate                    PASS (Core 13 / Connector 3, no-op)
+pnpm migrate                    PASS (Core 13 / Connector 3, no-op)
+pnpm build                      PASS
+pnpm check                      PASS (203 automated tests)
+git diff --check                PASS
+Real Codex E2E                  PASS (69.899 s body; 70.72 s Vitest; 72.221 s wall)
+Web package                     PASS (29 tests, typecheck, lint, build)
+Playwright compiled production PASS (375×812, 768×1024, 1440×900, 2560×1440,
+                                200% text, reduced motion, 44px buttons,
+                                refresh/replay, focus/Escape, zero console errors)
+```
+
+The 203 tests are Config 13, Protocol 33, Domain 4, Web 29, Connector 50, Core
+59, and Host 15. The fixture package has no tests and exits zero.
+
+**Files changed**
+
+- Integrated frontend: `apps/web/index.html`, `apps/web/src/App.tsx`,
+  `apps/web/src/m9/state.ts`, `apps/web/src/m9/ui.tsx`,
+  `apps/web/src/styles.css`, and `apps/web/test/m9-state.test.ts`
+- Codex regression support: `apps/web/src/state.ts` and
+  `apps/web/test/state.test.ts`
+- M9 status, execution, Web contract, backend follow-up, and final integration
+  evidence documents
+
+**Observable result**
+
+Start compiled production and open its same-origin URL. The Web renders the
+provider fleet and exact Catalog filters, creates/resumes only from fresh
+authority, selects a Session-specific capability projection, recovers stale
+Catalog pages, manages per-Turn attachments, exposes fenced settings and lease
+controls, survives refresh, and never auto-replays a prompt.
+
+**Known limitations / next action**
+
+- General durable retention remains the accepted bounded Medium policy gap;
+  M8.5 second-device acceptance and Google/Cloudflare identity remain deferred.
+- `App.tsx` remains a large orchestration module. Independent review classified
+  decomposition as a non-blocking Low maintainability judgment, not a behavior
+  or security defect.
+- M9 frontend integration is complete. Do not rebase or merge the Grok review
+  branch again; use `master` as the authoritative combined line. Preserve
+  `stash@{0}` and the Grok safety ref for historical recovery only.

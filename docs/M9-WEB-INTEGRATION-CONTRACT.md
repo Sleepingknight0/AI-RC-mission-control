@@ -209,10 +209,17 @@ settings selection, and approval/lease controls all require the corresponding
 fresh supported projection; the UI must never promote retained inventory into
 authority.
 
-## Frozen-Web integration checklist
+## Integrated Web result
 
-After the freeze is removed, Grok/Codex integration must add reducer coverage for all new snapshots/commands, preserve unknown-envelope tolerance, wire real controls without hardcoded provider/model lists, keep per-Session drafts, and run Web typecheck/tests/build plus responsive/accessibility acceptance. No visual file changes are required for the non-visual backend checkpoints.
+The integrated Web has reducer coverage for the M9 snapshots and command
+results, preserves unknown-envelope tolerance, wires controls without hardcoded
+provider/model authority, keeps per-Session drafts, and has passed Web
+typecheck/tests/build plus responsive/accessibility acceptance. Unsupported or
+missing Session capability rows remain disabled; in particular, sandbox and
+network values are visible but not selectable until an authoritative projection
+describes option-level support.
 
-The integration target is the isolated Grok checkpoint. It must consume these
-authoritative envelopes without hardcoded provider, account, model, policy, or
-attachment data.
+Provider fleet data remains inventory/create-choice evidence. Existing Session
+control uses the exact Catalog row plus the selected Session's fresh
+`session.capabilities.snapshot`; it never promotes fleet support into Session
+authority.
