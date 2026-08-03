@@ -156,7 +156,9 @@ export async function probeCodexCapabilities(
   } while (cursor !== null);
 
   return {
-    authenticated: account.account !== null && !account.requiresOpenaiAuth,
+    // `requiresOpenaiAuth` describes the configured authentication mode. A
+    // non-null account is the installed app-server's current login evidence.
+    authenticated: account.account !== null,
     models,
     modelsTruncated,
   };

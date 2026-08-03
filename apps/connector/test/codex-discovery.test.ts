@@ -9,6 +9,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CodexProvider } from "../src/codex/adapter.js";
+import { probeCodexCapabilities } from "../src/codex/discovery.js";
 
 const providers: CodexProvider[] = [];
 const fakeCommand = resolve("test/fake-codex-app-server.mjs");
@@ -79,6 +80,29 @@ function fleet() {
 }
 
 describe("Codex discovery", () => {
+  it("treats a present account as authenticated when OpenAI auth is required", async () => {
+    const probe = await probeCodexCapabilities({
+      async request(method) {
+        if (method === "account/read") {
+          return {
+            account: {
+              type: "chatgpt",
+              email: null,
+              planType: "plus",
+            },
+            requiresOpenaiAuth: true,
+          };
+        }
+        if (method === "model/list") {
+          return { data: [], nextCursor: null };
+        }
+        throw new Error(`Unexpected provider method: ${method}`);
+      },
+    });
+
+    expect(probe.authenticated).toBe(true);
+  });
+
   it("probes account and models without exposing account identity", async () => {
     const snapshot = await adapter().enrichProviderFleet(fleet(), "default");
     const codex = snapshot.providers[0];

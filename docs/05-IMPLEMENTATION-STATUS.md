@@ -61,17 +61,17 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M9.8 managed attachment lifecycle and security
 - [x] M9.9 normalized terminal/activity metadata
 - [x] M9.10 security, recovery, fault, and performance gate
-- [ ] M9.11 non-visual final gate and Grok integration handoff — externally
-  blocked by the active Codex workspace credit limit; all local gates pass
+- [x] M9.11 non-visual final gate and Grok integration handoff
 
 ## Current milestone
 
-**M9.11 is externally blocked.** Frozen install, repeated schema 11/3 migration,
-build, 172 automated tests, compiled production lifecycle, maintenance/restore,
-clean-install, and diff checks pass. Exact-head Real Codex reaches a normalized
-provider failure before first token; a direct app-server spike independently
-reports `usageLimitExceeded` because the workspace is out of credits. Restore
-credits and rerun the opt-in test; do not treat it as passed or skipped. The Grok
+**M9.11 is complete.** The new Codex account passed the unchanged Real Codex E2E
+in 70.50 seconds after a measured account-probe incompatibility was fixed with
+regression coverage: installed app-server can return a non-null authenticated
+ChatGPT account with `requiresOpenaiAuth: true`, because that flag describes the
+configured authentication mode rather than missing login state. Frozen install,
+repeated schema 11/3 migration, build, 173 automated tests, compiled production
+lifecycle, maintenance/restore, clean-install, and diff checks pass. The Grok
 visual checkpoint remains isolated and frozen. M8.5 and Google/Cloudflare
 identity remain deferred outside M9.
 
@@ -83,8 +83,8 @@ identity remain deferred outside M9.
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
 - Database schema: Core schema version 11 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, and bounded terminal evidence; Connector retains strict FIFO journal sequence.
-- Repository checks: `pnpm check` — strict typecheck, 66 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
-- Real Codex E2E: opt-in test passed in 66.70 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, new-process resume, no command replay, and deterministic provider teardown.
+- M9.11 repository checks: `pnpm check` — strict typecheck, ESLint, production builds, 173 automated tests, compiled production lifecycle, maintenance/restore, clean-install, and private-Serve automation passed; the opt-in real test was separately enabled and passed.
+- M9.11 Real Codex E2E: the unchanged opt-in test passed in 70.50 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, generation-incremented new-process resume, no command replay, normalized-event isolation, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
 - M4 race/fault tests: exactly one of two tabs wins approval CAS; duplicate command IDs replay; expiry/provider loss/runtime restart reject stale decisions; interrupt, UTF-8 batching, inline/large diff thresholds, artifact integrity/auth/range/traversal all pass.
 - Mobile approval demo: Playwright at 390×844 used real Codex command approvals. Approve-once created only `output/playwright/provider-approval-proof.txt`; decline produced activity state `declined` and did not create its target file.

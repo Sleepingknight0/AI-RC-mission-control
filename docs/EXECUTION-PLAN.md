@@ -15,7 +15,7 @@ complete. Google identity plus
 Cloudflare is planned as separate, unresolved remote-access work and is not
 part of M8.6.
 
-M9 is now the active post-M8 phase. Codex owns the non-visual Domain, protocol,
+M9 is complete. Codex owns the non-visual Domain, protocol,
 Core, Connector, provider, database, policy, attachment, security, and final
 integration work. The Web visual layer is frozen at Grok commit `c2f1d481` and
 will consume `docs/M9-WEB-INTEGRATION-CONTRACT.md` only during a later authorized
@@ -43,7 +43,7 @@ integration pass.
 - M8.5 private Tailscale Serve second-device acceptance — **deferred; not complete**
 - M8.6 backup/restore and clean-install gate — **done**
 - M9.0 architecture, Web contract, and exact-head baseline — **done**
-- M9.1–M9.11 Remote AI Workspace non-visual implementation — **active**
+- M9.1–M9.11 Remote AI Workspace non-visual implementation — **done**
 
 ## Non-goals
 
@@ -72,7 +72,8 @@ integration pass.
 - Connector owns a separate inbox/outbox journal under the same configured data
   directory, never the Core database file
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
-- Core schema v5 projects tool activities, file changes, approvals, artifacts,
+- Core schema v11 projects tool activities, file changes, approvals, artifacts,
+  Catalog/settings/provider bindings, attachments, terminal evidence,
   cross-type display sequence, guarded transitions, and terminal work settlement
 - Connector schema v3 batches ephemeral UTF-8 command output, journals
   large-diff chunks in FIFO order, and reports durable command receipts
@@ -114,16 +115,17 @@ integration pass.
   drawer; large timelines use bounded DOM windowing after 200 items
 - Grok and Claude launchers remain optional post-prototype tools only
 - M9 architecture and exact-head evidence are recorded under `docs/M9-*.md`
-  and `reviews/codex/M9-BASELINE.md`; provider capability implementation is the
-  first incomplete slice.
+  and `reviews/codex/M9-BACKEND-FINAL-GATE.md`; the next authorized slice is
+  Grok frontend integration against the stable M9 contract.
 
-## M9 active extension
+## M9 completed extension
 
 Follow `docs/M9-EXECUTION-PLAN.md` as the detailed loop authority. Preserve M8
 envelopes while adding provider fleet, Catalog V2, settings, policy/lease,
 attachment, and terminal contracts. Each vertical slice includes tests,
 status/handoff updates, a frozen-Web diff review, and a clean commit before the
-next slice begins.
+next slice begins. M9.11 passed the unchanged Real Codex E2E in 70.50 seconds
+and the final repository gate with 173 automated tests at Core 11 / Connector 3.
 
 ## Implementation sequence
 
@@ -181,6 +183,13 @@ next slice begins.
 - [x] Add offline staged restore with recovery preservation and rollback (M8.6)
 - [x] Add pre-migration backup, migration checksums, and idempotence gates (M8.6)
 - [x] Pass empty install, restart, corrupt-backup, and source-free clean-directory gates (M8.6)
+- [x] Define M9 architecture, capability, Catalog, settings, policy, attachment,
+  terminal, and frozen-Web integration contracts (M9.0)
+- [x] Implement provider inventory, Catalog V2, Codex discovery/create/resume,
+  settings, execution modes, approval leases, attachments, and terminal evidence
+  with migrations and regression coverage (M9.1–M9.9)
+- [x] Pass M9 security/recovery/performance and non-visual final gates, including
+  the unchanged Real Codex lifecycle on the new account (M9.10–M9.11)
 
 ## M7.1 completed verification
 
@@ -200,7 +209,7 @@ durable display sequence, safe artifact media types, decoded semantic limits,
 and role-specific WebSocket capability helpers. Durable event envelopes carry
 Session-local sequence; assistant/command deltas remain ephemeral. Generated
 Codex types, raw events, and raw provider request IDs stay under the adapter
-boundary. Core SQLite schema is v5 and Connector schema is v3; both migrations
+boundary. Core SQLite schema is v11 and Connector schema is v3; both migrations
 remain idempotent and checksum-bound.
 
 ## Tests and fault scenarios

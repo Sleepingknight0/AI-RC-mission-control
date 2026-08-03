@@ -19,8 +19,11 @@
 - [x] M9.8 managed attachment lifecycle and Codex translation
 - [x] M9.9 bounded terminal/activity contract
 - [x] M9.10 security, recovery, fault, and performance gate
-- [ ] M9.11 non-visual final gate and Grok handoff — externally blocked by the
-  active Codex workspace credit limit; all local gates pass
+- [x] M9.11 non-visual final gate and Grok handoff
+
+M9.11 passed the unchanged Real Codex E2E in 70.50 seconds after correcting the
+installed account-probe interpretation with regression coverage. The final
+local gate passed 173 automated tests at Core schema 11 / Connector schema 3.
 
 ## Checkpoint rule
 

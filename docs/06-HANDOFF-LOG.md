@@ -1890,3 +1890,84 @@ git diff --check / frozen Web diff          -> passed / no changes
 Restore workspace credits, rerun the exact-head opt-in test, and record its
 actual result. Only after it passes should Grok rebase `grok/spacex-ui` onto the
 final `master` and implement the frozen Web integration contract.
+
+---
+
+### 2026-08-03 18:44 — Codex — M9.11 complete
+
+**Outcome**
+
+- Verified clean `master` at `01db53a`, the preserved stash, clean auxiliary
+  worktrees, and the selected new account path without reading credentials.
+- The unchanged Real Codex test initially failed safely with normalized
+  `PROVIDER_REJECTED`. A direct read-only Codex turn and direct app-server Turn
+  both succeeded, falsifying quota, login, launch, and base-provider failures.
+- Isolated an account-capability regression: installed `account/read` returned
+  a present authenticated ChatGPT account with `requiresOpenaiAuth: true`, but
+  AICL incorrectly treated the mode flag as missing-login state.
+- Added a red-before-fix regression and changed authentication observation to
+  the installed schema's nullable account presence. No assertion, provider
+  safety boundary, or normalized protocol contract was weakened.
+- The unchanged Real Codex E2E then passed in 70.499 seconds and the complete
+  final gate passed. M9.0–M9.11 are complete; the frozen Web remains untouched.
+
+**Files changed**
+
+- `apps/connector/src/codex/discovery.ts`
+- `apps/connector/test/codex-discovery.test.ts`
+- `reviews/codex/M9-BACKEND-FINAL-GATE.md`
+- `docs/05-IMPLEMENTATION-STATUS.md`
+- `docs/06-HANDOFF-LOG.md`
+- `docs/M9-EXECUTION-PLAN.md`
+- `docs/EXECUTION-PLAN.md`
+
+**Verification**
+
+```text
+codex.cmd login status
+  logged in using ChatGPT under the selected new CODEX_HOME
+
+unchanged Real Codex E2E before diagnosis
+  failed safely: turn.failed:PROVIDER_REJECTED
+
+minimal codex exec / direct AICL app-server probes
+  passed; quota/auth/launch/provider request path available
+
+codex-discovery.test.ts before fix
+  1 failed, 3 passed (new account-mode assertion red)
+
+codex-discovery.test.ts after fix
+  4 passed
+
+explicit AICL_REAL_CODEX=1
+  1 passed; test body 70.499 s; Vitest 71.49 s; wall 73.270 s
+
+pnpm install --frozen-lockfile
+  passed; lockfile unchanged
+pnpm migrate; pnpm migrate
+  Core 11 / Connector 3; migrated=false twice
+pnpm build
+  passed
+pnpm check
+  173 automated tests passed; 1 opt-in test skipped in the ordinary suite;
+  compiled lifecycle, maintenance/restore, clean install, Serve smoke passed
+git diff --check
+  passed
+```
+
+**Observable result**
+
+The real browser/Core/Connector/Codex lifecycle now streams and completes a
+Turn, rejects concurrent submission, interrupts a live Turn, classifies a
+killed provider as `outcome_unknown`, rejects the lost Runtime, resumes through
+a new Runtime generation without replay, and exposes no raw provider events.
+
+**Known limitations / next action**
+
+- M8.5 second-device acceptance and Google/Cloudflare identity remain deferred.
+- The clean Grok worktree is at `a1623ba`. Its `2736805` visual commit is
+  patch-identical and byte-identical on the frozen paths to checkpoint
+  `c2f1d48`, followed by three isolated M9 frontend commits. Rebase that current
+  branch onto final `master`; do not cherry-pick the checkpoint again or apply
+  `stash@{0}`. Audit `docs/M9-WEB-INTEGRATION-CONTRACT.md` coverage and run full
+  Web/browser/final-gate verification before merge.
