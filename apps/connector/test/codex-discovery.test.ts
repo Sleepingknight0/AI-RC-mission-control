@@ -9,7 +9,10 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CodexProvider } from "../src/codex/adapter.js";
-import { probeCodexCapabilities } from "../src/codex/discovery.js";
+import {
+  discoverCodexNativeSessions,
+  probeCodexCapabilities,
+} from "../src/codex/discovery.js";
 
 const providers: CodexProvider[] = [];
 const fakeCommand = resolve("test/fake-codex-app-server.mjs");
@@ -80,6 +83,31 @@ function fleet() {
 }
 
 describe("Codex discovery", () => {
+  it("treats nullish accounts as logged out and rejects malformed accounts", async () => {
+    const request = (account: unknown) => ({
+      async request(method: string) {
+        if (method === "account/read") return account;
+        if (method === "model/list") return { data: [], nextCursor: null };
+        throw new Error(`Unexpected provider method: ${method}`);
+      },
+    });
+
+    await expect(
+      probeCodexCapabilities(request({ account: null, requiresOpenaiAuth: true })),
+    ).resolves.toMatchObject({ authenticated: false });
+    await expect(
+      probeCodexCapabilities(request({ requiresOpenaiAuth: true })),
+    ).resolves.toMatchObject({ authenticated: false });
+    await expect(
+      probeCodexCapabilities(
+        request({
+          account: { type: "unknown" },
+          requiresOpenaiAuth: true,
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+
   it("treats a present account as authenticated when OpenAI auth is required", async () => {
     const probe = await probeCodexCapabilities({
       async request(method) {
@@ -120,6 +148,52 @@ describe("Codex discovery", () => {
     expect(JSON.stringify(snapshot)).not.toContain("example.invalid");
   });
 
+  it("removes optimistic control authority when the live probe fails", async () => {
+    const snapshot = fleet();
+    const codex = snapshot.providers[0]!;
+    const optimistic = ProviderFleetSnapshotSchema.parse({
+      ...snapshot,
+      providers: [
+        {
+          ...codex,
+          authentication: "authenticated",
+          adapterSupport: "remote_control",
+          capabilities: codex.capabilities.map((capability) =>
+            capability.key === "remote_control"
+              ? { ...capability, state: "supported" }
+              : capability,
+          ),
+          accounts: codex.accounts.map((account) => ({
+            ...account,
+            authentication: "authenticated",
+            control: "remote_control",
+          })),
+        },
+      ],
+    });
+    const unavailable = new CodexProvider({
+      cwd: process.cwd(),
+      command: resolve("test/does-not-exist-codex.mjs"),
+      timeoutMs: 100,
+    });
+    providers.push(unavailable);
+
+    const result = await unavailable.enrichProviderFleet(optimistic, "default");
+    expect(result.degraded).toBe(true);
+    expect(result.providers[0]).toMatchObject({
+      authentication: "unknown",
+      adapterSupport: "inventory_only",
+      freshness: "local",
+      accounts: [
+        {
+          accountId: "default",
+          authentication: "unknown",
+          control: "inventory_only",
+        },
+      ],
+    });
+  });
+
   it("discovers active and archived native Sessions within allowed roots", async () => {
     const snapshot = await adapter().discoverNativeSessions({
       accountId: "default",
@@ -140,6 +214,42 @@ describe("Codex discovery", () => {
       canResume: true,
     });
     expect(JSON.stringify(snapshot)).not.toContain("rollout");
+  });
+
+  it("does not offer a provider-native Session that is already active", async () => {
+    const snapshot = await discoverCodexNativeSessions(
+      {
+        async request(method) {
+          if (method !== "thread/list") throw new Error("Unexpected method");
+          return {
+            data: [
+              {
+                id: "native-active",
+                name: "Externally active",
+                preview: "busy",
+                cwd: process.cwd(),
+                createdAt: 1_700_000_000,
+                updatedAt: 1_700_000_100,
+                status: { type: "active" },
+              },
+            ],
+            nextCursor: null,
+          };
+        },
+      },
+      {
+        providerId: "codex",
+        accountId: "default",
+        allowedRoots: [process.cwd()],
+        revision: 1,
+      },
+    );
+
+    expect(snapshot.sessions).toHaveLength(1);
+    expect(snapshot.sessions[0]).toMatchObject({
+      providerStatus: "active",
+      canResume: false,
+    });
   });
 
   it("creates and resumes explicit provider Sessions with verified selections", async () => {

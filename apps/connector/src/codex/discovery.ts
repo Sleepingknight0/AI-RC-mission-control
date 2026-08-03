@@ -51,7 +51,7 @@ const AccountReadResponseSchema = z
           .passthrough(),
         z.object({ type: z.literal("amazonBedrock") }).passthrough(),
       ])
-      .nullable(),
+      .nullish(),
     requiresOpenaiAuth: z.boolean(),
   })
   .passthrough();
@@ -156,9 +156,10 @@ export async function probeCodexCapabilities(
   } while (cursor !== null);
 
   return {
-    // `requiresOpenaiAuth` describes the configured authentication mode. A
-    // non-null account is the installed app-server's current login evidence.
-    authenticated: account.account !== null,
+    // Installed Codex 0.146.0 returns a present account together with
+    // `requiresOpenaiAuth: true` for a logged-in ChatGPT profile. The flag is
+    // therefore not missing-login evidence; account presence is.
+    authenticated: account.account !== null && account.account !== undefined,
     models,
     modelsTruncated,
   };
@@ -314,7 +315,8 @@ function normalizeThread(
       updatedAt,
       pinned: raw.isPinned ?? false,
       archived,
-      canResume: raw.status.type !== "systemError",
+      canResume:
+        raw.status.type === "idle" || raw.status.type === "notLoaded",
     });
   } catch {
     return null;

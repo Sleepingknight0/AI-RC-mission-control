@@ -38,6 +38,7 @@ function startCommand(
   prompt: string,
   providerSessionId: string | null = null,
   executionMode?: "ask" | "plan" | "auto",
+  projectPath: string | null = process.cwd(),
 ): TurnStartCommand {
   return CoreToConnectorEnvelopeSchema.parse(
     makeEnvelope("connector.turn.start", {
@@ -61,7 +62,7 @@ function startCommand(
               approvalPolicy: "review",
               sandboxPolicy: "workspace_write",
               networkPolicy: "restricted",
-              projectPath: process.cwd(),
+              projectPath,
               branch: "main",
             },
           }),
@@ -142,6 +143,19 @@ describe("Codex adapter normalization", () => {
     expect(completed?.payload.content).toContain(
       "on-request|workspaceWrite|false",
     );
+  });
+
+  it("fails a workspace-write request closed when no canonical project is bound", async () => {
+    const events: ConnectorEnvelope[] = [];
+    await provider().startTurn(
+      startCommand("report-settings", "fake-thread", "ask", null),
+      (event) => events.push(event),
+    );
+    const completed = events.find(
+      (event) => event.type === "connector.turn.message.completed",
+    );
+
+    expect(completed?.payload.content).toContain("on-request|readOnly|false");
   });
 
   it("normalizes an interrupt terminal state", async () => {

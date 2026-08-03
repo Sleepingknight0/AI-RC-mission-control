@@ -181,6 +181,7 @@ interface ActiveTurn {
   emit: ConnectorEmit;
   providerSessionId: string;
   providerTurnId: string | null;
+  effectiveProjectPath: string | undefined;
   streamSeq: number;
   contentByMessage: Map<string, string>;
   completedMessages: Set<string>;
@@ -390,10 +391,54 @@ export class CodexProvider implements ConnectorProvider {
         freshness: "live",
       });
     } catch {
+      const observedAt = new Date().toISOString();
       const providers = [...snapshot.providers];
       providers[providerIndex] = {
         ...provider,
+        authentication: "unknown",
+        adapterSupport: "inventory_only",
         freshness: "local",
+        observedAt,
+        capabilities: provider.capabilities.map((capability) =>
+          capability.key === "network_policies"
+            ? {
+                ...capability,
+                state: "unsupported" as const,
+                provenance: "adapter_manifest" as const,
+                observedAt,
+                reason: "Network policy translation is not implemented",
+              }
+            : capability.key === "remote_control" ||
+                capability.key === "list_sessions" ||
+                capability.key === "create_session" ||
+                capability.key === "resume_session" ||
+                capability.key === "text_input" ||
+                capability.key === "execution_modes" ||
+                capability.key === "approval_policies" ||
+                capability.key === "sandbox_policies" ||
+                capability.key === "image_input" ||
+                capability.key === "change_model" ||
+                capability.key === "reasoning_levels"
+              ? {
+                  ...capability,
+                  state: "unknown" as const,
+                  provenance: "provider_probe" as const,
+                  observedAt,
+                  reason: "Live Codex capability probe is unavailable",
+                }
+              : capability,
+        ),
+        accounts: provider.accounts.map((account, index) =>
+          index === accountIndex
+            ? {
+                ...account,
+                authentication: "unknown" as const,
+                control: "inventory_only" as const,
+                observedAt,
+                notice: "Live Codex account probe is unavailable",
+              }
+            : account,
+        ),
         models: [],
         modelsState: "error",
         notice: "Codex capability probe failed or timed out",
@@ -523,6 +568,7 @@ export class CodexProvider implements ConnectorProvider {
       emit,
       providerSessionId,
       providerTurnId: null,
+      effectiveProjectPath,
       streamSeq: 0,
       contentByMessage: new Map(),
       completedMessages: new Set(),
@@ -1147,9 +1193,9 @@ export class CodexProvider implements ConnectorProvider {
     const reason = parsed.params.reason ?? null;
     if (isCommand && parsed.params.cwd !== null && parsed.params.cwd !== undefined) {
       try {
-        const projectPath =
-          active.command.payload.effectiveSettings?.projectPath ?? this.#options.cwd;
-        canonicalProjectRoot(parsed.params.cwd, [projectPath]);
+        canonicalProjectRoot(parsed.params.cwd, [
+          active.effectiveProjectPath ?? this.#options.cwd,
+        ]);
       } catch {
         rpc.respond(parsed.id, { decision: "decline" });
         return true;
@@ -1338,8 +1384,8 @@ function updateCodexCapabilities(
   );
   evidence(
     "network_policies",
-    "unknown",
-    "Network policy translation has not been verified",
+    "unsupported",
+    "Network policy translation is not implemented",
   );
   return current.map((capability) => updates.get(capability.key) ?? capability);
 }
@@ -1362,10 +1408,13 @@ function codexSandboxPolicy(
   if (policy === "read_only") {
     return { type: "readOnly" as const, networkAccess: false };
   }
+  if (projectPath === undefined) {
+    return { type: "readOnly" as const, networkAccess: false };
+  }
   return {
     type: "workspaceWrite" as const,
     networkAccess: false,
-    writableRoots: projectPath === undefined ? [] : [projectPath],
+    writableRoots: [projectPath],
     excludeSlashTmp: true,
     excludeTmpdirEnvVar: true,
   };
