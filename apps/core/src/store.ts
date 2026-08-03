@@ -28,7 +28,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-const CORE_SCHEMA_VERSION = 4;
+export const CORE_SCHEMA_VERSION = 5;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -1696,7 +1696,8 @@ export class CoreDatabase {
        ) STRICT`,
     );
     if (!existsSync(directory)) throw new Error(`Migration directory missing: ${directory}`);
-    for (const name of readdirSync(directory).filter((file) => file.endsWith(".sql")).sort()) {
+    const names = readdirSync(directory).filter((file) => file.endsWith(".sql")).sort();
+    for (const name of names) {
       const version = Number.parseInt(name.split("_")[0] ?? "", 10);
       if (!Number.isSafeInteger(version)) throw new Error(`Invalid migration name: ${name}`);
       const applied = this.#database
@@ -1717,6 +1718,41 @@ export class CoreDatabase {
         `Core database schema ${this.schemaVersion} does not match ${CORE_SCHEMA_VERSION}.`,
       );
     }
+    this.#verifyMigrationChecksums(directory, names);
+  }
+
+  #verifyMigrationChecksums(directory: string, names: readonly string[]) {
+    const columns = this.#database
+      .prepare("PRAGMA table_info(schema_migrations)")
+      .all() as unknown as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "checksum")) {
+      throw new Error("Core schema_migrations checksum column is missing.");
+    }
+    const missing: Array<{ version: number; checksum: string }> = [];
+    for (const name of names) {
+      const version = Number.parseInt(name.split("_")[0] ?? "", 10);
+      const checksum = createHash("sha256")
+        .update(readFileSync(join(directory, name)))
+        .digest("hex");
+      const applied = this.#database
+        .prepare("SELECT name, checksum FROM schema_migrations WHERE version = ?")
+        .get(version) as { name: string; checksum: string | null } | undefined;
+      if (applied === undefined || applied.name !== name) {
+        throw new Error(`Core migration ledger mismatch at version ${version}.`);
+      }
+      if (applied.checksum === null) {
+        missing.push({ version, checksum });
+      } else if (applied.checksum !== checksum) {
+        throw new Error(`Core migration checksum mismatch: ${name}`);
+      }
+    }
+    if (missing.length === 0) return;
+    this.#transaction(() => {
+      const update = this.#database.prepare(
+        "UPDATE schema_migrations SET checksum = ? WHERE version = ? AND checksum IS NULL",
+      );
+      for (const item of missing) update.run(item.checksum, item.version);
+    });
   }
 
   #write<T>(operation: () => T): Promise<T> {
