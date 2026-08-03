@@ -80,9 +80,7 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     await waitFor(browser, "command.rejected", (message) =>
       message.payload.error.code === "TURN_ALREADY_ACTIVE",
     );
-    await waitFor(browser, "assistant.message.delta", (message) =>
-      message.payload.turnId === accepted.payload.turnId,
-    );
+    await waitForTurnDelta(browser, accepted.payload.turnId);
     const completedMessage = await waitFor(
       browser,
       "assistant.message.completed",
@@ -107,9 +105,7 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
       "command.accepted",
       (message) => message.payload.commandId === "real-interrupt-turn",
     );
-    await waitFor(browser, "assistant.message.delta", (message) =>
-      message.payload.turnId === interruptTurn.payload.turnId,
-    );
+    await waitForTurnDelta(browser, interruptTurn.payload.turnId);
     send(
       browser,
       makeEnvelope("turn.interrupt", {
@@ -134,9 +130,7 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     const killTurn = await waitFor(browser, "command.accepted", (message) =>
       message.payload.commandId === "real-kill-turn",
     );
-    await waitFor(browser, "assistant.message.delta", (message) =>
-      message.payload.turnId === killTurn.payload.turnId,
-    );
+    await waitForTurnDelta(browser, killTurn.payload.turnId);
     await provider.killForTest();
     await waitFor(browser, "turn.outcome_unknown", (message) =>
       message.payload.turnId === killTurn.payload.turnId,
@@ -215,6 +209,39 @@ interface BrowserHarness {
   messages: ServerEnvelope[];
 }
 
+async function waitForTurnDelta(
+  browser: BrowserHarness,
+  turnId: string,
+  timeoutMs = 90_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const delta = browser.messages.find(
+      (message) =>
+        message.type === "assistant.message.delta" &&
+        message.payload.turnId === turnId,
+    );
+    if (delta?.type === "assistant.message.delta") return delta;
+    const terminal = browser.messages.find(
+      (message) =>
+        (message.type === "turn.completed" ||
+          message.type === "turn.failed" ||
+          message.type === "turn.outcome_unknown" ||
+          message.type === "turn.interrupted") &&
+        message.payload.turnId === turnId,
+    );
+    if (terminal !== undefined) {
+      const failureCode =
+        terminal.type === "turn.failed" ? `:${terminal.payload.failureCode}` : "";
+      throw new Error(
+        `Real Codex Turn ended before first delta: ${terminal.type}${failureCode}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for first delta for Turn ${turnId}`);
+}
+
 async function openBrowser(url: string, token: string): Promise<BrowserHarness> {
   const socket = new WebSocket(url, websocketCapability("browser", token), {
     origin: "http://127.0.0.1:5173",
@@ -252,7 +279,31 @@ async function waitFor<T extends ServerEnvelope["type"]>(
     if (found !== undefined) return found;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("Timed out waiting for real Codex event");
+  const breadcrumbs = browser.messages
+    .slice(-24)
+    .map((message) => {
+      if (message.type === "command.rejected") {
+        return `${message.type}:${message.payload.error.code}`;
+      }
+      if (message.type === "runtime.status") {
+        return `${message.type}:${message.payload.runtime.status}`;
+      }
+      if (
+        message.type === "turn.completed" ||
+        message.type === "turn.interrupted" ||
+        message.type === "turn.outcome_unknown"
+      ) {
+        return `${message.type}:${message.payload.turnId}`;
+      }
+      if (message.type === "turn.failed") {
+        return `${message.type}:${message.payload.failureCode}:${message.payload.turnId}`;
+      }
+      return message.type;
+    })
+    .join(", ");
+  throw new Error(
+    `Timed out waiting for real Codex event ${type}; recent events: ${breadcrumbs}`,
+  );
 }
 
 function temporaryDirectory() {

@@ -1851,3 +1851,42 @@ git diff --check / frozen Web diff      -> passed / no changes
 M9.11 runs the exact-head frozen install, repeated migration, build, complete
 repository/production gate, opt-in real Codex acceptance, and writes the final
 non-visual backend/Grok integration handoff.
+
+---
+
+### 2026-08-03 14:08 — Codex — M9.11 local pass, Real Codex externally blocked
+
+**Outcome**
+
+- Frozen install, two no-op migrations at Core 11/Connector 3, build, full
+  repository checks, compiled lifecycle, maintenance/restore, clean install,
+  and diff checks all pass at the M9 implementation checkpoint.
+- The explicit Real Codex test reproducibly received `turn.failed` before a
+  first delta. A direct app-server spike outside AICL reproduced the provider
+  failure and identified `usageLimitExceeded`: the active workspace is out of
+  credits. No code, credential, or assertion workaround was applied.
+- Improved the opt-in harness to fail immediately on an authoritative terminal
+  event before first delta and to report only normalized safe breadcrumbs.
+- Wrote `reviews/codex/M9-BACKEND-FINAL-GATE.md` with the exact local results,
+  external blocker, exclusions, and clean Grok integration sequence.
+- Frozen Web sources, Grok worktree/branch/commit, `stash@{0}`, and evidence
+  directories remain unchanged.
+
+**Verification**
+
+```text
+pnpm install --frozen-lockfile             -> passed
+pnpm migrate; pnpm migrate                 -> 11/3, no-op twice
+pnpm build                                 -> passed
+pnpm check                                 -> 172 passed, 1 opt-in skipped
+explicit AICL_REAL_CODEX=1                 -> failed: PROVIDER_REJECTED
+independent app-server diagnostic           -> usageLimitExceeded / no credits
+production status after gate                -> stopped cleanly
+git diff --check / frozen Web diff          -> passed / no changes
+```
+
+**Next**
+
+Restore workspace credits, rerun the exact-head opt-in test, and record its
+actual result. Only after it passes should Grok rebase `grok/spacex-ui` onto the
+final `master` and implement the frozen Web integration contract.

@@ -19,7 +19,8 @@
 - [x] M9.8 managed attachment lifecycle and Codex translation
 - [x] M9.9 bounded terminal/activity contract
 - [x] M9.10 security, recovery, fault, and performance gate
-- [ ] M9.11 non-visual final gate and Grok handoff
+- [ ] M9.11 non-visual final gate and Grok handoff — externally blocked by the
+  active Codex workspace credit limit; all local gates pass
 
 ## Checkpoint rule
 

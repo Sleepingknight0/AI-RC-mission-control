@@ -61,16 +61,19 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M9.8 managed attachment lifecycle and security
 - [x] M9.9 normalized terminal/activity metadata
 - [x] M9.10 security, recovery, fault, and performance gate
-- [ ] M9.11 non-visual final gate and Grok integration handoff
+- [ ] M9.11 non-visual final gate and Grok integration handoff — externally
+  blocked by the active Codex workspace credit limit; all local gates pass
 
 ## Current milestone
 
-**M9.11 non-visual final gate and Grok integration handoff.** M9.10 now covers
-hostile browser/Connector inputs, tickets, provider faults and bounds, Session
-CAS and catalog scale, approval downgrade/lease races, attachment scope and
-integrity, restart/no-replay recovery, redaction, bounded logs, 15 providers,
-and 1,000 Sessions. The Grok visual checkpoint remains isolated and frozen.
-M8.5 and Google/Cloudflare identity remain deferred outside M9.
+**M9.11 is externally blocked.** Frozen install, repeated schema 11/3 migration,
+build, 172 automated tests, compiled production lifecycle, maintenance/restore,
+clean-install, and diff checks pass. Exact-head Real Codex reaches a normalized
+provider failure before first token; a direct app-server spike independently
+reports `usageLimitExceeded` because the workspace is out of credits. Restore
+credits and rerun the opt-in test; do not treat it as passed or skipped. The Grok
+visual checkpoint remains isolated and frozen. M8.5 and Google/Cloudflare
+identity remain deferred outside M9.
 
 ## Last verified demo
 
