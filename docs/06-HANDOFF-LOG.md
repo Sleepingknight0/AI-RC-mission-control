@@ -1465,3 +1465,30 @@ git diff --check               -> pass before documentation changes
 
 M9.1 adds the normalized provider/account/capability schemas and tests without
 editing the frozen Web visual files.
+
+---
+
+### 2026-08-03 10:51 — Codex — M9.1 provider capability model
+
+**Outcome**
+
+- Added strict normalized provider, account, capability-evidence, model,
+  reasoning, usage, compatibility, authentication, and freshness schemas.
+- Kept `unknown`, `unsupported`, and unavailable measured state distinct; usage
+  values cannot exist without available evidence.
+- Added fail-closed Domain selection for provider/account/model/reasoning/input
+  combinations. Stale or inventory-only providers cannot be selected.
+- Added count, duplicate-ID, control-character, unknown-field, raw-path, and
+  fabricated-usage regression coverage.
+
+**Verification**
+
+```text
+pnpm --filter @aicl/protocol check -> 16 passed; typecheck/lint pass
+pnpm --filter @aicl/domain check   -> 4 passed; typecheck/lint pass
+```
+
+**Next**
+
+M9.2 reads the terminal registry in Connector, publishes bounded snapshots,
+and preserves the latest authoritative snapshot in Core for browser bootstrap.

@@ -4,6 +4,8 @@ import type {
   Turn,
 } from "@aicl/protocol";
 
+export * from "./provider-capabilities.js";
+
 export interface SessionState {
   sessionId: string;
   revision: number;

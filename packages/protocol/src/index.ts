@@ -93,6 +93,288 @@ const durableEventIdentity = {
   seq: z.number().int().positive(),
 };
 
+export const MAX_PROVIDER_INVENTORY = 64;
+export const MAX_PROVIDER_ACCOUNTS = 32;
+export const MAX_PROVIDER_MODELS = 128;
+export const MAX_PROVIDER_REASONING_OPTIONS = 16;
+export const MAX_PROVIDER_USAGE_METERS = 8;
+
+const providerSlug = z
+  .string()
+  .min(1)
+  .max(96)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
+const displayText = (maxLength: number) =>
+  z
+    .string()
+    .min(1)
+    .max(maxLength)
+    .refine((value) => !hasControlCharacter(value), {
+      message: "display text may not contain control characters",
+    });
+
+export const ProviderCapabilityKeySchema = z.enum([
+  "inventory",
+  "installation_probe",
+  "authentication_probe",
+  "usage_collection",
+  "remote_control",
+  "list_sessions",
+  "create_session",
+  "resume_session",
+  "list_models",
+  "change_model",
+  "reasoning_levels",
+  "text_input",
+  "file_input",
+  "image_input",
+  "approval_policies",
+  "sandbox_policies",
+  "network_policies",
+]);
+export const ProviderCapabilityStateSchema = z.enum([
+  "supported",
+  "unsupported",
+  "unknown",
+]);
+export const ProviderCapabilityProvenanceSchema = z.enum([
+  "terminal_registry",
+  "adapter_manifest",
+  "provider_probe",
+]);
+export const ProviderCapabilityEvidenceSchema = z
+  .object({
+    key: ProviderCapabilityKeySchema,
+    state: ProviderCapabilityStateSchema,
+    provenance: ProviderCapabilityProvenanceSchema,
+    observedAt: timestamp,
+    reason: displayText(200).nullable(),
+  })
+  .strict();
+
+export const ProviderInstallationStateSchema = z.enum([
+  "installed",
+  "not_installed",
+  "unknown",
+  "error",
+]);
+export const ProviderAuthenticationStateSchema = z.enum([
+  "authenticated",
+  "not_authenticated",
+  "unknown",
+  "error",
+]);
+export const ProviderCompatibilityStateSchema = z.enum([
+  "compatible",
+  "incompatible",
+  "unknown",
+  "error",
+]);
+export const ProviderAdapterSupportSchema = z.enum([
+  "inventory_only",
+  "remote_control",
+]);
+export const ProviderFreshnessSchema = z.enum([
+  "live",
+  "local",
+  "stale",
+  "offline",
+  "unavailable",
+]);
+export const ProviderUsageStateSchema = z.enum([
+  "available",
+  "unavailable",
+  "not_supported",
+  "not_authenticated",
+  "stale",
+  "error",
+]);
+export const ProviderModelsStateSchema = z.enum([
+  "available",
+  "unavailable",
+  "not_supported",
+  "stale",
+  "error",
+]);
+
+export const ProviderAccountSchema = z
+  .object({
+    accountId: providerSlug,
+    displayName: displayText(96),
+    isDefault: z.boolean(),
+    authentication: ProviderAuthenticationStateSchema,
+    control: ProviderAdapterSupportSchema,
+    observedAt: timestamp,
+    notice: displayText(200).nullable(),
+  })
+  .strict();
+
+export const ProviderReasoningOptionSchema = z
+  .object({
+    value: displayText(64),
+    description: displayText(200),
+  })
+  .strict();
+export const ProviderModelSchema = z
+  .object({
+    modelId: displayText(128),
+    displayName: displayText(128),
+    description: displayText(500),
+    hidden: z.boolean(),
+    isDefault: z.boolean(),
+    inputModalities: z.array(z.enum(["text", "image"])).min(1).max(2),
+    defaultReasoningEffort: displayText(64).nullable(),
+    reasoningEfforts: z
+      .array(ProviderReasoningOptionSchema)
+      .max(MAX_PROVIDER_REASONING_OPTIONS),
+  })
+  .strict()
+  .superRefine((model, context) => {
+    addDuplicateIssue(
+      model.reasoningEfforts.map((option) => option.value),
+      "reasoning effort",
+      context,
+    );
+    if (
+      model.defaultReasoningEffort !== null &&
+      !model.reasoningEfforts.some(
+        (option) => option.value === model.defaultReasoningEffort,
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "default reasoning effort must be advertised",
+      });
+    }
+  });
+
+export const ProviderUsageMeterSchema = z
+  .object({
+    meterId: providerSlug,
+    displayName: displayText(64),
+    state: ProviderUsageStateSchema,
+    remainingPercent: z.number().min(0).max(100).nullable(),
+    resetAt: timestamp.nullable(),
+    detail: displayText(200).nullable(),
+  })
+  .strict()
+  .superRefine((meter, context) => {
+    if (
+      meter.state !== "available" &&
+      (meter.remainingPercent !== null || meter.resetAt !== null)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "unavailable usage evidence may not contain measured values",
+      });
+    }
+  });
+
+export const ProviderRecordSchema = z
+  .object({
+    providerId: providerSlug,
+    displayName: displayText(96),
+    enabled: z.boolean(),
+    installation: ProviderInstallationStateSchema,
+    authentication: ProviderAuthenticationStateSchema,
+    compatibility: ProviderCompatibilityStateSchema,
+    adapterSupport: ProviderAdapterSupportSchema,
+    version: displayText(64).nullable(),
+    freshness: ProviderFreshnessSchema,
+    observedAt: timestamp,
+    notice: displayText(200).nullable(),
+    capabilities: z
+      .array(ProviderCapabilityEvidenceSchema)
+      .max(ProviderCapabilityKeySchema.options.length),
+    accounts: z.array(ProviderAccountSchema).max(MAX_PROVIDER_ACCOUNTS),
+    accountCount: z.number().int().nonnegative(),
+    models: z.array(ProviderModelSchema).max(MAX_PROVIDER_MODELS),
+    modelsState: ProviderModelsStateSchema,
+    usageState: ProviderUsageStateSchema,
+    usageMeters: z.array(ProviderUsageMeterSchema).max(MAX_PROVIDER_USAGE_METERS),
+  })
+  .strict()
+  .superRefine((provider, context) => {
+    addDuplicateIssue(
+      provider.capabilities.map((capability) => capability.key),
+      "capability",
+      context,
+    );
+    addDuplicateIssue(
+      provider.accounts.map((account) => account.accountId),
+      "account",
+      context,
+    );
+    addDuplicateIssue(
+      provider.models.map((model) => model.modelId),
+      "model",
+      context,
+    );
+    addDuplicateIssue(
+      provider.usageMeters.map((meter) => meter.meterId),
+      "usage meter",
+      context,
+    );
+    if (provider.accountCount < provider.accounts.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "accountCount may not be smaller than accounts.length",
+      });
+    }
+    if (
+      provider.adapterSupport === "remote_control" &&
+      !provider.capabilities.some(
+        (capability) =>
+          capability.key === "remote_control" &&
+          capability.state === "supported",
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "remote-control adapter requires supported capability evidence",
+      });
+    }
+    if (
+      provider.usageState !== "available" &&
+      provider.usageMeters.some(
+        (meter) =>
+          meter.remainingPercent !== null || meter.resetAt !== null,
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "unavailable provider usage may not contain measured values",
+      });
+    }
+  });
+
+export const ProviderFleetSnapshotSchema = z
+  .object({
+    snapshotId: id,
+    revision: z.number().int().positive(),
+    source: z.enum(["terminal_registry", "connector_fallback", "unavailable"]),
+    observedAt: timestamp,
+    staleAt: timestamp,
+    freshness: ProviderFreshnessSchema,
+    degraded: z.boolean(),
+    providers: z.array(ProviderRecordSchema).max(MAX_PROVIDER_INVENTORY),
+    notice: displayText(200).nullable(),
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    addDuplicateIssue(
+      snapshot.providers.map((provider) => provider.providerId),
+      "provider",
+      context,
+    );
+    if (Date.parse(snapshot.staleAt) <= Date.parse(snapshot.observedAt)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "staleAt must be later than observedAt",
+      });
+    }
+  });
+
 export const CommandReceiptSchema = z.object({
   commandId: id,
   state: z.enum(["received", "dispatching", "completed", "outcome_unknown"]),
@@ -645,6 +927,14 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
 ]);
 
 export type ProtocolError = z.infer<typeof ProtocolErrorSchema>;
+export type ProviderCapabilityKey = z.infer<typeof ProviderCapabilityKeySchema>;
+export type ProviderCapabilityEvidence = z.infer<
+  typeof ProviderCapabilityEvidenceSchema
+>;
+export type ProviderAccount = z.infer<typeof ProviderAccountSchema>;
+export type ProviderModel = z.infer<typeof ProviderModelSchema>;
+export type ProviderRecord = z.infer<typeof ProviderRecordSchema>;
+export type ProviderFleetSnapshot = z.infer<typeof ProviderFleetSnapshotSchema>;
 export type Turn = z.infer<typeof TurnSchema>;
 export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
 export type Runtime = z.infer<typeof RuntimeSchema>;
@@ -693,6 +983,26 @@ export function redactSensitiveText(value: unknown) {
 function decodedBase64Length(value: string) {
   const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
   return (value.length / 4) * 3 - padding;
+}
+
+function hasControlCharacter(value: string) {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
+function addDuplicateIssue(
+  values: readonly string[],
+  label: string,
+  context: z.RefinementCtx,
+) {
+  if (new Set(values).size === values.length) return;
+  context.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: `duplicate ${label} identity`,
+  });
 }
 
 export function decodeJson(
