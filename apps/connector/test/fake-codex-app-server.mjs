@@ -39,8 +39,13 @@ lines.on("line", (line) => {
     case "initialized":
       break;
     case "thread/start":
-    case "thread/resume":
       send({ id: message.id, result: { thread: { id: "fake-thread" } } });
+      break;
+    case "thread/resume":
+      send({
+        id: message.id,
+        result: { thread: { id: message.params.threadId } },
+      });
       break;
     case "account/read":
       send({

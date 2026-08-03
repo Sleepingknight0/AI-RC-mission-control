@@ -31,6 +31,7 @@ import {
   type ProtocolError,
   type ProviderFleetSnapshot,
   type ProviderNativeSessionSnapshot,
+  type ProviderRecord,
   type Runtime,
   type ServerEnvelope,
 } from "@aicl/protocol";
@@ -421,7 +422,9 @@ export async function startCoreServer(
           | "session.rename"
           | "session.pin"
           | "session.archive"
-          | "session.read.mark";
+          | "session.read.mark"
+          | "session.create"
+          | "session.resume";
       }
     >,
   ) => {
@@ -575,6 +578,205 @@ export async function startCoreServer(
         sendConnector(
           connection.socket,
           makeEnvelope("connector.sessions.native.refresh", message.payload),
+        );
+        return;
+      }
+      case "session.create":
+      case "session.resume": {
+        const prior = store.priorCommand(message);
+        if (prior?.kind === "same") {
+          send(socket, prior.result);
+          return;
+        }
+        if (prior?.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        const connection = connectorConnection;
+        if (
+          connection?.socket.readyState !== WebSocket.OPEN ||
+          connection.runtime.status !== "ready"
+        ) {
+          send(
+            socket,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "RUNTIME_NOT_READY",
+              message: "Connector runtime is not ready to prepare a Session.",
+            }),
+          );
+          return;
+        }
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        const account = provider?.accounts.find(
+          (candidate) => candidate.accountId === message.payload.accountId,
+        );
+        const capabilityKey =
+          message.type === "session.create" ? "create_session" : "resume_session";
+        const capability = provider?.capabilities.find(
+          (candidate) => candidate.key === capabilityKey,
+        );
+        if (
+          provider === undefined ||
+          !["live", "local"].includes(provider.freshness) ||
+          provider.adapterSupport !== "remote_control" ||
+          account?.authentication !== "authenticated" ||
+          account.control !== "remote_control" ||
+          capability?.state !== "supported"
+        ) {
+          send(
+            socket,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "PROVIDER_CAPABILITY_UNAVAILABLE",
+              message: "Selected provider/account cannot perform this operation.",
+            }),
+          );
+          return;
+        }
+
+        let selection: {
+          title: string;
+          source: "aicl" | "imported";
+          projectPath: string;
+          model: string | null;
+          reasoningLevel: string | null;
+          providerSessionId: string | null;
+        };
+        if (message.type === "session.create") {
+          if (
+            !validProviderModel(
+              provider,
+              message.payload.model,
+              message.payload.reasoningLevel,
+            )
+          ) {
+            send(
+              socket,
+              rejection({
+                commandId: message.payload.commandId,
+                sessionId: message.payload.sessionId,
+                code: "PROVIDER_MODEL_UNAVAILABLE",
+                message: "Selected model or reasoning level is unavailable.",
+              }),
+            );
+            return;
+          }
+          selection = {
+            title: message.payload.title,
+            source: "aicl",
+            projectPath: message.payload.projectPath,
+            model: message.payload.model,
+            reasoningLevel: message.payload.reasoningLevel,
+            providerSessionId: null,
+          };
+        } else {
+          const native = nativeSessionSnapshots
+            .get(
+              nativeSnapshotKey(
+                message.payload.providerId,
+                message.payload.accountId,
+              ),
+            )
+            ?.snapshot;
+          const discovered = native?.sessions.find(
+            (candidate) =>
+              candidate.providerSessionId === message.payload.providerSessionId,
+          );
+          if (
+            native?.freshness !== "live" ||
+            discovered === undefined ||
+            !discovered.canResume
+          ) {
+            send(
+              socket,
+              rejection({
+                commandId: message.payload.commandId,
+                sessionId: message.payload.sessionId,
+                code: "PROVIDER_SESSION_UNAVAILABLE",
+                message: "The selected native Session is not currently resumable.",
+              }),
+            );
+            return;
+          }
+          if (
+            store.boundSessionId(
+              message.payload.providerId,
+              message.payload.accountId,
+              message.payload.providerSessionId,
+            ) !== undefined
+          ) {
+            send(
+              socket,
+              rejection({
+                commandId: message.payload.commandId,
+                sessionId: message.payload.sessionId,
+                code: "PROVIDER_SESSION_ALREADY_IMPORTED",
+                message: "The native Session is already bound to an AICL Session.",
+              }),
+            );
+            return;
+          }
+          selection = {
+            title: discovered.title,
+            source: "imported",
+            projectPath: discovered.projectPath,
+            model: null,
+            reasoningLevel: null,
+            providerSessionId: discovered.providerSessionId,
+          };
+        }
+        const result = await store.acceptSessionPreparation({
+          message,
+          runtime: connection.runtime,
+          connectorId: connection.connectorId,
+          bootId: connection.bootId,
+          selection,
+          rejection: (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        if (result.kind !== "new" || result.dispatch === undefined) return;
+        await store.markDispatched(message.payload.commandId);
+        sendConnector(
+          connection.socket,
+          message.type === "session.create"
+            ? makeEnvelope("connector.session.create", {
+                commandId: message.payload.commandId,
+                sessionId: message.payload.sessionId,
+                providerId: message.payload.providerId,
+                accountId: message.payload.accountId,
+                projectPath: result.dispatch.projectPath,
+                model: result.dispatch.model,
+                reasoningLevel: result.dispatch.reasoningLevel,
+                runtimeId: connection.runtime.runtimeId,
+                runtimeGeneration: connection.runtime.generation,
+              })
+            : makeEnvelope("connector.session.resume", {
+                commandId: message.payload.commandId,
+                sessionId: message.payload.sessionId,
+                providerId: message.payload.providerId,
+                accountId: message.payload.accountId,
+                providerSessionId: result.dispatch.providerSessionId!,
+                projectPath: result.dispatch.projectPath,
+                model: result.dispatch.model,
+                reasoningLevel: result.dispatch.reasoningLevel,
+                runtimeId: connection.runtime.runtimeId,
+                runtimeGeneration: connection.runtime.generation,
+              }),
         );
         return;
       }
@@ -1095,6 +1297,13 @@ export async function startCoreServer(
         if (events !== undefined) durableEvents.push(...events);
         break;
       }
+      case "connector.session.prepared":
+      case "connector.session.prepare.failed":
+      case "connector.session.prepare.outcome_unknown": {
+        const event = await store.recordSessionPreparation(message, source);
+        if (event !== undefined) durableEvents.push(event);
+        break;
+      }
       case "connector.session.bound":
         await store.bindProviderSession(
           message.payload.sessionId,
@@ -1439,6 +1648,21 @@ function publicConnectorError(code: string) {
 
 function nativeSnapshotKey(providerId: string, accountId: string) {
   return `${providerId}\u0000${accountId}`;
+}
+
+function validProviderModel(
+  provider: ProviderRecord,
+  modelId: string | null,
+  reasoningLevel: string | null,
+) {
+  if (modelId === null) return reasoningLevel === null;
+  if (provider.modelsState !== "available") return false;
+  const model = provider.models.find((candidate) => candidate.modelId === modelId);
+  return (
+    model !== undefined &&
+    (reasoningLevel === null ||
+      model.reasoningEfforts.some((option) => option.value === reasoningLevel))
+  );
 }
 
 function constantTimeEqual(left: string, right: string) {

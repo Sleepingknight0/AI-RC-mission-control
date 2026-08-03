@@ -30,7 +30,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 6;
+export const CORE_SCHEMA_VERSION = 7;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -55,7 +55,9 @@ type MutatingClientEnvelope = Extract<
       | "session.rename"
       | "session.pin"
       | "session.archive"
-      | "session.read.mark";
+      | "session.read.mark"
+      | "session.create"
+      | "session.resume";
   }
 >;
 
@@ -63,6 +65,25 @@ type SessionMetadataCommand = Extract<
   ClientEnvelope,
   { type: "session.rename" | "session.pin" | "session.archive" }
 >;
+
+type SessionPreparationCommand = Extract<
+  ClientEnvelope,
+  { type: "session.create" | "session.resume" }
+>;
+
+export type SessionPreparationResult =
+  | { kind: "same"; result: ServerEnvelope }
+  | { kind: "conflict" }
+  | {
+      kind: "new";
+      result: ServerEnvelope;
+      dispatch?: {
+        projectPath: string;
+        model: string | null;
+        reasoningLevel: string | null;
+        providerSessionId: string | null;
+      };
+    };
 
 export type ApprovalResolutionResult =
   | { kind: "same"; result: ServerEnvelope }
@@ -118,6 +139,7 @@ interface SessionCatalogRow {
   id: string;
   title: string;
   source: "aicl" | "imported";
+  binding_state: SessionSummaryV2["providerBindingStatus"] | null;
   provider_session_id: string | null;
   session_revision: number;
   pinned: number;
@@ -199,6 +221,18 @@ interface RuntimeRow {
   id: string;
   generation: number;
   state: Runtime["status"];
+}
+
+interface PendingBindingRow {
+  session_id: string;
+  command_id: string;
+  provider_id: string;
+  account_id: string;
+  provider_session_id: string | null;
+  runtime_id: string;
+  runtime_generation: number;
+  connector_id: string;
+  connector_boot_id: string;
 }
 
 interface ActivityRow {
@@ -474,6 +508,7 @@ export class CoreDatabase {
              settings.approval_policy, settings.sandbox_policy,
              settings.network_policy, settings.project_path, settings.branch,
              settings.revision AS settings_revision,
+             binding.state AS binding_state,
              (SELECT t.id FROM turns t
                WHERE t.session_id = s.id AND t.state = 'running'
                ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS active_turn_id,
@@ -504,6 +539,7 @@ export class CoreDatabase {
              END AS operational_state
         FROM sessions s
         JOIN session_settings settings ON settings.session_id = s.id
+        LEFT JOIN session_provider_bindings binding ON binding.session_id = s.id
         LEFT JOIN session_read_cursors read_cursor
           ON read_cursor.session_id = s.id AND read_cursor.device_id = ?
     )`;
@@ -551,6 +587,254 @@ export class CoreDatabase {
             }),
       total: count.total,
     };
+  }
+
+  boundSessionId(
+    providerId: string,
+    accountId: string,
+    providerSessionId: string,
+  ) {
+    return (
+      this.#database
+        .prepare(
+          `SELECT session_id FROM session_provider_bindings
+            WHERE provider_id = ? AND account_id = ? AND provider_session_id = ?
+              AND state = 'ready'`,
+        )
+        .get(providerId, accountId, providerSessionId) as
+        | { session_id: string }
+        | undefined
+    )?.session_id;
+  }
+
+  async acceptSessionPreparation(input: {
+    message: SessionPreparationCommand;
+    runtime: Runtime;
+    connectorId: string;
+    bootId: string;
+    selection: {
+      title: string;
+      source: "aicl" | "imported";
+      projectPath: string;
+      model: string | null;
+      reasoningLevel: string | null;
+      providerSessionId: string | null;
+    };
+    rejection: (code: string, detail: string) => ServerEnvelope;
+  }): Promise<SessionPreparationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(input.message);
+      const prior = this.#command(input.message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const now = new Date().toISOString();
+      if (this.hasSession(input.message.payload.sessionId)) {
+        const result = input.rejection(
+          "SESSION_ID_EXISTS",
+          "The requested AICL Session ID already exists.",
+        );
+        this.#insertCommand(input.message, payloadHash, "rejected", result, now);
+        return { kind: "new", result };
+      }
+      this.#database
+        .prepare(
+          `INSERT INTO sessions (
+             id, title, source, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.message.payload.sessionId,
+          input.selection.title,
+          input.selection.source,
+          now,
+          now,
+        );
+      this.#database
+        .prepare(
+          `UPDATE session_settings SET provider_id = ?, account_id = ?,
+             model = ?, reasoning_level = ?, project_path = ?, updated_at = ?
+           WHERE session_id = ?`,
+        )
+        .run(
+          input.message.payload.providerId,
+          input.message.payload.accountId,
+          input.selection.model,
+          input.selection.reasoningLevel,
+          input.selection.projectPath,
+          now,
+          input.message.payload.sessionId,
+        );
+      this.#attachRuntime(
+        input.message.payload.sessionId,
+        input.runtime,
+        input.connectorId,
+        input.bootId,
+        now,
+      );
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("session.command.accepted", {
+            commandId: input.message.payload.commandId,
+            sessionId: input.message.payload.sessionId,
+            revision: 0,
+          }),
+        ),
+      );
+      this.#insertCommand(input.message, payloadHash, "committed", result, now);
+      this.#database
+        .prepare(
+          `INSERT INTO session_provider_bindings (
+             session_id, command_id, provider_id, account_id,
+             requested_provider_session_id, state, runtime_id,
+             runtime_generation, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+        )
+        .run(
+          input.message.payload.sessionId,
+          input.message.payload.commandId,
+          input.message.payload.providerId,
+          input.message.payload.accountId,
+          input.selection.providerSessionId,
+          input.runtime.runtimeId,
+          input.runtime.generation,
+          now,
+          now,
+        );
+      return {
+        kind: "new",
+        result,
+        dispatch: {
+          projectPath: input.selection.projectPath,
+          model: input.selection.model,
+          reasoningLevel: input.selection.reasoningLevel,
+          providerSessionId: input.selection.providerSessionId,
+        },
+      };
+    });
+  }
+
+  async recordSessionPreparation(
+    message: Extract<
+      ConnectorEnvelope,
+      {
+        type:
+          | "connector.session.prepared"
+          | "connector.session.prepare.failed"
+          | "connector.session.prepare.outcome_unknown";
+      }
+    >,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const binding = this.#database
+        .prepare(
+          `SELECT command_id, provider_id, account_id,
+                  requested_provider_session_id, state
+             FROM session_provider_bindings
+            WHERE session_id = ? AND command_id = ? AND runtime_id = ?
+              AND runtime_generation = ?`,
+        )
+        .get(
+          message.payload.sessionId,
+          message.payload.commandId,
+          source.runtimeId,
+          source.runtimeGeneration,
+        ) as
+        | {
+            command_id: string;
+            provider_id: string;
+            account_id: string;
+            requested_provider_session_id: string | null;
+            state: string;
+          }
+        | undefined;
+      if (binding === undefined || binding.state !== "pending") return undefined;
+      const now = new Date().toISOString();
+      let status: "ready" | "failed" | "outcome_unknown";
+      let providerSessionId: string | null = null;
+      let failureCode: string | null = null;
+      if (message.type === "connector.session.prepared") {
+        if (
+          message.payload.providerId !== binding.provider_id ||
+          message.payload.accountId !== binding.account_id ||
+          (binding.requested_provider_session_id !== null &&
+            message.payload.providerSessionId !==
+              binding.requested_provider_session_id)
+        ) {
+          status = "failed";
+          failureCode = "PROVIDER_BINDING_MISMATCH";
+        } else {
+          status = "ready";
+          providerSessionId = message.payload.providerSessionId;
+          this.#database
+            .prepare(
+              `UPDATE sessions SET provider_session_id = ?,
+                 state_revision = state_revision + 1, updated_at = ? WHERE id = ?`,
+            )
+            .run(providerSessionId, now, message.payload.sessionId);
+          this.#database
+            .prepare(
+              `UPDATE session_settings SET project_path = ?, model = ?,
+                 reasoning_level = ?, updated_at = ? WHERE session_id = ?`,
+            )
+            .run(
+              message.payload.projectPath,
+              message.payload.model,
+              message.payload.reasoningLevel,
+              now,
+              message.payload.sessionId,
+            );
+        }
+      } else if (message.type === "connector.session.prepare.failed") {
+        status = "failed";
+        failureCode = message.payload.code;
+      } else {
+        status = "outcome_unknown";
+      }
+      this.#database
+        .prepare(
+          `UPDATE session_provider_bindings SET state = ?, provider_session_id = ?,
+             failure_code = ?, updated_at = ?
+           WHERE session_id = ? AND command_id = ? AND state = 'pending'`,
+        )
+        .run(
+          status,
+          providerSessionId,
+          failureCode,
+          now,
+          message.payload.sessionId,
+          message.payload.commandId,
+        );
+      this.#database
+        .prepare(
+          `UPDATE commands SET state = ?, terminal_at = ?
+            WHERE command_id = ? AND state IN ('committed', 'dispatched')`,
+        )
+        .run(
+          status === "outcome_unknown" ? "outcome_unknown" : "terminal",
+          now,
+          message.payload.commandId,
+        );
+      return parseServer(
+        JSON.stringify(
+          makeEnvelope("session.provider.status", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            providerId: binding.provider_id,
+            accountId: binding.account_id,
+            providerSessionId,
+            status,
+            failureCode,
+            runtimeId: source.runtimeId,
+            runtimeGeneration: source.runtimeGeneration,
+            updatedAt: now,
+          }),
+        ),
+      );
+    });
   }
 
   async mutateSessionMetadata(
@@ -2027,6 +2311,29 @@ export class CoreDatabase {
           ),
         ]),
       );
+      const pendingBindings = this.#database
+        .prepare(
+          `SELECT b.session_id, b.command_id, b.provider_id, b.account_id,
+                  b.provider_session_id, b.runtime_id, b.runtime_generation,
+                  r.connector_id, r.connector_boot_id
+             FROM session_provider_bindings b
+             JOIN runtimes r ON r.id = b.runtime_id
+              AND r.generation = b.runtime_generation
+            WHERE b.state = 'pending'`,
+        )
+        .all() as unknown as PendingBindingRow[];
+      events.push(
+        ...this.#markBindingsUnknown(
+          pendingBindings.filter(
+            (row) =>
+              row.runtime_id !== runtime.runtimeId ||
+              row.runtime_generation !== runtime.generation ||
+              row.connector_id !== connectorId ||
+              row.connector_boot_id !== bootId ||
+              !dispatchProvenCommands.has(row.command_id),
+          ),
+        ),
+      );
       this.#database
         .prepare(
           `UPDATE runtimes SET state = ?, revision = revision + 1, updated_at = ?
@@ -2043,7 +2350,23 @@ export class CoreDatabase {
   }
 
   async markRuntimeLost(runtime: Runtime) {
-    return this.#write(() => this.#markMismatchedRuntimesLost(undefined, runtime));
+    return this.#write(() => {
+      const events = this.#markMismatchedRuntimesLost(undefined, runtime);
+      const bindings = this.#database
+        .prepare(
+          `SELECT b.session_id, b.command_id, b.provider_id, b.account_id,
+                  b.provider_session_id, b.runtime_id, b.runtime_generation,
+                  r.connector_id, r.connector_boot_id
+             FROM session_provider_bindings b
+             JOIN runtimes r ON r.id = b.runtime_id
+              AND r.generation = b.runtime_generation
+            WHERE b.state = 'pending' AND b.runtime_id = ?
+              AND b.runtime_generation = ?`,
+        )
+        .all(runtime.runtimeId, runtime.generation) as unknown as PendingBindingRow[];
+      events.push(...this.#markBindingsUnknown(bindings));
+      return events;
+    });
   }
 
   async close() {
@@ -2610,6 +2933,46 @@ export class CoreDatabase {
     return events;
   }
 
+  #markBindingsUnknown(rows: PendingBindingRow[]): ServerEnvelope[] {
+    const events: ServerEnvelope[] = [];
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      const updated = this.#database
+        .prepare(
+          `UPDATE session_provider_bindings SET state = 'outcome_unknown',
+             failure_code = NULL, updated_at = ?
+           WHERE session_id = ? AND command_id = ? AND state = 'pending'`,
+        )
+        .run(now, row.session_id, row.command_id);
+      if (Number(updated.changes) !== 1) continue;
+      this.#database
+        .prepare(
+          `UPDATE commands SET state = 'outcome_unknown', terminal_at = ?
+            WHERE command_id = ? AND state IN ('committed', 'dispatched')`,
+        )
+        .run(now, row.command_id);
+      events.push(
+        parseServer(
+          JSON.stringify(
+            makeEnvelope("session.provider.status", {
+              commandId: row.command_id,
+              sessionId: row.session_id,
+              providerId: row.provider_id,
+              accountId: row.account_id,
+              providerSessionId: row.provider_session_id,
+              status: "outcome_unknown",
+              failureCode: null,
+              runtimeId: row.runtime_id,
+              runtimeGeneration: row.runtime_generation,
+              updatedAt: now,
+            }),
+          ),
+        ),
+      );
+    }
+    return events;
+  }
+
   #settleRunningWork(
     sessionId: string,
     turnId: string,
@@ -2740,6 +3103,9 @@ function sessionCatalogEntry(
   const accountId = normalizeCatalogSlug(row.account_id);
   const archived = row.archived === 1;
   const canControl = !archived && providerControlAvailable;
+  const providerBindingStatus = row.binding_state ?? "unbound";
+  const bindingAllowsControl =
+    providerBindingStatus === "unbound" || providerBindingStatus === "ready";
   return {
     sessionId: row.id,
     title: sanitizeCatalogText(row.title, 160) ?? "Untitled Session",
@@ -2747,6 +3113,7 @@ function sessionCatalogEntry(
     accountId,
     providerSessionId: row.provider_session_id,
     source: row.source,
+    providerBindingStatus,
     projectPath,
     projectName,
     branch: sanitizeCatalogText(row.branch, 512),
@@ -2764,8 +3131,11 @@ function sessionCatalogEntry(
     unreadCount: row.unread_count,
     lastActivityAt: row.updated_at,
     lastEventSeq: row.last_event_seq,
-    canResume: canControl && row.provider_session_id !== null,
-    canControl,
+    canResume:
+      canControl &&
+      (providerBindingStatus === "unbound" || providerBindingStatus === "ready") &&
+      row.provider_session_id !== null,
+    canControl: canControl && bindingAllowsControl,
     pinned: row.pinned === 1,
     archived,
     revision: row.session_revision,

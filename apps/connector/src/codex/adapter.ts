@@ -16,6 +16,8 @@ import {
   type ApprovalResolveCommand,
   type ConnectorEmit,
   type ConnectorProvider,
+  type ProviderSessionPreparation,
+  type SessionPrepareCommand,
   type TurnInterruptCommand,
   type TurnStartCommand,
 } from "../provider.js";
@@ -31,7 +33,11 @@ import {
   type CodexCapabilityProbe,
 } from "./discovery.js";
 
-const ThreadResponseSchema = z.object({ thread: z.object({ id: z.string().min(1) }) });
+const ThreadResponseSchema = z.object({
+  thread: z.object({ id: z.string().min(1) }),
+  model: z.string().min(1).max(128).optional(),
+  reasoningEffort: z.string().min(1).max(64).nullable().optional(),
+});
 const TurnStartResponseSchema = z.object({
   turn: z.object({ id: z.string().min(1) }),
 });
@@ -189,6 +195,8 @@ interface PendingApproval {
 
 export interface CodexProviderOptions {
   cwd: string;
+  allowedRoots?: readonly string[];
+  accountId?: string;
   codexHome?: string;
   command?: string;
   timeoutMs?: number;
@@ -201,6 +209,7 @@ export class CodexProvider implements ConnectorProvider {
   #rpc: CodexRpcProcess | undefined;
   #starting: Promise<CodexRpcProcess> | undefined;
   #active: ActiveTurn | undefined;
+  #preparing = false;
   #earlyNotifications: Array<Record<string, unknown>> = [];
   readonly #pendingApprovals = new Map<string, PendingApproval>();
   #closing = false;
@@ -212,6 +221,86 @@ export class CodexProvider implements ConnectorProvider {
   onLost(listener: () => void) {
     this.#lostListeners.add(listener);
     return () => this.#lostListeners.delete(listener);
+  }
+
+  async prepareSession(
+    command: SessionPrepareCommand,
+  ): Promise<ProviderSessionPreparation> {
+    if (this.#active !== undefined || this.#preparing) {
+      throw new Error("Codex provider is busy");
+    }
+    if (
+      command.payload.providerId !== "codex" ||
+      command.payload.accountId !== (this.#options.accountId ?? "default")
+    ) {
+      throw new Error("Codex provider/account selection is not active");
+    }
+    const projectPath = canonicalProjectRoot(
+      command.payload.projectPath,
+      this.#options.allowedRoots ?? [this.#options.cwd],
+    );
+    this.#preparing = true;
+    try {
+      const rpc = await this.#ensureProcess();
+      const probe = await probeCodexCapabilities(rpc, {
+        timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
+      });
+      if (!probe.authenticated) throw new Error("Codex is not authenticated");
+      const selectedModel =
+        command.payload.model === null
+          ? probe.models.find((model) => model.isDefault) ?? probe.models[0]
+          : probe.models.find(
+              (model) => model.modelId === command.payload.model,
+            );
+      if (command.payload.model !== null && selectedModel === undefined) {
+        throw new Error("Selected Codex model is unavailable");
+      }
+      if (
+        command.payload.reasoningLevel !== null &&
+        (selectedModel === undefined ||
+          !selectedModel.reasoningEfforts.some(
+            (option) => option.value === command.payload.reasoningLevel,
+          ))
+      ) {
+        throw new Error("Selected Codex reasoning level is unavailable");
+      }
+      const method =
+        command.type === "connector.session.create"
+          ? "thread/start"
+          : "thread/resume";
+      const response = ThreadResponseSchema.parse(
+        await rpc.request(method, {
+          ...(command.type === "connector.session.resume"
+            ? { threadId: command.payload.providerSessionId }
+            : {}),
+          cwd: projectPath,
+          approvalPolicy: "on-request",
+          sandbox: "read-only",
+          personality: "none",
+          ...(command.payload.model === null
+            ? {}
+            : { model: command.payload.model }),
+        }),
+      );
+      if (
+        command.type === "connector.session.resume" &&
+        response.thread.id !== command.payload.providerSessionId
+      ) {
+        throw new Error("Codex resumed a different Session identity");
+      }
+      return {
+        providerSessionId: response.thread.id,
+        projectPath,
+        model: response.model ?? command.payload.model,
+        reasoningLevel:
+          response.reasoningEffort ?? command.payload.reasoningLevel,
+      };
+    } catch (error) {
+      if (error instanceof ProviderRpcTimeoutError) throw new ProviderLostError();
+      throw error;
+    } finally {
+      this.#preparing = false;
+    }
   }
 
   async enrichProviderFleet(
@@ -319,7 +408,7 @@ export class CodexProvider implements ConnectorProvider {
   }
 
   async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {
-    if (this.#active !== undefined) {
+    if (this.#active !== undefined || this.#preparing) {
       throw new Error("Codex provider already has an active Turn");
     }
     const rpc = await this.#ensureProcess();

@@ -94,6 +94,7 @@ describe("Session Catalog protocol", () => {
             accountId: null,
             providerSessionId: null,
             source: "aicl",
+            providerBindingStatus: "unbound",
             projectPath: null,
             projectName: null,
             branch: null,

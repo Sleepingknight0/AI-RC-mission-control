@@ -88,6 +88,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
   let inventoryRefreshInFlight: Promise<void> | undefined;
   let nativeSessionRevision = 0;
   let nativeSessionRefreshInFlight: Promise<void> | undefined;
+  let closePromise: Promise<void> | undefined;
   let readyResolved = false;
   let resolveReady: () => void = () => undefined;
   const ready = new Promise<void>((resolve) => {
@@ -364,19 +365,108 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     const decision = journal.recordCommand(command);
     if (decision === "same") return;
     if (decision === "conflict") {
-      emit(
-        makeEnvelope("connector.command.error", {
-          commandId: command.payload.commandId,
-          sessionId: command.payload.sessionId,
-          turnId: command.payload.turnId,
-          code: "IDEMPOTENCY_KEY_REUSE",
-          message: "Connector commandId was reused with a different payload.",
-          retryable: false,
-        }),
-      );
+      if (
+        command.type === "connector.session.create" ||
+        command.type === "connector.session.resume"
+      ) {
+        emit(
+          makeEnvelope("connector.session.prepare.failed", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            code: "IDEMPOTENCY_KEY_REUSE",
+          }),
+        );
+      } else {
+        emit(
+          makeEnvelope("connector.command.error", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
+            code: "IDEMPOTENCY_KEY_REUSE",
+            message: "Connector commandId was reused with a different payload.",
+            retryable: false,
+          }),
+        );
+      }
       return;
     }
     journal.markCommand(command.payload.commandId, "dispatching");
+
+    if (
+      command.type === "connector.session.create" ||
+      command.type === "connector.session.resume"
+    ) {
+      if (
+        command.payload.runtimeId !== journal.runtimeId ||
+        command.payload.runtimeGeneration !== journal.runtimeGeneration
+      ) {
+        journal.markCommand(command.payload.commandId, "completed", {
+          failureCode: "STALE_RUNTIME_GENERATION",
+        });
+        emit(
+          makeEnvelope("connector.session.prepare.failed", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            code: "STALE_RUNTIME_GENERATION",
+          }),
+        );
+        return;
+      }
+      if (providerLost) {
+        journal.markCommand(command.payload.commandId, "completed", {
+          failureCode: "PROVIDER_UNAVAILABLE",
+        });
+        emit(
+          makeEnvelope("connector.session.prepare.failed", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            code: "PROVIDER_UNAVAILABLE",
+          }),
+        );
+        return;
+      }
+      emitRuntime("busy");
+      try {
+        if (options.provider.prepareSession === undefined) {
+          throw new Error("Provider does not implement Session preparation");
+        }
+        const prepared = await options.provider.prepareSession(command);
+        journal.markCommand(command.payload.commandId, "completed");
+        emit(
+          makeEnvelope("connector.session.prepared", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            providerId: command.payload.providerId,
+            accountId: command.payload.accountId,
+            ...prepared,
+          }),
+        );
+        if (!providerLost) emitRuntime("ready");
+      } catch (error) {
+        if (error instanceof ProviderLostError) {
+          journal.markCommand(command.payload.commandId, "outcome_unknown");
+          emit(
+            makeEnvelope("connector.session.prepare.outcome_unknown", {
+              commandId: command.payload.commandId,
+              sessionId: command.payload.sessionId,
+            }),
+          );
+          return;
+        }
+        journal.markCommand(command.payload.commandId, "completed", {
+          failureCode: "PROVIDER_SESSION_REJECTED",
+        });
+        emit(
+          makeEnvelope("connector.session.prepare.failed", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            code: "PROVIDER_SESSION_REJECTED",
+          }),
+        );
+        emitRuntime("ready");
+      }
+      return;
+    }
 
     if (command.type === "connector.turn.start" && providerLost) {
       journal.markCommand(command.payload.commandId, "outcome_unknown");
@@ -514,6 +604,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       }
     });
     socket.on("message", (data) => {
+      if (stopped) return;
       try {
         const command = CoreToConnectorEnvelopeSchema.parse(
           decodeJson(data.toString()),
@@ -572,19 +663,22 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       runtimeId: journal.runtimeId,
       generation: journal.runtimeGeneration,
     },
-    async close() {
-      stopped = true;
-      unsubscribeLost();
-      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
-      socket?.close();
-      await options.provider.close();
-      await Promise.allSettled([...inFlightCommands]);
-      if (healthServer !== undefined) {
-        await new Promise<void>((resolve, reject) => {
-          healthServer?.close((error) => (error ? reject(error) : resolve()));
-        });
-      }
-      journal.close();
+    close() {
+      closePromise ??= (async () => {
+        stopped = true;
+        unsubscribeLost();
+        if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+        socket?.close();
+        await options.provider.close();
+        await Promise.allSettled([...inFlightCommands]);
+        if (healthServer !== undefined) {
+          await new Promise<void>((resolve, reject) => {
+            healthServer?.close((error) => (error ? reject(error) : resolve()));
+          });
+        }
+        journal.close();
+      })();
+      return closePromise;
     },
   };
 }

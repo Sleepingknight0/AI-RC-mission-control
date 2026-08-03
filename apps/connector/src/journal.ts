@@ -93,7 +93,9 @@ export class ConnectorJournal {
         type:
           | "connector.turn.start"
           | "connector.turn.interrupt"
-          | "connector.approval.resolve";
+          | "connector.approval.resolve"
+          | "connector.session.create"
+          | "connector.session.resume";
       }
     >,
   ): InboxDecision {

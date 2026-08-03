@@ -1,8 +1,10 @@
 import { resolve } from "node:path";
 
 import {
+  CoreToConnectorEnvelopeSchema,
   ProviderCapabilityKeySchema,
   ProviderFleetSnapshotSchema,
+  makeEnvelope,
 } from "@aicl/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -114,5 +116,48 @@ describe("Codex discovery", () => {
       canResume: true,
     });
     expect(JSON.stringify(snapshot)).not.toContain("rollout");
+  });
+
+  it("creates and resumes explicit provider Sessions with verified selections", async () => {
+    const provider = adapter();
+    const createCommand = CoreToConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.session.create", {
+          commandId: "create-1",
+          sessionId: "session-create",
+          providerId: "codex",
+          accountId: "default",
+          projectPath: process.cwd(),
+          model: "fake-codex-model",
+          reasoningLevel: "high",
+          runtimeId: "runtime-1",
+          runtimeGeneration: 1,
+        }),
+      );
+    if (createCommand.type !== "connector.session.create") throw new Error("type");
+    const created = await provider.prepareSession(createCommand);
+    expect(created).toMatchObject({
+      providerSessionId: "fake-thread",
+      projectPath: process.cwd(),
+      model: "fake-codex-model",
+      reasoningLevel: "high",
+    });
+
+    const resumeCommand = CoreToConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.session.resume", {
+          commandId: "resume-1",
+          sessionId: "session-resume",
+          providerId: "codex",
+          accountId: "default",
+          providerSessionId: "native-thread",
+          projectPath: process.cwd(),
+          model: null,
+          reasoningLevel: null,
+          runtimeId: "runtime-1",
+          runtimeGeneration: 1,
+        }),
+      );
+    if (resumeCommand.type !== "connector.session.resume") throw new Error("type");
+    const resumed = await provider.prepareSession(resumeCommand);
+    expect(resumed.providerSessionId).toBe("native-thread");
   });
 });

@@ -38,6 +38,8 @@ const provider =
     ? new MockProvider()
     : new CodexProvider({
         cwd: projectPath,
+        allowedRoots: config.workspace.allowedRoots,
+        accountId: config.provider.profile,
         codexHome: config.provider.codexHome,
       });
 

@@ -86,4 +86,38 @@ describe("provider-native Session protocol", () => {
       }),
     ).toThrow();
   });
+
+  it("validates Session preparation commands and normalized binding status", () => {
+    expect(
+      ClientEnvelopeSchema.parse(
+        makeEnvelope("session.create", {
+          commandId: "create-1",
+          sessionId: "session-1",
+          deviceId: "device-1",
+          title: "New work",
+          providerId: "codex",
+          accountId: "default",
+          projectPath: "C:\\Projects\\work",
+          model: null,
+          reasoningLevel: null,
+        }),
+      ).type,
+    ).toBe("session.create");
+    expect(
+      ServerEnvelopeSchema.parse(
+        makeEnvelope("session.provider.status", {
+          commandId: "create-1",
+          sessionId: "session-1",
+          providerId: "codex",
+          accountId: "default",
+          providerSessionId: "thread-1",
+          status: "ready",
+          failureCode: null,
+          runtimeId: "runtime-1",
+          runtimeGeneration: 1,
+          updatedAt: "2026-08-03T05:00:00.000Z",
+        }),
+      ).type,
+    ).toBe("session.provider.status");
+  });
 });

@@ -83,6 +83,7 @@ describe("Session Catalog V2", () => {
       archived: true,
       revision: 3,
       source: "aicl",
+      providerBindingStatus: "unbound",
       providerId: "codex",
       canControl: false,
     });

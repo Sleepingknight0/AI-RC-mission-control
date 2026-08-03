@@ -15,6 +15,16 @@ export type ApprovalResolveCommand = Extract<
   CoreToConnectorEnvelope,
   { type: "connector.approval.resolve" }
 >;
+export type SessionPrepareCommand = Extract<
+  CoreToConnectorEnvelope,
+  { type: "connector.session.create" | "connector.session.resume" }
+>;
+export interface ProviderSessionPreparation {
+  providerSessionId: string;
+  projectPath: string;
+  model: string | null;
+  reasoningLevel: string | null;
+}
 export type ConnectorEmit = (message: ConnectorEnvelope) => void;
 
 export class ProviderLostError extends Error {
@@ -25,6 +35,9 @@ export class ProviderLostError extends Error {
 }
 
 export interface ConnectorProvider {
+  prepareSession?(
+    command: SessionPrepareCommand,
+  ): Promise<ProviderSessionPreparation>;
   startTurn(command: TurnStartCommand, emit: ConnectorEmit): Promise<void>;
   interrupt(command: TurnInterruptCommand): Promise<void>;
   resolveApproval(command: ApprovalResolveCommand): Promise<void>;

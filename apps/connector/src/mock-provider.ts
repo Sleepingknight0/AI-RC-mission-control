@@ -7,6 +7,7 @@ import {
 import type {
   ConnectorEmit,
   ConnectorProvider,
+  SessionPrepareCommand,
   TurnInterruptCommand,
   TurnStartCommand,
 } from "./provider.js";
@@ -95,6 +96,18 @@ export class MockProvider implements ConnectorProvider {
 
   onLost() {
     return () => undefined;
+  }
+
+  async prepareSession(command: SessionPrepareCommand) {
+    return {
+      providerSessionId:
+        command.type === "connector.session.resume"
+          ? command.payload.providerSessionId
+          : `mock-thread-${command.payload.sessionId}`,
+      projectPath: command.payload.projectPath,
+      model: command.payload.model,
+      reasoningLevel: command.payload.reasoningLevel,
+    };
   }
 
   async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {

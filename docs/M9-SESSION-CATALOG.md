@@ -52,3 +52,22 @@ the latest ephemeral snapshot per provider/account and marks it stale on
 Connector loss; discovery does not create an AICL Session or durable history.
 `sessions.native.refresh` is accepted only for an authenticated remotely
 controllable account whose current capabilities support Session listing.
+
+## Implemented M9.4 create and resume
+
+`session.create` and `session.resume` are two-phase mutations. Core first
+commits the command, AICL Session/import row, requested settings, pending
+provider binding, and active Runtime fence in one transaction. Only then does
+it dispatch `connector.session.create` or `connector.session.resume`.
+
+Connector translates create to `thread/start` and resume to `thread/resume`.
+Core accepts the result only for the original command, provider/account,
+Runtime ID, and generation. A ready binding is unique by provider, account, and
+provider-native Session ID. Definite rejection produces `failed`; loss or a
+timeout after dispatch produces `outcome_unknown`. Neither state is retried
+automatically. Resume is allowed only from a current authoritative native
+snapshot and never merges by title or project path.
+
+Catalog rows expose `providerBindingStatus`. Pending, failed, and ambiguous
+bindings fail closed for control. Legacy unbound Sessions remain compatible;
+new create/import rows become controllable only after the binding is ready.

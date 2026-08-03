@@ -1598,3 +1598,39 @@ Connector/Core/Web typecheck         -> pass
 
 Complete M9.4 with durable Session create, explicit provider create/resume, and
 provider binding before marking the milestone complete.
+
+---
+
+### 2026-08-03 12:05 — Codex — M9.4 Session create/resume complete
+
+**Outcome**
+
+- Added Core schema 7 provider bindings and durable two-phase `session.create`
+  and `session.resume` commands with provider/account/model/reasoning and
+  Runtime-generation validation.
+- Added Codex `thread/start`/`thread/resume` translation, exact native-ID
+  confirmation, unique binding enforcement, idempotent command replay, and
+  explicit `failed` versus `outcome_unknown` settlement. Provider preparation
+  is never automatically replayed.
+- Catalog V2 now exposes authoritative provider binding status and fails closed
+  while binding is pending, failed, or ambiguous.
+- Closed a shutdown race found during the full gate: Connector shutdown is now
+  idempotent and late Core messages are ignored after shutdown begins.
+- Frozen Web source and the Grok checkpoint remain untouched.
+
+**Verification**
+
+```text
+protocol tests                         -> 23 passed
+Connector tests                        -> 39 passed
+Core tests                             -> 38 passed, 1 opt-in real test skipped
+all workspace tests                    -> 143 passed, 1 opt-in real test skipped
+production lifecycle/maintenance gates -> passed
+repeated approval-race probe            -> 8/8 passed, no shutdown warning
+pnpm build / migrate twice / diff check -> passed
+```
+
+**Next**
+
+M9.5 adds authoritative Session settings compare-and-set updates and stores the
+effective settings revision with every accepted Turn.

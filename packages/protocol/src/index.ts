@@ -490,6 +490,13 @@ export const SessionSourceSchema = z.enum([
   "provider_native",
   "imported",
 ]);
+export const SessionProviderBindingStatusSchema = z.enum([
+  "unbound",
+  "pending",
+  "ready",
+  "failed",
+  "outcome_unknown",
+]);
 export const ExecutionModeSchema = z.enum(["ask", "plan", "auto"]);
 export const ApprovalPolicySchema = z.enum([
   "review",
@@ -641,6 +648,7 @@ export const SessionSummaryV2Schema = z
     accountId: providerSlug.nullable(),
     providerSessionId: id.nullable(),
     source: SessionSourceSchema,
+    providerBindingStatus: SessionProviderBindingStatusSchema,
     projectPath: z.string().max(4_096).nullable(),
     projectName: displayText(160).nullable(),
     branch: displayText(512).nullable(),
@@ -734,6 +742,39 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       .object({
         providerId: providerSlug,
         accountId: providerSlug,
+      })
+      .strict(),
+  ),
+  envelope(
+    "session.create",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        title: displayText(160),
+        providerId: providerSlug,
+        accountId: providerSlug,
+        projectPath: z
+          .string()
+          .min(1)
+          .max(4_096)
+          .refine((value) => !hasControlCharacter(value)),
+        model: displayText(128).nullable(),
+        reasoningLevel: displayText(64).nullable(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "session.resume",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        providerSessionId: id,
       })
       .strict(),
   ),
@@ -862,6 +903,23 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
       .strict(),
   ),
   envelope(
+    "session.provider.status",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        providerSessionId: id.nullable(),
+        status: SessionProviderBindingStatusSchema.exclude(["unbound"]),
+        failureCode: displayText(96).nullable(),
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+        updatedAt: timestamp,
+      })
+      .strict(),
+  ),
+  envelope(
     "providers.snapshot",
     z.object({ snapshot: ProviderFleetSnapshotSchema }).strict(),
   ),
@@ -981,6 +1039,39 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
 
 export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   envelope(
+    "connector.session.create",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        projectPath: z.string().min(1).max(4_096),
+        model: displayText(128).nullable(),
+        reasoningLevel: displayText(64).nullable(),
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "connector.session.resume",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        providerSessionId: id,
+        projectPath: z.string().min(1).max(4_096),
+        model: displayText(128).nullable(),
+        reasoningLevel: displayText(64).nullable(),
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+      })
+      .strict(),
+  ),
+  envelope(
     "connector.turn.start",
     z.object({
       sessionId: id,
@@ -1049,6 +1140,35 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   connectorEnvelope(
     "connector.sessions.native.snapshot",
     z.object({ snapshot: ProviderNativeSessionSnapshotSchema }).strict(),
+  ),
+  connectorEnvelope(
+    "connector.session.prepared",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        providerSessionId: id,
+        projectPath: z.string().min(1).max(4_096),
+        model: displayText(128).nullable(),
+        reasoningLevel: displayText(64).nullable(),
+      })
+      .strict(),
+  ),
+  connectorEnvelope(
+    "connector.session.prepare.failed",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        code: displayText(96),
+      })
+      .strict(),
+  ),
+  connectorEnvelope(
+    "connector.session.prepare.outcome_unknown",
+    z.object({ commandId: id, sessionId: id }).strict(),
   ),
   connectorEnvelope(
     "connector.command.error",

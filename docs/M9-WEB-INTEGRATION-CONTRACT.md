@@ -70,6 +70,16 @@ rollout path, account email, provider credential path, or raw provider payload.
 The snapshot is replaced by revision and becomes `stale` when Connector
 identity is lost. Web must not merge it into an AICL row by title or path.
 
+`session.create` includes operator-chosen AICL Session ID, device ID, title,
+provider/account, canonical project path, and optional model/reasoning values.
+`session.resume` includes the exact provider-native Session ID selected from a
+current snapshot. A successful first-stage mutation returns the ordinary
+command acknowledgement; `session.provider.status` then reports `ready`,
+`failed`, or `outcome_unknown`. Catalog rows expose
+`providerBindingStatus = unbound | pending | ready | failed | outcome_unknown`.
+Web must keep pending controls disabled and must never automatically retry a
+failed or ambiguous provider operation.
+
 ## Settings and conflicts
 
 `session.settings.snapshot` includes settings plus `revision` and `mutable`. On stale update, Core returns `SESSION_SETTINGS_CONFLICT` with current revision/settings. During an active Turn, semantic fields return `SESSION_BUSY`. Controls absent from the capability snapshot are disabled with the supplied reason.
