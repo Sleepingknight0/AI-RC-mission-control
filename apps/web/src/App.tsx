@@ -128,12 +128,53 @@ function connectionLabel(connection: ConnectionState) {
   return "Connecting to Core";
 }
 
-function StatusPill({ value, label }: { value: string; label?: string }) {
+function StatusPill({
+  value,
+  label,
+  pulse = false,
+}: {
+  value: string;
+  label?: string;
+  pulse?: boolean;
+}) {
+  const busy =
+    pulse ||
+    value === "running" ||
+    value === "syncing" ||
+    value === "connecting" ||
+    value === "reconnecting" ||
+    value === "busy";
   return (
-    <span className={`status-pill state-${value}`} aria-label={label ?? formatState(value)}>
+    <span
+      className={`status-pill state-${value}${busy ? " is-busy" : ""}`}
+      aria-label={label ?? formatState(value)}
+    >
       <span className="status-mark" aria-hidden="true" />
-      {label ?? formatState(value)}
+      <span className="status-pill-text">{label ?? formatState(value)}</span>
     </span>
+  );
+}
+
+function ThinkingOrb({
+  label = "Thinking",
+  compact = false,
+}: {
+  label?: string;
+  compact?: boolean;
+}) {
+  return (
+    <div className={`thinking-orb${compact ? " thinking-orb-compact" : ""}`} role="status">
+      <span className="thinking-spin" aria-hidden="true">
+        <span className="thinking-ring" />
+        <span className="thinking-core" />
+      </span>
+      <span className="thinking-label">{label}</span>
+      <span className="thinking-dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+    </div>
   );
 }
 
@@ -151,21 +192,25 @@ function useMediaQuery(query: string) {
 
 function ActivityBlock({ activity }: { activity: ToolActivity }) {
   const [open, setOpen] = useState(activity.status === "running");
+  const running = activity.status === "running";
   return (
     <details
-      className="activity-block"
+      className={`activity-block${running ? " activity-running" : ""}`}
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary>
-        <span>
+        <span className="activity-summary-copy">
           <small>{activity.kind.toUpperCase()}</small>
-          <strong>{activity.title}</strong>
+          <strong title={activity.title}>{activity.title}</strong>
         </span>
-        <StatusPill value={activity.status} />
+        <StatusPill value={activity.status} pulse={running} />
       </summary>
       <dl className="compact-facts">
-        <div><dt>Working directory</dt><dd>{activity.cwd ?? "Unavailable"}</dd></div>
+        <div>
+          <dt>Working directory</dt>
+          <dd title={activity.cwd ?? undefined}>{activity.cwd ?? "Unavailable"}</dd>
+        </div>
         <div><dt>Exit code</dt><dd>{activity.exitCode ?? "—"}</dd></div>
         <div><dt>Duration</dt><dd>{activity.durationMs == null ? "—" : `${activity.durationMs} ms`}</dd></div>
       </dl>
@@ -197,23 +242,32 @@ function TimelineEntry({
           <span>OPERATOR</span>
           <time dateTime={item.turn.startedAt}>{formatTime(item.turn.startedAt)}</time>
         </div>
-        <p>{item.turn.prompt}</p>
-        <StatusPill value={item.turn.status} />
+        <p className="message-copy">{item.turn.prompt}</p>
+        <StatusPill value={item.turn.status} pulse={item.turn.status === "running"} />
       </article>
     );
   }
   if (item.kind === "assistant") {
+    const streaming = !item.completed;
     return (
       <article
-        className="timeline-entry assistant-entry"
+        className={`timeline-entry assistant-entry${streaming ? " is-streaming" : ""}`}
         aria-posinset={position}
         aria-setsize={setSize}
       >
         <div className="entry-meta">
           <span>ASSISTANT</span>
-          <span>{item.completed ? "AUTHORITATIVE" : "STREAMING"}</span>
+          <span className={streaming ? "stream-badge" : undefined}>
+            {item.completed ? "AUTHORITATIVE" : "STREAMING"}
+          </span>
         </div>
-        <p className="assistant-copy">{item.content || "Waiting for first token…"}</p>
+        {streaming && item.content === "" ? (
+          <ThinkingOrb label="Generating" compact />
+        ) : (
+          <p className={`assistant-copy message-copy${streaming ? " has-caret" : ""}`}>
+            {item.content || "Waiting for first token…"}
+          </p>
+        )}
       </article>
     );
   }
@@ -236,7 +290,7 @@ function TimelineEntry({
     >
       <div className="entry-meta">
         <span>FILE CHANGE</span>
-        <StatusPill value={item.fileChange.status} />
+        <StatusPill value={item.fileChange.status} pulse={item.fileChange.status === "running"} />
       </div>
       <p className="path-list">
         {item.fileChange.files.map((file) => `${file.kind[0]?.toUpperCase()} ${file.path}`).join("\n")}
@@ -788,23 +842,44 @@ export function App() {
     [displayedDiff],
   );
   const operationalAnnouncement = `${connectionLabel(connection)}. Session ${selectedSessionId} is ${formatState(sessionState)}. ${pendingApprovals.length} pending ${pendingApprovals.length === 1 ? "approval" : "approvals"}.`;
+  const systemThinking =
+    connection === "connecting" ||
+    connection === "syncing" ||
+    connection === "reconnecting" ||
+    timelineBusy;
+  const thinkingLabel =
+    connection === "connecting"
+      ? "Connecting"
+      : connection === "reconnecting"
+        ? "Reconnecting"
+        : connection === "syncing"
+          ? "Syncing"
+          : timelineBusy
+            ? "Working"
+            : "Idle";
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${systemThinking ? " app-thinking" : ""}`}>
       <a className="skip-link" href="#session-console">Skip to Session Console</a>
       <p className="sr-only" aria-live="polite" aria-atomic="true">
         {operationalAnnouncement}
       </p>
+      <div className="ambient ambient-a" aria-hidden="true" />
+      <div className="ambient ambient-b" aria-hidden="true" />
 
       <header className="command-bar">
         <div className="brand-block">
-          <span className="brand-mark" aria-hidden="true">A</span>
-          <div>
-            <p className="eyebrow">AICL / PROTOTYPE 0</p>
+          <span className="brand-mark" aria-hidden="true">
+            <span className="brand-mark-core" />
+            MC
+          </span>
+          <div className="brand-copy">
+            <p className="eyebrow">AI-RC · FLIGHT OPS</p>
             <h1>Mission Control</h1>
           </div>
         </div>
         <div className="system-strip" aria-label="System connection status">
+          {systemThinking && <ThinkingOrb label={thinkingLabel} compact />}
           <StatusPill value={connection} label={connectionLabel(connection)} />
           <StatusPill
             value={runtime?.status ?? "offline"}
@@ -824,7 +899,7 @@ export function App() {
       <section className="mission-overview" aria-labelledby="overview-title">
         <div className="overview-heading">
           <div>
-            <p className="eyebrow">OPERATIONAL PICTURE</p>
+            <p className="eyebrow">TELEMETRY · ALL SESSIONS</p>
             <h2 id="overview-title">Mission Overview</h2>
           </div>
           <button
@@ -853,10 +928,10 @@ export function App() {
         <aside className="session-rail" aria-labelledby="sessions-title">
           <div className="rail-heading">
             <div>
-              <p className="eyebrow">MISSION INDEX</p>
+              <p className="eyebrow">VEHICLE INDEX</p>
               <h2 id="sessions-title">Sessions</h2>
             </div>
-            <span className="mono-meta">{sessions.length}</span>
+            <span className="mono-meta">{String(sessions.length).padStart(2, "0")}</span>
           </div>
           <div className="session-list">
             {sessions.length > 0 ? (
@@ -870,10 +945,15 @@ export function App() {
                 >
                   <span className="session-strip-top">
                     <span className="provider-label">CODEX</span>
-                    <StatusPill value={session.state} />
+                    <StatusPill
+                      value={session.state}
+                      pulse={session.state === "running" || session.state === "awaiting_approval"}
+                    />
                   </span>
-                  <strong>{session.sessionId}</strong>
-                  <span className="session-path">{session.cwd ?? "Project path unavailable"}</span>
+                  <strong title={session.sessionId}>{session.sessionId}</strong>
+                  <span className="session-path" title={session.cwd ?? undefined}>
+                    {session.cwd ?? "Project path unavailable"}
+                  </span>
                   <span className="session-strip-bottom">
                     <span>{session.turnCount} turns</span>
                     <span>{session.pendingApprovalCount} approvals</span>
@@ -901,15 +981,20 @@ export function App() {
 
         <main className="session-console" id="session-console" tabIndex={-1}>
           <header className="console-header">
-            <div>
-              <p className="eyebrow">SESSION CONSOLE</p>
-              <h2>{selectedSessionId}</h2>
-              <p className="console-path">{currentSummary?.cwd ?? "Project path unavailable"}</p>
+            <div className="console-title-block">
+              <p className="eyebrow">FLIGHT CONSOLE</p>
+              <h2 title={selectedSessionId}>{selectedSessionId}</h2>
+              <p className="console-path" title={currentSummary?.cwd ?? undefined}>
+                {currentSummary?.cwd ?? "Project path unavailable"}
+              </p>
             </div>
             <div className="console-state">
-              <StatusPill value={sessionState} />
+              <StatusPill
+                value={sessionState}
+                pulse={timelineBusy || sessionState === "awaiting_approval"}
+              />
               <span className="mono-meta">
-                RUNTIME G{runtime?.generation ?? "—"} · {formatElapsed(latest?.startedAt, now)}
+                RT G{runtime?.generation ?? "—"} · T+{formatElapsed(latest?.startedAt, now)}
               </span>
             </div>
           </header>
@@ -966,13 +1051,15 @@ export function App() {
           <section className="timeline-panel" aria-labelledby="timeline-title">
             <div className="panel-heading">
               <div>
-                <p className="eyebrow">NORMALIZED EVENTS</p>
+                <p className="eyebrow">DOWNLINK · NORMALIZED</p>
                 <h3 id="timeline-title">Timeline</h3>
                 <span className="sr-only" id="timeline-help">
                   Live event text is not announced automatically. Use Return to live after reviewing older events.
                 </span>
               </div>
-              <span className="mono-meta">SEQ {snapshot?.lastEventSeq ?? 0}</span>
+              <span className="mono-meta">
+                SEQ {String(snapshot?.lastEventSeq ?? 0).padStart(4, "0")}
+              </span>
             </div>
             <div
               className="timeline"
@@ -985,8 +1072,7 @@ export function App() {
             >
               {snapshot === null ? (
                 <div className="loading-state" role="status">
-                  <span className="loading-line" />
-                  <span className="loading-line short" />
+                  <ThinkingOrb label="Loading session" />
                   <p>Loading authoritative Session projection…</p>
                 </div>
               ) : timelineItems.length > 0 ? (
@@ -1044,7 +1130,7 @@ export function App() {
 
           <form onSubmit={submit} className="composer">
             <div className="composer-heading">
-              <label htmlFor="prompt">Command prompt</label>
+              <label htmlFor="prompt">Uplink command</label>
               <span className="mono-meta">CTRL / CMD + ENTER</span>
             </div>
             <textarea
@@ -1065,10 +1151,14 @@ export function App() {
                   disabled={snapshot?.activeTurnId == null || connection !== "online"}
                   onClick={interrupt}
                 >
-                  Stop turn
+                  Abort
                 </button>
-                <button type="submit" disabled={!availability.canSubmit || prompt.trim() === ""}>
-                  Dispatch
+                <button
+                  type="submit"
+                  className={timelineBusy ? "btn-busy" : undefined}
+                  disabled={!availability.canSubmit || prompt.trim() === ""}
+                >
+                  {timelineBusy ? "Working…" : "Launch"}
                 </button>
               </div>
             </div>
@@ -1103,7 +1193,12 @@ export function App() {
               <div><dt>Core</dt><dd><StatusPill value={connection} /></dd></div>
               <div><dt>Connector</dt><dd><StatusPill value={runtime?.status ?? "offline"} /></dd></div>
               <div><dt>Protocol</dt><dd>v{PROTOCOL_VERSION}</dd></div>
-              <div><dt>Runtime</dt><dd>{runtime?.runtimeId ?? "Unavailable"}</dd></div>
+              <div>
+                <dt>Runtime</dt>
+                <dd className="truncate-id" title={runtime?.runtimeId ?? undefined}>
+                  {runtime?.runtimeId ?? "Unavailable"}
+                </dd>
+              </div>
               <div><dt>Generation</dt><dd>{runtime?.generation ?? "—"}</dd></div>
               <div><dt>Durable seq</dt><dd>{snapshot?.lastEventSeq ?? 0}</dd></div>
             </dl>
