@@ -88,6 +88,9 @@ importers:
       '@aicl/connector':
         specifier: workspace:*
         version: link:../connector
+      '@aicl/core':
+        specifier: workspace:*
+        version: link:../core
       '@aicl/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

@@ -11,6 +11,7 @@ import { httpOrigin, loadAiclConfig } from "@aicl/config";
 import { redactSensitiveText } from "@aicl/protocol";
 
 import { BoundedLogLineWriter, RotatingJsonLog } from "./logging.js";
+import { migrateConfiguredDatabases } from "./maintenance.js";
 import { assertTcpPortAvailable } from "./port-availability.js";
 import {
   PRODUCTION_STATE_VERSION,
@@ -107,6 +108,17 @@ async function main(): Promise<void> {
       "127.0.0.1",
       config.connector.healthPort,
       "Connector",
+    );
+    const migration = await migrateConfiguredDatabases({
+      repositoryRoot: options.repositoryRoot,
+      configPath: loaded.configPath,
+      migrationRoot: options.buildRoot,
+      requireStopped: false,
+    });
+    supervisorLog.write(
+      "info",
+      "host.migrations",
+      `Core schema ${migration.coreSchemaVersion}; Connector schema ${migration.connectorSchemaVersion}; migrated=${migration.migrated}`,
     );
     core = startChild(coreEntry, childEnvironment, coreLog);
     watchUnexpectedExit("Core", core, requestStop);

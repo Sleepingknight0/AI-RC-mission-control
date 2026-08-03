@@ -135,8 +135,25 @@ pnpm startup:uninstall
 Task ใช้ interactive logon และ limited privilege เท่านั้น ไม่ใช้ LocalSystem
 ตรวจ milestone ถัดไปด้วย `pnpm next` ส่วน `pnpm status` ใช้ดู production state
 
-`pnpm backup` และ `pnpm restore` มี safety gate และจะหยุดด้วย exit code 2 จนกว่า
-M8.6 จะเพิ่ม verified SQLite backup/restore; ห้ามแทนที่ด้วยการ copy ไฟล์ WAL ตรง ๆ
+M8.6 เพิ่ม verified backup/restore แล้ว ห้าม copy ไฟล์ WAL ตรง ๆ ใช้คำสั่งนี้:
+
+```powershell
+# ใช้ได้ขณะ production ทำงาน; retention ค่าเริ่มต้น 14 ชุด
+pnpm backup
+
+# ตรวจชุด backup ตาม path ที่คำสั่งแรกแสดง
+pnpm run backup:verify -BackupPath 'C:\path\to\aicl-backup-...'
+
+# restore ต้องหยุด production ก่อน
+pnpm stop
+pnpm run restore -BackupPath 'C:\path\to\aicl-backup-...'
+pnpm start
+```
+
+ทุกชุดมี config snapshot, SHA-256/ขนาด, schema/SQLite source metadata และผ่าน
+full integrity, foreign-key และ domain-invariant checks ก่อนยอมรับ Restore จะ
+stage และ verify ก่อนสลับไฟล์ พร้อมเก็บฐานข้อมูลเดิมใน recovery directory;
+config snapshot เป็นหลักฐานและจะไม่ overwrite config ปัจจุบันอัตโนมัติ
 
 M8.5 มี private deployment automation แล้ว แต่ operator เลื่อน second-device
 acceptance ไว้เมื่อ 2026-08-03 โดยไม่ถือว่าผ่าน เส้นทาง Tailscale ด้านล่างยังคง
@@ -170,8 +187,8 @@ http://127.0.0.1:<core-port>` ถ้า tailnet ยังไม่เปิด H
 ```
 
 probe ตรวจ production HTML, Core/Connector health, short-lived runtime ticket และ
-authenticated WSS โดยไม่บันทึก ticket ระยะ M8.6 ยังต้องเพิ่ม verified
-backup/restore และ clean-install gate
+authenticated WSS โดยไม่บันทึก ticket M8.6 verified backup/restore และ
+clean-install gate เสร็จแล้ว แต่ M8.5 second-device/login gate ยังไม่ได้ทำ
 
 ถ้า Serve/Origin ขึ้น configured แต่ HTTPS ตอบ TLS internal error ให้รอการออก
 certificate สักครู่แล้วลองใหม่ อย่า loop `tailscale cert` ซ้ำ เพราะอาจชน CA rate
@@ -181,14 +198,15 @@ limit หากยังพบ Tailscale control-plane HTTP 500 ตอนสร�
 Core และ Connector ใช้ SQLite คนละไฟล์ โดยค่าเริ่มต้นอยู่ใต้
 `%LOCALAPPDATA%\AICL Mission Control\data` ตามลำดับ คำสั่ง
 `pnpm migrate` รัน schema migrations ของทั้งสอง process ซ้ำได้อย่างปลอดภัย
+และสร้าง verified pre-migration backup ก่อนอัปเกรดฐานข้อมูลเดิม
 Core commit durable state/event ก่อน broadcast ส่วน token deltas เป็น ephemeral
 และ browser จะขอ replay จาก durable sequence ล่าสุดเมื่อ reconnect
 
-Core schema version 4 เก็บ activity, file change, approval, artifact metadata
-และลำดับแสดงผลข้ามชนิด event ส่วน Connector schema version 2 ใช้ journal
+Core schema version 5 เก็บ activity, file change, approval, artifact metadata
+และลำดับแสดงผลข้ามชนิด event ส่วน Connector schema version 3 ใช้ journal
 sequence แบบ FIFO พร้อม durable command receipts สถานะ terminal จะปิด activity
 และ file change ที่ค้างให้ตรงกับ `completed`, `interrupted`, `failed` หรือ
-`outcome_unknown` เสมอ
+`outcome_unknown` เสมอ ทั้งสอง schema ผูก migration ledger กับ SHA-256 ของ SQL
 diff ไม่เกิน 512 KiB และ serialized envelope ไม่เกิน 768 KiB จึงส่ง inline;
 ข้อมูลที่เกินเพดานใดเพดานหนึ่งถูกแบ่ง chunk ผ่าน Connector journal แล้วดาวน์โหลด
 จาก `/artifacts/{artifactId}` ด้วย bearer token ชั่วคราว
@@ -208,9 +226,9 @@ $env:AICL_CONNECTOR_DB_PATH = 'C:\path\to\connector.db'
 pnpm dev
 ```
 
-ฐานข้อมูล Prototype เดิมใต้ `.data` จะไม่ถูกย้ายอัตโนมัติใน M8.3 หากต้องใช้
+ฐานข้อมูล Prototype เดิมใต้ `.data` จะไม่ถูกย้ายอัตโนมัติ หากต้องใช้
 ข้อมูลเดิมระหว่าง development ให้ตั้งสอง override ข้างบนก่อน `pnpm dev`;
-M8.6 เป็นเจ้าของ backup, upgrade migration และ restore gate
+M8.6 ไม่เดาตำแหน่งหรือย้ายฐานข้อมูล legacy ให้เอง
 
 ตรวจ binary/schema compatibility หรือสลับเป็น deterministic mock ได้ด้วย:
 

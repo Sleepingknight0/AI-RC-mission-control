@@ -135,7 +135,17 @@ export async function verifyBackupSet(
     manifest.config.bytes,
     "backup config",
   );
+  const components = new Set<DatabaseComponent>();
   for (const database of manifest.databases) {
+    if (components.has(database.component)) {
+      throw new Error(`Backup manifest repeats the ${database.component} database.`);
+    }
+    components.add(database.component);
+    if (database.fileName !== databaseFileName(database.component)) {
+      throw new Error(
+        `${database.component} backup filename does not match its component.`,
+      );
+    }
     const path = join(backupPath, database.fileName);
     await assertFileMetadata(path, database.sha256, database.bytes, database.component);
     const verified = verifyDatabase(path, database.component, true);
@@ -170,19 +180,19 @@ export async function restoreBackupSet(
   );
   mkdirSync(recoveryPath, { recursive: false, mode: 0o700 });
   const switched: Array<{ target: string; preserved: Array<[string, string]> }> = [];
-  const staged: string[] = [];
+  const staged = new Map<DatabaseComponent, string>();
   try {
     for (const database of manifest.databases) {
       const target = databasePath(context.config, database.component);
       const stage = `${target}.${process.pid}.${randomUUID()}.restore`;
       await backupDatabase(join(backupPath, database.fileName), stage);
       verifyDatabase(stage, database.component, true);
-      staged.push(stage);
+      staged.set(database.component, stage);
     }
 
     for (const database of manifest.databases) {
       const target = databasePath(context.config, database.component);
-      const stage = staged.shift();
+      const stage = staged.get(database.component);
       if (stage === undefined) throw new Error("Restore staging set is incomplete.");
       const preserved: Array<[string, string]> = [];
       for (const suffix of ["", "-wal", "-shm"] as const) {
@@ -226,7 +236,7 @@ export async function restoreBackupSet(
     }
     throw error;
   } finally {
-    for (const stage of staged) rmSync(stage, { force: true });
+    for (const stage of staged.values()) rmSync(stage, { force: true });
   }
 }
 
@@ -304,7 +314,7 @@ async function createBackupForContext(
     for (const component of ["core", "connector"] as const) {
       const source = databasePath(context.config, component);
       if (!existsSync(source)) continue;
-      const fileName = component === "core" ? "aicl-core.db" : "aicl-connector.db";
+      const fileName = databaseFileName(component);
       const target = join(temporaryPath, fileName);
       await backupDatabase(source, target);
       const verified = verifyDatabase(target, component, true);
@@ -615,6 +625,10 @@ function databasePath(config: AiclConfig, component: DatabaseComponent) {
     : config.paths.connectorDatabase;
 }
 
+function databaseFileName(component: DatabaseComponent) {
+  return component === "core" ? "aicl-core.db" : "aicl-connector.db";
+}
+
 function containedBackupDirectory(backupRoot: string, requestedPath: string) {
   if (!existsSync(requestedPath) || !statSync(requestedPath).isDirectory()) {
     throw new Error("Backup path does not exist or is not a directory.");
@@ -639,7 +653,7 @@ function pruneBackupSets(backupRoot: string, retentionCount: number) {
   const candidates = readdirSync(backupRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && entry.name.startsWith("aicl-backup-"))
     .map((entry) => join(backupRoot, entry.name))
-    .filter((path) => existsSync(join(path, "manifest.json")))
+    .filter((path) => isOwnedBackupSet(path))
     .sort((left, right) => right.localeCompare(left));
   const pruned: string[] = [];
   for (const path of candidates.slice(retentionCount)) {
@@ -648,6 +662,18 @@ function pruneBackupSets(backupRoot: string, retentionCount: number) {
     pruned.push(basename(contained));
   }
   return pruned;
+}
+
+function isOwnedBackupSet(path: string) {
+  try {
+    if (lstatSync(path).isSymbolicLink()) return false;
+    const manifest = BackupManifestSchema.parse(
+      JSON.parse(readFileSync(join(path, "manifest.json"), "utf8")) as unknown,
+    );
+    return manifest.backupId === basename(path);
+  } catch {
+    return false;
+  }
 }
 
 function removeDatabaseFiles(path: string) {

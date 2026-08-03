@@ -10,7 +10,8 @@ complete on the target Windows host. Prototype 0 is complete. M8 now turns that
 baseline into a loopback-only Windows daily-use host; M8.1 through M8.4 are
 complete. M8.5 automation and real private Serve configuration are implemented,
 but the operator deferred its second-device acceptance without marking it
-complete. M8.6 is now the current single milestone. Google identity plus
+complete. M8.6 backup/restore, migration, restart, and clean-install gates are
+complete. Google identity plus
 Cloudflare is planned as separate, unresolved remote-access work and is not
 part of M8.6.
 
@@ -34,7 +35,7 @@ part of M8.6.
 - M8.3 persistent LocalAppData configuration — **done**
 - M8.4 compiled lifecycle and Windows startup task — **done**
 - M8.5 private Tailscale Serve second-device acceptance — **deferred; not complete**
-- M8.6 backup/restore and clean-install gate — **current**
+- M8.6 backup/restore and clean-install gate — **done**
 
 ## Non-goals
 
@@ -63,10 +64,15 @@ part of M8.6.
 - Connector owns a separate inbox/outbox journal under the same configured data
   directory, never the Core database file
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
-- Core schema v4 projects tool activities, file changes, approvals, artifacts,
+- Core schema v5 projects tool activities, file changes, approvals, artifacts,
   cross-type display sequence, guarded transitions, and terminal work settlement
-- Connector schema v2 batches ephemeral UTF-8 command output, journals
+- Connector schema v3 batches ephemeral UTF-8 command output, journals
   large-diff chunks in FIFO order, and reports durable command receipts
+- Both migration ledgers bind applied SQL names and contents to SHA-256; startup
+  migrates before children and pre-backs up every existing upgrade
+- Compiled maintenance creates manifest-backed SQLite snapshots, verifies full
+  integrity/domain invariants, stages offline restore, preserves replaced files,
+  and retains only bounded AICL-owned backup sets
 - Browser and Connector endpoints require separate per-launch capabilities;
   browser upgrades also require an exact allowed Origin
 - Connector canonicalizes project roots against an operator-owned allowlist and
@@ -152,6 +158,10 @@ part of M8.6.
 - [x] Obtain a valid Serve certificate after the Tailscale ACME SetDNS failure clears (M8.5)
 - Deferred by operator: record successful evidence from a real second tailnet
   device (M8.5; not completed)
+- [x] Add coherent online SQLite backup, strict manifest, verification, and retention (M8.6)
+- [x] Add offline staged restore with recovery preservation and rollback (M8.6)
+- [x] Add pre-migration backup, migration checksums, and idempotence gates (M8.6)
+- [x] Pass empty install, restart, corrupt-backup, and source-free clean-directory gates (M8.6)
 
 ## M7.1 completed verification
 
@@ -171,8 +181,8 @@ durable display sequence, safe artifact media types, decoded semantic limits,
 and role-specific WebSocket capability helpers. Durable event envelopes carry
 Session-local sequence; assistant/command deltas remain ephemeral. Generated
 Codex types, raw events, and raw provider request IDs stay under the adapter
-boundary. Core SQLite schema is v4 and Connector schema is v2; both migrations
-remain idempotent.
+boundary. Core SQLite schema is v5 and Connector schema is v3; both migrations
+remain idempotent and checksum-bound.
 
 ## Tests and fault scenarios
 
@@ -348,7 +358,7 @@ remain idempotent.
   junctions before launch, and keep both SQLite files physically separate.
 - Bundle the production Node entry points and keep the Scheduled Task attached
   to a foreground Host supervisor. Stop Connector/provider before Core through
-  IPC; persist no launch capability and fail closed on unverified backup/restore.
+  IPC; persist no launch capability and accept only AD-020 verified backup/restore.
 
 ## Latest verified outcome
 
@@ -390,10 +400,17 @@ supervisor/Core/Connector PIDs through 3/15/30-second checkpoints. Certificate i
 recovered: remote `/health` passes and a host-side Playwright preflight confirms
 production HTML, runtime bootstrap, authenticated WSS, zero console warnings or
 errors, and no localStorage secret. The preflight is not second-device evidence.
-The second-device gate remains unproven but is operator-deferred. M8.6 may now
-proceed. Backup/restore remain fail-closed until M8.6 implements and verifies
-them. Do not introduce Google identity or Cloudflare ingress during M8.6; first
-resolve whether identity terminates at Cloudflare Access or inside AICL.
+The second-device gate remains unproven but is operator-deferred. M8.6 is now
+complete: `pnpm check` passed 107 automated tests plus compiled lifecycle,
+online backup/restore/restart/corruption, clean-directory production, and
+fake-CLI Serve gates. Real LocalAppData databases upgraded with a verified
+pre-migration backup to Core v5 / Connector v3; repeated migration was a no-op,
+a manual backup verified, and compiled Codex production returned ready. Exact
+evidence is in `reviews/codex/M8-FINAL-GATE.md`.
+
+Do not claim Google identity or Cloudflare ingress is implemented. First resolve
+whether identity terminates at Cloudflare Access or inside AICL; M8.5 remains
+deferred and incomplete.
 
 Prototype 0 remains complete. Grok visual refinement, Claude independent audit,
 and Codex integration of reproducible feedback remain optional P1–P3 work and

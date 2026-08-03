@@ -1368,3 +1368,70 @@ tailnet device when available; do not fabricate its JSON evidence on the host.
   resolved.
 - Existing Tailscale Serve configuration and compiled production were left
   running; disabling or removing them requires a separate operator request.
+
+---
+
+### 2026-08-03 08:30 — Codex — M8.6 maintenance and clean-install final gate
+
+**Outcome**
+
+- Implemented coherent online Core/Connector backups with Node's SQLite backup
+  API, a strict manifest, config snapshot, hashes, schema/SQLite metadata, full
+  integrity plus domain checks, and bounded managed-set retention.
+- Implemented offline verified restore through staging and atomic switch. The
+  replaced database/WAL/SHM files are preserved for recovery; partial switches
+  roll back and config is never silently overwritten.
+- Core schema advanced 4→5 and Connector 2→3 to bind every migration ledger row
+  to the SHA-256 of its SQL. Production startup migrates before spawning either
+  child and creates a verified pre-migration backup for an existing upgrade.
+- Added compiled operator commands and Windows gates for backup verification,
+  restore, migration, restart/reboot simulation, corrupt-backup rejection, and
+  a clean source-free production directory.
+
+**Verification**
+
+```text
+pnpm check
+→ 107 automated tests passed; 1 opt-in real-provider test skipped
+→ strict TypeScript, ESLint, Web/Node production builds passed
+→ compiled lifecycle gate passed
+→ backup/restore/restart/corruption gate passed
+→ clean-directory compiled install gate passed
+→ fake-CLI Tailscale automation gate passed
+
+real pnpm migrate
+→ verified pre-migration backup created
+→ Core v5 / Connector v3; repeated run migrated=false
+
+real pnpm backup + backup:verify
+→ coherent Core/Connector set verified while production was running
+
+real pnpm start
+→ Core ready, connectorConnected=true, schema=5
+→ Connector ready, Codex 0.146.0 compatible, runtime generation 27
+```
+
+**Security and recovery evidence**
+
+- Backup paths must be canonical children of the configured backup root and
+  cannot be links/junctions. Manifest identity, fixed component filenames,
+  uniqueness, byte size, hash, schema, SQLite source, foreign keys, durable
+  event order, active Turn, active Runtime, and journal sequence are checked.
+- Retention prunes only parseable manifests whose backup identity matches the
+  directory. Default retention is 14 sets; encryption policy is explicitly the
+  host volume or external backup destination, not application encryption.
+- Restore requires no production state and both loopback ports free. A corrupt
+  snapshot fails verification before switch.
+
+**Known limitations / next action**
+
+- M8.5 is still deferred and incomplete. No second-device/login acceptance was
+  claimed. Google Login plus Cloudflare remains unimplemented, and the boundary
+  between Cloudflare Access as IdP enforcement and application-owned Google OAuth
+  is unresolved.
+- Restore reports the backed-up config but intentionally restores databases only.
+- Follow-up M8.6 gate/docs changes remain uncommitted after the existing
+  `a54f4f2` maintenance-scaffolding commit; no push was performed.
+
+Prototype 0 plus the local compiled daily-use host is ready. Treat the future
+Google/Cloudflare authentication work as a separate architecture milestone.

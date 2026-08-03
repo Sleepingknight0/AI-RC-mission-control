@@ -34,7 +34,8 @@ try {
         @('apps/core/src/main.ts', 'apps/core/src/main.mjs'),
         @('apps/connector/src/main.ts', 'apps/connector/src/main.mjs'),
         @('apps/host/src/supervisor.ts', 'apps/host/supervisor.mjs'),
-        @('apps/host/src/doctor.ts', 'apps/host/doctor.mjs')
+        @('apps/host/src/doctor.ts', 'apps/host/doctor.mjs'),
+        @('apps/host/src/maintenance-cli.ts', 'apps/host/maintenance.mjs')
     )
     foreach ($entry in $entries) {
         $outputPath = Join-Path $buildRoot $entry[1]

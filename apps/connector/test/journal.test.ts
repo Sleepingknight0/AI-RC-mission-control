@@ -61,7 +61,7 @@ describe("Connector SQLite journal", () => {
     first.close();
 
     const second = new ConnectorJournal({ path });
-    expect(second.schemaVersion).toBe(2);
+    expect(second.schemaVersion).toBe(3);
     expect(Object.values(second.pragma("journal_mode"))).toContain("wal");
     expect(Object.values(second.pragma("foreign_keys"))).toContain(1);
     expect(second.connectorId).toBe(firstIdentity.connectorId);

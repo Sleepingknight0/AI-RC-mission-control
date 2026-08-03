@@ -32,7 +32,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M8.2 bounded runtime browser authentication implemented
 - [x] M8.3 typed persistent LocalAppData configuration implemented
 - [x] M8.4 compiled production lifecycle and Windows startup task implemented
-- [ ] M8.6 backup, restore, migration, and clean-install gate completed
+- [x] M8.6 backup, restore, migration, and clean-install gate completed
 
 ## Deferred operational work
 
@@ -50,13 +50,11 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**M8.6 — Backup, restore, migration, and clean-install gate.** The operator
-explicitly deferred M8.5 second-device acceptance without declaring it passed.
-The implemented Tailscale Serve path remains tailnet-only and configured, but
-is no longer a blocking milestone. Google identity plus Cloudflare is planned
-as a separate remote-access redesign; its authentication boundary is not yet
-decided and must not be mixed into M8.6. Prototype 0 remains complete; external
-AI reviews remain optional.
+**No active local daily-use milestone.** M8.6 is complete and Prototype 0 is
+running locally through the compiled production Host. M8.5 remains explicitly
+deferred and incomplete: Google Login plus Cloudflare is only a plan, and its
+authentication boundary has not been selected or implemented. External AI
+reviews remain optional.
 
 ## Last verified demo
 
@@ -65,7 +63,7 @@ AI reviews remain optional.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 4 and Connector schema version 2; `pnpm migrate` is idempotent. Core adds durable display order, database transition guards, and terminal activity/file-change reconciliation; Connector adds strict FIFO journal sequence.
+- Database schema: Core schema version 5 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, and terminal work reconciliation; Connector retains strict FIFO journal sequence.
 - Repository checks: `pnpm check` — strict typecheck, 66 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
 - Real Codex E2E: opt-in test passed in 66.70 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, new-process resume, no command replay, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
@@ -82,3 +80,4 @@ AI reviews remain optional.
 - M8.3 persistent config: Core and Connector share strict schema version 1 under `%LOCALAPPDATA%\AICL Mission Control\config.json`, created atomically without credentials or capabilities. It supplies loopback Core/Connector settings, exact browser origins, provider profile/CODEX_HOME, canonical project allowlist/default project, and separate data/log/backup paths; validated environment overrides remain in memory and the active same-origin URL is derived after them. Junction escape, invalid/unknown/versioned input, port/database separation, repeated/concurrent startup, bracketed IPv6 loopback, and configured child-environment tests pass. A two-process mock smoke proved concurrent config creation, Core/Connector connection, same-origin Web/runtime bootstrap, two SQLite files, non-persistence of overrides/capabilities, and cleanup. `pnpm check` passed 92 automated tests; the opt-in real-provider test remained skipped.
 - M8.4 production lifecycle: `pnpm build` creates self-contained Core, Connector, Host, and Doctor JavaScript bundles plus the Web build without runtime TypeScript or source maps. A Host supervisor starts Core before Connector, keeps the Connector capability out of state/logs, provides bounded redacted JSON logs, and shuts down Connector/provider then Core through IPC with verified process-tree fallback. Root start/stop/status/doctor commands and an interactive-user limited-privilege Scheduled Task are present; backup/restore commands deliberately fail closed until M8.6. An isolated Windows production smoke passed start, both health gates, same-origin HTML, status, clean stop, PID cleanup, and state cleanup. `pnpm check` passed 96 automated tests plus the compiled lifecycle smoke; the opt-in real-provider test remained skipped.
 - M8.5 deployment readiness (deferred, not completed): `pnpm remote:configure` derives an online device's exact HTTPS ts.net Origin, verifies a private `tailscale serve --bg --yes http://127.0.0.1:<core-port>` mapping, and persists the Origin only while AICL is stopped; no Funnel path exists. Doctor and `pnpm remote:status` distinguish app, Connector, Tailscale, Serve, Origin, Codex, and database state. Doctor also discovers the standard Windows Program Files install when the CLI is absent from PATH. A real collision exposed that production could briefly borrow health from an existing dev service; the Host now rejects occupied Core/Connector ports before spawning children. After confirming no active Turn, seven stale AICL dev launcher roots and their descendants were stopped. Compiled production then remained ready with stable supervisor/Core/Connector PIDs through 3/15/30-second checkpoints. Certificate issuance recovered: `/health` succeeds through the ts.net HTTPS endpoint, and a Playwright preflight on the host loaded production HTML, obtained a runtime ticket, opened authenticated WSS, reported Core/Connector ready, emitted no console warnings/errors, and stored no localStorage secret. `pnpm check` passed 102 automated tests plus compiled lifecycle and fake-CLI Serve smokes. No real second-device evidence was captured before the operator deferred this gate.
+- M8.6 maintenance/final gate: Node's SQLite backup API creates coherent Core/Connector snapshots without copying live WAL files. Each managed set includes a strict manifest, config snapshot, SHA-256/size, schema and SQLite source metadata, full integrity/foreign-key/domain checks, bounded retention, and an explicit at-rest policy. Restore requires stopped services, verifies before staging, atomically switches databases, and preserves replaced files for recovery; config is intentionally not auto-restored. Production startup migrates before children, existing upgrades create a verified pre-migration backup, and migration checksums reject drift. `pnpm check` passed 107 automated tests plus lifecycle, online backup/restore/restart/corruption, clean-directory compiled install, and fake-CLI Serve gates. The real LocalAppData databases upgraded from Core 4 / Connector 2 to 5 / 3 after pre-backup, a repeated migration made no change, a manual backup verified, and compiled Codex production returned ready. Evidence: `reviews/codex/M8-FINAL-GATE.md`.

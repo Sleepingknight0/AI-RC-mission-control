@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$ConfigPath,
-    [ValidateRange(1, 365)][int]$RetentionCount = 14
+    [Parameter(Mandatory = $true)][string]$BackupPath,
+    [string]$ConfigPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,13 +9,14 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Get-AiclRepositoryRoot
 $resolvedConfigPath = Get-AiclConfigPath -ConfigPath $ConfigPath
+$resolvedBackupPath = [System.IO.Path]::GetFullPath($BackupPath)
 $buildRoot = Join-Path $repositoryRoot 'build\production'
 Assert-AiclProductionBuild -BuildRoot $buildRoot
 
-& node (Join-Path $buildRoot 'apps\host\maintenance.mjs') backup `
+& node (Join-Path $buildRoot 'apps\host\maintenance.mjs') verify `
     --repository-root $repositoryRoot `
     --config-path $resolvedConfigPath `
-    --retention-count ([string]$RetentionCount)
+    --backup-path $resolvedBackupPath
 if ($LASTEXITCODE -ne 0) {
-    throw 'Verified AICL backup failed.'
+    throw 'AICL backup verification failed.'
 }

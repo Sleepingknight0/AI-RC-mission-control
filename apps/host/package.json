@@ -13,6 +13,7 @@
   "dependencies": {
     "@aicl/config": "workspace:*",
     "@aicl/connector": "workspace:*",
+    "@aicl/core": "workspace:*",
     "@aicl/protocol": "workspace:*",
     "zod": "^3.25.76"
   }

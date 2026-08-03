@@ -170,7 +170,33 @@ This may be completed in a later milestone, but the protocol must not make it im
   5 MiB generations per service.
 - The startup task names the current interactive operator, limited privilege,
   and never LocalSystem.
-- Backup/restore fail closed until the verified M8.6 gate exists.
+- Backup and restore operate only through the compiled maintenance bundle and
+  never copy a live WAL database directly.
+
+### M8-DATA-001 — Verified backup and retention
+
+- Online Core and Connector snapshots use SQLite's backup API.
+- The manifest binds fixed component filenames to SHA-256, byte size, schema,
+  SQLite source, timestamp, config snapshot, and integrity result.
+- Verification performs full integrity, foreign-key, and domain-invariant checks.
+- Retention removes only parseable AICL-owned backup sets and never an unknown
+  directory that merely shares the naming prefix.
+
+### M8-DATA-002 — Staged restore and migration
+
+- Restore requires stopped services, rejects outside-root, linked, malformed,
+  duplicated, renamed, or corrupt backup components, and stages before switch.
+- Replaced databases and WAL/SHM files remain in a recovery directory; a failed
+  switch rolls back. Configuration is reported but not silently restored.
+- An existing schema upgrade creates a verified pre-migration backup. Migration
+  checksums reject drift and repeated migration is a no-op.
+
+### M8-DATA-003 — Clean production gate
+
+- A clean directory containing only the compiled build and lifecycle scripts
+  starts Core/Connector/Web without `node_modules`, Vite, `tsx`, or `.ts` files.
+- Empty install, stop/start reboot simulation, backup/restore, corrupt-backup
+  rejection, process cleanup, and same-origin health all pass on Windows.
 
 ### M8-REMOTE-001 — Private Serve boundary
 

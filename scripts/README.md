@@ -18,8 +18,11 @@
 | `Test-TailscaleRemote.ps1` | Prove HTTPS/runtime-ticket/WSS access from a second tailnet device |
 | `Install-AiclStartupTask.ps1` | Install interactive-user logon startup with restart policy |
 | `Uninstall-AiclStartupTask.ps1` | Remove the AICL logon task |
-| `Backup-Aicl.ps1` / `Restore-Aicl.ps1` | Fail closed until verified M8.6 operations exist |
+| `Backup-Aicl.ps1` / `Verify-AiclBackup.ps1` | Create/verify coherent manifest-backed SQLite backup sets |
+| `Restore-Aicl.ps1` / `Migrate-Aicl.ps1` | Offline staged restore and repeat-safe pre-backed migration |
 | `Test-ProductionLifecycle.ps1` | Isolated compiled start/health/status/stop smoke |
+| `Test-M8Maintenance.ps1` | Backup/restore/restart/idempotence/corruption gate |
+| `Test-CleanProductionInstall.ps1` | Run the compiled app from a clean source-free directory |
 
 All scripts resolve paths relative to the repository root. Run them from PowerShell on the target Windows host. `Invoke-Codex.ps1` defaults to the active M8 daily-use loop prompt; pass an older prompt explicitly only when reproducing historical work.
 
@@ -28,7 +31,10 @@ overrides while Core and Connector load the shared versioned config under
 LocalAppData. These development overrides are never persisted.
 
 Root shortcuts are `pnpm build`, `pnpm start`, `pnpm stop`, `pnpm status`,
-`pnpm doctor`, `pnpm startup:install`, and `pnpm startup:uninstall`. `pnpm next`
+`pnpm doctor`, `pnpm migrate`, `pnpm backup`, `pnpm startup:install`, and
+`pnpm startup:uninstall`. Parameterized verification/restore use
+`pnpm run backup:verify -BackupPath <path>` and
+`pnpm run restore -BackupPath <path>` while production is stopped. `pnpm next`
 prints the next milestone. The startup task runs `Run-ProductionTask.ps1` in the
 foreground under the interactive limited operator so Task Scheduler can observe
 and restart a failed Host; normal terminal start remains backgrounded.

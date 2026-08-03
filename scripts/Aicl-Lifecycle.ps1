@@ -61,6 +61,7 @@ function Assert-AiclProductionBuild {
     $required = @(
         (Join-Path $BuildRoot 'apps\host\supervisor.mjs'),
         (Join-Path $BuildRoot 'apps\host\doctor.mjs'),
+        (Join-Path $BuildRoot 'apps\host\maintenance.mjs'),
         (Join-Path $BuildRoot 'apps\core\src\main.mjs'),
         (Join-Path $BuildRoot 'apps\connector\src\main.mjs'),
         (Join-Path $BuildRoot 'apps\web\dist\index.html')

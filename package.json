@@ -17,6 +17,7 @@
     "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Stop-Production.ps1",
     "status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Status-Production.ps1",
     "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Doctor-Aicl.ps1",
+    "backup:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Verify-AiclBackup.ps1",
     "remote:configure": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Configure-TailscaleServe.ps1",
     "remote:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Status-TailscaleServe.ps1",
     "remote:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-TailscaleRemote.ps1",
@@ -24,8 +25,8 @@
     "startup:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Uninstall-AiclStartupTask.ps1",
     "backup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Backup-Aicl.ps1",
     "restore": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Restore-Aicl.ps1",
-    "migrate": "pnpm --filter @aicl/core migrate && pnpm --filter @aicl/connector migrate",
-    "check": "pnpm run build && pnpm -r --if-present run check && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-ProductionLifecycle.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-TailscaleAutomation.ps1",
+    "migrate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Migrate-Aicl.ps1",
+    "check": "pnpm run build && pnpm -r --if-present run check && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-ProductionLifecycle.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-M8Maintenance.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-CleanProductionInstall.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Test-TailscaleAutomation.ps1",
     "test": "pnpm -r --if-present run test",
     "typecheck": "pnpm -r --if-present run typecheck",
     "lint": "pnpm -r --if-present run lint"

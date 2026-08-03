@@ -154,8 +154,8 @@ service). Complete lines are buffered only to 64 KiB before being discarded, and
 known secrets are redacted before disk writes. The Windows logon task runs under
 the current interactive operator with limited privileges and remains attached to
 the supervisor so Task Scheduler can restart failures. LocalSystem is rejected.
-Backup and restore commands fail closed until M8.6 rather than copying a live WAL
-database and presenting it as a verified backup.
+M8.4 originally left backup/restore fail-closed; AD-020 defines the verified M8.6
+replacement and still forbids presenting a direct live-WAL copy as a backup.
 
 ## AD-019 — Tailnet exposure is explicit, exact-origin, and privately verified
 
@@ -178,3 +178,26 @@ not the selected future remote-access baseline. The operator plans Google
 identity plus Cloudflare, but no replacement decision exists until the team
 chooses whether Google identity terminates at Cloudflare Access or inside AICL.
 That choice requires a separate security-boundary decision before implementation.
+
+## AD-020 — Backup sets are verified artifacts and restore is an offline switch
+
+Core and Connector remain separate SQLite authorities. Backup uses Node's
+SQLite backup API so a live WAL database is snapshotted coherently; direct file
+copy is not an operator path. A backup set has fixed component filenames plus a
+strict manifest recording config snapshot metadata, SHA-256, byte size, schema
+version, SQLite version/source ID, timestamps, full integrity result, and the
+honest `host-volume-or-external` at-rest encryption policy. Retention defaults
+to 14 sets and deletes only manifests whose identity matches their directory.
+
+Restore requires the Host to be stopped and the configured ports free. It
+validates containment, links, manifest identity, hashes, SQLite integrity,
+foreign keys, and durable sequencing/concurrency invariants before staging new
+files. The switch preserves the replaced database/WAL/SHM files in a recovery
+directory and rolls back a partial switch. The config snapshot is evidence, not
+an automatic config overwrite.
+
+Production startup runs migrations before Core or Connector starts. Any
+existing supported database that needs an upgrade receives a verified
+pre-migration backup first. Schema ledgers bind every SQL migration name and
+contents to SHA-256; mismatch and newer schemas fail closed, while repeated
+migration is a no-op.
