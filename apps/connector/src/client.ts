@@ -16,6 +16,7 @@ import {
   type ConnectorEnvelope,
   type CoreToConnectorEnvelope,
   type ProviderFleetSnapshot,
+  type ProviderNativeSessionSnapshot,
   type Runtime,
 } from "@aicl/protocol";
 import WebSocket from "ws";
@@ -40,6 +41,11 @@ export interface ConnectorOptions {
     revision: number,
   ) => ProviderFleetSnapshot | Promise<ProviderFleetSnapshot>;
   providerInventoryTimeoutMs?: number;
+  providerNativeSessions?: (
+    revision: number,
+  ) => ProviderNativeSessionSnapshot | Promise<ProviderNativeSessionSnapshot>;
+  providerNativeSessionIdentity?: { providerId: string; accountId: string };
+  providerNativeSessionTimeoutMs?: number;
 }
 
 export interface MockConnectorOptions {
@@ -80,6 +86,8 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
   const inFlightCommands = new Set<Promise<void>>();
   let inventoryRevision = 0;
   let inventoryRefreshInFlight: Promise<void> | undefined;
+  let nativeSessionRevision = 0;
+  let nativeSessionRefreshInFlight: Promise<void> | undefined;
   let readyResolved = false;
   let resolveReady: () => void = () => undefined;
   const ready = new Promise<void>((resolve) => {
@@ -191,7 +199,8 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     if (
       envelope.type === "connector.turn.delta" ||
       envelope.type === "connector.command.output.batch" ||
-      envelope.type === "connector.providers.snapshot"
+      envelope.type === "connector.providers.snapshot" ||
+      envelope.type === "connector.sessions.native.snapshot"
     ) {
       sendRaw(decorateEphemeral(envelope));
       return;
@@ -278,6 +287,58 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     return inventoryRefreshInFlight;
   };
 
+  const refreshNativeSessions = () => {
+    if (options.providerNativeSessions === undefined) return Promise.resolve();
+    if (nativeSessionRefreshInFlight !== undefined) {
+      return nativeSessionRefreshInFlight;
+    }
+    const revision = ++nativeSessionRevision;
+    nativeSessionRefreshInFlight = (async () => {
+      const timeoutMs = options.providerNativeSessionTimeoutMs ?? 3_000;
+      let timeout: NodeJS.Timeout | undefined;
+      try {
+        const snapshot = await Promise.race([
+          Promise.resolve().then(() => options.providerNativeSessions?.(revision)),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("Provider Session refresh timed out")),
+              timeoutMs,
+            );
+          }),
+        ]);
+        if (snapshot === undefined || stopped) return;
+        emit(
+          makeEnvelope("connector.sessions.native.snapshot", {
+            snapshot: { ...snapshot, revision },
+          }),
+        );
+      } catch {
+        if (stopped || options.providerNativeSessionIdentity === undefined) return;
+        const observedAt = new Date().toISOString();
+        emit(
+          makeEnvelope("connector.sessions.native.snapshot", {
+            snapshot: {
+              snapshotId: `native-${crypto.randomUUID()}`,
+              revision,
+              providerId: options.providerNativeSessionIdentity.providerId,
+              accountId: options.providerNativeSessionIdentity.accountId,
+              observedAt,
+              staleAt: new Date(Date.now() + 60_000).toISOString(),
+              freshness: "unavailable" as const,
+              truncated: false,
+              sessions: [],
+              notice: "Provider Session discovery failed or timed out",
+            },
+          }),
+        );
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+        nativeSessionRefreshInFlight = undefined;
+      }
+    })();
+    return nativeSessionRefreshInFlight;
+  };
+
   const handleCommand = async (
     command: CoreToConnectorEnvelope,
   ) => {
@@ -287,6 +348,17 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     }
     if (command.type === "connector.providers.refresh") {
       await refreshProviderInventory();
+      return;
+    }
+    if (command.type === "connector.sessions.native.refresh") {
+      if (
+        options.providerNativeSessionIdentity?.providerId !==
+          command.payload.providerId ||
+        options.providerNativeSessionIdentity.accountId !== command.payload.accountId
+      ) {
+        return;
+      }
+      await refreshNativeSessions();
       return;
     }
     const decision = journal.recordCommand(command);
@@ -435,6 +507,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       );
       for (const event of journal.pendingEvents()) sendRaw(event);
       void refreshProviderInventory();
+      void refreshNativeSessions();
       if (!readyResolved) {
         readyResolved = true;
         resolveReady();

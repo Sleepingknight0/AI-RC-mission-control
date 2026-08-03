@@ -12,6 +12,9 @@ After `server.hello`, Core sends:
   `staleAt`, source, freshness, degraded flag, bounded
   provider/account/capability/model/usage evidence, and an optional notice;
 - `sessions.catalog.snapshot` — bounded first page of AICL entries and a separate discovered-native page, filters, cursor, and catalog revision;
+- `sessions.native.snapshot` — one bounded ephemeral Codex-native page for an
+  exact provider/account identity, with freshness, truncation, and a redacted
+  omission notice;
 - `session.capabilities.snapshot` when a Session is selected;
 - existing `sessions.snapshot` for M8 compatibility.
 
@@ -27,6 +30,7 @@ All mutations carry stable `commandId`.
   a new revision. With no retained snapshot and no Connector it returns
   `PROVIDER_INVENTORY_UNAVAILABLE`.
 - `sessions.catalog.list`
+- `sessions.native.refresh` with exact provider/account IDs
 - `session.create`, `session.resume`, `session.rename`, `session.pin`, `session.archive`
 - `session.settings.update` with `expectedRevision`
 - `approval.lease.create`, `approval.lease.revoke`, `approval.emergency_stop`
@@ -58,6 +62,13 @@ or stale. Native records are never presented as imported AICL Sessions. Core
 returns `SESSION_CATALOG_CURSOR_INVALID` or `SESSION_CATALOG_CURSOR_STALE`; Web
 must discard the cursor and explicitly request a fresh first page. It must not
 retry a metadata mutation automatically.
+
+Native discovery rows contain provider/account/native IDs, human title,
+bounded preview, authorized canonical project path and label, branch, provider
+status, timestamps, pinned/archived flags, and `canResume`. They contain no
+rollout path, account email, provider credential path, or raw provider payload.
+The snapshot is replaced by revision and becomes `stale` when Connector
+identity is lost. Web must not merge it into an AICL row by title or path.
 
 ## Settings and conflicts
 

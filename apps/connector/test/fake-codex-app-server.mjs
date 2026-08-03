@@ -42,6 +42,74 @@ lines.on("line", (line) => {
     case "thread/resume":
       send({ id: message.id, result: { thread: { id: "fake-thread" } } });
       break;
+    case "account/read":
+      send({
+        id: message.id,
+        result: {
+          account: {
+            type: "chatgpt",
+            email: "must-not-reach-browser@example.invalid",
+            planType: "plus",
+          },
+          requiresOpenaiAuth: false,
+        },
+      });
+      break;
+    case "model/list":
+      send({
+        id: message.id,
+        result: {
+          data: [
+            {
+              id: "fake-codex-model",
+              model: "fake-codex-model",
+              displayName: "Fake Codex Model",
+              description: "Deterministic model for connector tests",
+              hidden: false,
+              isDefault: true,
+              inputModalities: ["text", "image"],
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: [
+                { reasoningEffort: "medium", description: "Balanced" },
+                { reasoningEffort: "high", description: "More reasoning" },
+              ],
+            },
+          ],
+          nextCursor: null,
+        },
+      });
+      break;
+    case "thread/list": {
+      const archived = message.params.archived === true;
+      send({
+        id: message.id,
+        result: {
+          data: [
+            {
+              id: archived ? "fake-native-archived" : "fake-native-active",
+              sessionId: archived ? "fake-native-archived" : "fake-native-active",
+              name: archived ? "Archived native work" : "Active native work",
+              preview: "Native session preview",
+              cwd: process.cwd(),
+              createdAt: 1_700_000_000,
+              updatedAt: archived ? 1_700_000_100 : 1_700_000_200,
+              recencyAt: null,
+              cliVersion: "0.146.0",
+              ephemeral: false,
+              isPinned: !archived,
+              gitInfo: { branch: "main", originUrl: null, sha: null },
+              modelProvider: "openai",
+              source: "cli",
+              status: { type: "idle" },
+              turns: [],
+            },
+          ],
+          nextCursor: null,
+          backwardsCursor: null,
+        },
+      });
+      break;
+    }
     case "turn/start": {
       const text = String(message.params.input[0].text);
       const turnId = `fake-turn-${message.params.clientUserMessageId}`;

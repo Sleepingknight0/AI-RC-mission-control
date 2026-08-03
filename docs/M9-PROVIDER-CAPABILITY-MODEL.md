@@ -37,3 +37,11 @@ Snapshots are capped at 64 providers, 32 accounts per provider, 128 models, and 
 ## Codex M9 support
 
 Codex 0.146.0 advertises verified `thread/list`, `thread/start`, `thread/resume`, `model/list`, `account/read`, model/reasoning overrides, and local image input. Only the configured and successfully probed Codex account earns remote-control capabilities. Other Codex profiles remain distinct inventory until activated by a verified Connector profile path.
+
+The active Connector now performs bounded `account/read` and paginated
+`model/list` probes over the same app-server process used for Turns. The account
+probe contributes only authenticated/not-authenticated state; provider email,
+plan, tokens, and credential paths are discarded. Model IDs, labels,
+modalities, and reasoning options are accepted only after normalized schema
+validation. A failed or timed-out probe degrades Codex capability evidence but
+does not remove other registry providers or block Turn dispatch.

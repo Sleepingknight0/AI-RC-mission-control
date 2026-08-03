@@ -5,6 +5,7 @@ import {
   makeEnvelope,
   websocketCapability,
   type ProviderFleetSnapshot,
+  type ProviderNativeSessionSnapshot,
   type ServerEnvelope,
 } from "@aicl/protocol";
 import WebSocket from "ws";
@@ -115,6 +116,71 @@ describe("provider inventory relay", () => {
     expect(unavailable.payload.snapshot.providers).toEqual([]);
     browser.socket.close();
   });
+
+  it("relays, refreshes, reconnects, and stales native Session snapshots", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    let refreshes = 0;
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider: new MockProvider(),
+      providerName: "mock",
+      providerInventory: (revision) => fleet(revision),
+      providerNativeSessionIdentity: { providerId: "codex", accountId: "blue" },
+      providerNativeSessions: (revision) => {
+        refreshes += 1;
+        return nativeSessions(revision);
+      },
+    });
+    handles.push(connector);
+    await connector.ready;
+
+    const browser = await openBrowser(core.browserUrl, core.browserToken);
+    const initial = await waitFor(browser, "sessions.native.snapshot");
+    expect(initial.payload.snapshot.sessions[0]?.providerSessionId).toBe(
+      "thread-native-1",
+    );
+    const before = refreshes;
+    browser.socket.send(
+      JSON.stringify(
+        makeEnvelope("sessions.native.refresh", {
+          providerId: "codex",
+          accountId: "blue",
+        }),
+      ),
+    );
+    await waitUntil(() => refreshes > before);
+
+    browser.socket.send(
+      JSON.stringify(
+        makeEnvelope("sessions.native.refresh", {
+          providerId: "codex",
+          accountId: "green",
+        }),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(refreshes).toBe(before + 1);
+
+    browser.socket.close();
+    const reconnected = await openBrowser(core.browserUrl, core.browserToken);
+    expect(
+      (await waitFor(reconnected, "sessions.native.snapshot")).payload.snapshot
+        .sessions,
+    ).toHaveLength(1);
+
+    await connector.close();
+    handles.splice(handles.indexOf(connector), 1);
+    await waitUntil(() =>
+      reconnected.messages.some(
+        (message) =>
+          message.type === "sessions.native.snapshot" &&
+          message.payload.snapshot.freshness === "stale",
+      ),
+    );
+    reconnected.socket.close();
+  });
 });
 
 function fleet(revision: number): ProviderFleetSnapshot {
@@ -149,6 +215,13 @@ function fleet(revision: number): ProviderFleetSnapshot {
             observedAt,
             reason: null,
           },
+          {
+            key: "list_sessions",
+            state: "supported",
+            provenance: "provider_probe",
+            observedAt,
+            reason: null,
+          },
         ],
         accounts: [
           {
@@ -175,6 +248,39 @@ function fleet(revision: number): ProviderFleetSnapshot {
         modelsState: "unavailable",
         usageState: "unavailable",
         usageMeters: [],
+      },
+    ],
+  };
+}
+
+function nativeSessions(revision: number): ProviderNativeSessionSnapshot {
+  const observedAt = new Date().toISOString();
+  return {
+    snapshotId: `native-${revision}`,
+    revision,
+    providerId: "codex",
+    accountId: "blue",
+    observedAt,
+    staleAt: new Date(Date.now() + 60_000).toISOString(),
+    freshness: "live",
+    truncated: false,
+    notice: null,
+    sessions: [
+      {
+        providerId: "codex",
+        accountId: "blue",
+        providerSessionId: "thread-native-1",
+        title: "Native Session",
+        preview: null,
+        projectPath: process.cwd(),
+        projectName: "project",
+        branch: null,
+        providerStatus: "idle",
+        createdAt: observedAt,
+        updatedAt: observedAt,
+        pinned: false,
+        archived: false,
+        canResume: true,
       },
     ],
   };

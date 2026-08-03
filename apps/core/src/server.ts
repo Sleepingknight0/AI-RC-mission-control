@@ -18,6 +18,7 @@ import {
   MAX_OUTPUT_BATCH_BYTES,
   MAX_WEBSOCKET_MESSAGE_BYTES,
   ProviderFleetSnapshotSchema,
+  ProviderNativeSessionSnapshotSchema,
   ServerEnvelopeSchema,
   decodeJson,
   makeEnvelope,
@@ -29,6 +30,7 @@ import {
   type ConnectorEnvelope,
   type ProtocolError,
   type ProviderFleetSnapshot,
+  type ProviderNativeSessionSnapshot,
   type Runtime,
   type ServerEnvelope,
 } from "@aicl/protocol";
@@ -134,6 +136,10 @@ export async function startCoreServer(
   let lastRuntime: Runtime | undefined = store.latestRuntime();
   let providerFleetSnapshot: ProviderFleetSnapshot | undefined;
   let providerSnapshotBootId: string | undefined;
+  const nativeSessionSnapshots = new Map<
+    string,
+    { snapshot: ProviderNativeSessionSnapshot; bootId: string }
+  >();
   let closing = false;
   const rateWindows = new WeakMap<
     WebSocket,
@@ -326,6 +332,15 @@ export async function startCoreServer(
       null,
       makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
     );
+    for (const [key, retained] of nativeSessionSnapshots) {
+      const snapshot = ProviderNativeSessionSnapshotSchema.parse({
+        ...retained.snapshot,
+        freshness: "stale",
+        notice: "Connector offline; provider Sessions may be stale",
+      });
+      nativeSessionSnapshots.set(key, { ...retained, snapshot });
+      broadcast(null, makeEnvelope("sessions.native.snapshot", { snapshot }));
+    }
   };
 
   const canControlProvider = (providerId: string, accountId: string | null) => {
@@ -508,6 +523,59 @@ export async function startCoreServer(
             }),
           );
         }
+        return;
+      }
+      case "sessions.native.refresh": {
+        const key = nativeSnapshotKey(
+          message.payload.providerId,
+          message.payload.accountId,
+        );
+        const retained = nativeSessionSnapshots.get(key);
+        if (retained !== undefined) {
+          send(
+            socket,
+            makeEnvelope("sessions.native.snapshot", {
+              snapshot: retained.snapshot,
+            }),
+          );
+        }
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        const account = provider?.accounts.find(
+          (candidate) => candidate.accountId === message.payload.accountId,
+        );
+        const canList = provider?.capabilities.some(
+          (capability) =>
+            capability.key === "list_sessions" &&
+            capability.state === "supported",
+        );
+        const connection = connectorConnection;
+        if (
+          connection?.socket.readyState !== WebSocket.OPEN ||
+          provider === undefined ||
+          account === undefined ||
+          account.control !== "remote_control" ||
+          !canList
+        ) {
+          if (retained === undefined) {
+            send(
+              socket,
+              makeEnvelope("protocol.error", {
+                error: protocolError(
+                  "NATIVE_SESSION_DISCOVERY_UNAVAILABLE",
+                  "Provider Session discovery is unavailable for this account.",
+                  { retryable: connection?.socket.readyState !== WebSocket.OPEN },
+                ),
+              }),
+            );
+          }
+          return;
+        }
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.sessions.native.refresh", message.payload),
+        );
         return;
       }
       case "session.rename":
@@ -906,6 +974,40 @@ export async function startCoreServer(
       return;
     }
 
+    if (message.type === "connector.sessions.native.snapshot") {
+      if (
+        connectorConnection?.socket !== socket ||
+        connectorConnection.connectorId !== message.connectorId ||
+        connectorConnection.bootId !== message.bootId ||
+        connectorConnection.runtime.runtimeId !== message.runtimeId ||
+        connectorConnection.runtime.generation !== message.runtimeGeneration
+      ) {
+        return;
+      }
+      const key = nativeSnapshotKey(
+        message.payload.snapshot.providerId,
+        message.payload.snapshot.accountId,
+      );
+      const retained = nativeSessionSnapshots.get(key);
+      if (
+        retained?.bootId === message.bootId &&
+        message.payload.snapshot.revision <= retained.snapshot.revision
+      ) {
+        return;
+      }
+      nativeSessionSnapshots.set(key, {
+        snapshot: message.payload.snapshot,
+        bootId: message.bootId,
+      });
+      broadcast(
+        null,
+        makeEnvelope("sessions.native.snapshot", {
+          snapshot: message.payload.snapshot,
+        }),
+      );
+      return;
+    }
+
     if (message.type === "connector.turn.delta") {
       if (
         connectorConnection?.socket === socket &&
@@ -1078,6 +1180,14 @@ export async function startCoreServer(
       send(
         socket,
         makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
+      );
+    }
+    for (const retained of nativeSessionSnapshots.values()) {
+      send(
+        socket,
+        makeEnvelope("sessions.native.snapshot", {
+          snapshot: retained.snapshot,
+        }),
       );
     }
     socket.on("message", (data) => {
@@ -1325,6 +1435,10 @@ function publicConnectorError(code: string) {
     APPROVAL_DELIVERY_FAILED: "Provider approval delivery could not be confirmed.",
   };
   return messages[code] ?? "Connector command failed.";
+}
+
+function nativeSnapshotKey(providerId: string, accountId: string) {
+  return `${providerId}\u0000${accountId}`;
 }
 
 function constantTimeEqual(left: string, right: string) {

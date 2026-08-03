@@ -271,16 +271,25 @@ export class CodexRpcProcess {
     return result;
   }
 
-  async request(method: string, params?: unknown) {
+  async request(
+    method: string,
+    params?: unknown,
+    options: { timeoutMs?: number; terminateOnTimeout?: boolean } = {},
+  ) {
     try {
       return await this.#broker.request(
         method,
         params,
-        this.#options.timeoutMs,
+        options.timeoutMs ?? this.#options.timeoutMs,
         (message) => this.#write(message),
       );
     } catch (error) {
-      if (error instanceof ProviderRpcTimeoutError) void this.killTree();
+      if (
+        error instanceof ProviderRpcTimeoutError &&
+        (options.terminateOnTimeout ?? true)
+      ) {
+        void this.killTree();
+      }
       throw error;
     }
   }

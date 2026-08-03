@@ -500,7 +500,7 @@ function providerNotice(input: {
   return "Installed · Inventory only";
 }
 
-export function sanitizeProviderText(value: string, maxLength: number) {
+export function sanitizeProviderText(value: string | null, maxLength: number) {
   return sanitizeText(value, maxLength);
 }
 

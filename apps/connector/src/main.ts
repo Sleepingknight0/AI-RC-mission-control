@@ -48,8 +48,8 @@ const connector = startConnector({
   provider,
   providerName,
   journalPath,
-  providerInventory: (revision) =>
-    readProviderFleet({
+  providerInventory: async (revision) => {
+    const fleet = readProviderFleet({
       revision,
       activeProviderId: providerName,
       activeAccountId: config.provider.profile,
@@ -65,7 +65,25 @@ const connector = startConnector({
                 : ("incompatible" as const),
             },
           }),
-    }),
+    });
+    return provider instanceof CodexProvider
+      ? provider.enrichProviderFleet(fleet, config.provider.profile)
+      : fleet;
+  },
+  ...(provider instanceof CodexProvider
+    ? {
+        providerNativeSessions: (revision: number) =>
+          provider.discoverNativeSessions({
+            accountId: config.provider.profile,
+            allowedRoots: config.workspace.allowedRoots,
+            revision,
+          }),
+        providerNativeSessionIdentity: {
+          providerId: "codex",
+          accountId: config.provider.profile,
+        },
+      }
+    : {}),
   healthDetails:
     compatibility === null
       ? {}

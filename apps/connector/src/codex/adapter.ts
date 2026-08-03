@@ -1,8 +1,12 @@
 import {
   ConnectorEnvelopeSchema,
+  ProviderFleetSnapshotSchema,
   makeEnvelope,
   type Approval,
   type ConnectorEnvelope,
+  type ProviderCapabilityEvidence,
+  type ProviderFleetSnapshot,
+  type ProviderNativeSessionSnapshot,
   type ToolActivity,
 } from "@aicl/protocol";
 import { z } from "zod";
@@ -21,6 +25,11 @@ import {
   CodexRpcProcess,
   ProviderRpcTimeoutError,
 } from "./rpc-process.js";
+import {
+  discoverCodexNativeSessions,
+  probeCodexCapabilities,
+  type CodexCapabilityProbe,
+} from "./discovery.js";
 
 const ThreadResponseSchema = z.object({ thread: z.object({ id: z.string().min(1) }) });
 const TurnStartResponseSchema = z.object({
@@ -190,6 +199,7 @@ export class CodexProvider implements ConnectorProvider {
   readonly #lostListeners = new Set<() => void>();
   readonly #options: CodexProviderOptions;
   #rpc: CodexRpcProcess | undefined;
+  #starting: Promise<CodexRpcProcess> | undefined;
   #active: ActiveTurn | undefined;
   #earlyNotifications: Array<Record<string, unknown>> = [];
   readonly #pendingApprovals = new Map<string, PendingApproval>();
@@ -202,6 +212,110 @@ export class CodexProvider implements ConnectorProvider {
   onLost(listener: () => void) {
     this.#lostListeners.add(listener);
     return () => this.#lostListeners.delete(listener);
+  }
+
+  async enrichProviderFleet(
+    snapshot: ProviderFleetSnapshot,
+    accountId: string,
+  ): Promise<ProviderFleetSnapshot> {
+    const providerIndex = snapshot.providers.findIndex(
+      (provider) => provider.providerId === "codex",
+    );
+    if (providerIndex < 0) return snapshot;
+    const provider = snapshot.providers[providerIndex]!;
+    const accountIndex = provider.accounts.findIndex(
+      (account) => account.accountId === accountId,
+    );
+    if (
+      accountIndex < 0 ||
+      provider.installation !== "installed" ||
+      provider.compatibility !== "compatible"
+    ) {
+      return snapshot;
+    }
+    try {
+      const probe = await probeCodexCapabilities(await this.#ensureProcess(), {
+        timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
+      });
+      const observedAt = new Date().toISOString();
+      const accounts = provider.accounts.map((account, index) =>
+        index === accountIndex
+          ? {
+              ...account,
+              authentication: probe.authenticated
+                ? ("authenticated" as const)
+                : ("not_authenticated" as const),
+              control: probe.authenticated
+                ? ("remote_control" as const)
+                : ("inventory_only" as const),
+              observedAt,
+              notice: probe.authenticated
+                ? null
+                : "Codex app-server reports no authenticated account",
+            }
+          : account,
+      );
+      const capabilities = updateCodexCapabilities(
+        provider.capabilities,
+        observedAt,
+        probe,
+      );
+      const providers = [...snapshot.providers];
+      providers[providerIndex] = {
+        ...provider,
+        authentication: probe.authenticated
+          ? "authenticated"
+          : "not_authenticated",
+        adapterSupport: probe.authenticated
+          ? "remote_control"
+          : "inventory_only",
+        freshness: "live",
+        observedAt,
+        notice: probe.modelsTruncated
+          ? "Codex model discovery reached its configured bound"
+          : probe.authenticated
+            ? null
+            : "Codex app-server is not authenticated",
+        capabilities,
+        accounts,
+        models: probe.models,
+        modelsState: "available",
+      };
+      return ProviderFleetSnapshotSchema.parse({
+        ...snapshot,
+        providers,
+        freshness: "live",
+      });
+    } catch {
+      const providers = [...snapshot.providers];
+      providers[providerIndex] = {
+        ...provider,
+        freshness: "local",
+        models: [],
+        modelsState: "error",
+        notice: "Codex capability probe failed or timed out",
+      };
+      return ProviderFleetSnapshotSchema.parse({
+        ...snapshot,
+        degraded: true,
+        providers,
+        notice: "One provider capability probe failed or timed out",
+      });
+    }
+  }
+
+  async discoverNativeSessions(input: {
+    accountId: string;
+    allowedRoots: readonly string[];
+    revision: number;
+  }): Promise<ProviderNativeSessionSnapshot> {
+    return discoverCodexNativeSessions(await this.#ensureProcess(), {
+      providerId: "codex",
+      accountId: input.accountId,
+      allowedRoots: input.allowedRoots,
+      revision: input.revision,
+      timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
+    });
   }
 
   async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {
@@ -361,6 +475,8 @@ export class CodexProvider implements ConnectorProvider {
       this.#active = undefined;
       active.reject(new ProviderLostError("Codex provider closed"));
     }
+    const starting = this.#starting;
+    if (starting !== undefined) await starting.catch(() => undefined);
     await this.#rpc?.stop();
     this.#rpc = undefined;
   }
@@ -371,27 +487,41 @@ export class CodexProvider implements ConnectorProvider {
 
   async #ensureProcess() {
     if (this.#rpc !== undefined) return this.#rpc;
+    if (this.#starting !== undefined) return this.#starting;
     this.#closing = false;
-    const rpc = new CodexRpcProcess({
-      cwd: this.#options.cwd,
-      ...(this.#options.codexHome === undefined
-        ? {}
-        : { codexHome: this.#options.codexHome }),
-      ...(this.#options.command === undefined
-        ? {}
-        : { command: this.#options.command }),
-      ...(this.#options.timeoutMs === undefined
-        ? {}
-        : { timeoutMs: this.#options.timeoutMs }),
-    });
-    rpc.onNotification((message) => this.#handleNotification(message));
-    rpc.onServerRequest((message) => this.#handleServerRequest(message, rpc));
-    rpc.onProtocolFault((error) => this.#handleProtocolFault(error));
-    rpc.onExit(() => this.#handleExit(rpc));
-    await rpc.start();
-    await rpc.initialize();
-    this.#rpc = rpc;
-    return rpc;
+    const starting = (async () => {
+      const rpc = new CodexRpcProcess({
+        cwd: this.#options.cwd,
+        ...(this.#options.codexHome === undefined
+          ? {}
+          : { codexHome: this.#options.codexHome }),
+        ...(this.#options.command === undefined
+          ? {}
+          : { command: this.#options.command }),
+        ...(this.#options.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: this.#options.timeoutMs }),
+      });
+      rpc.onNotification((message) => this.#handleNotification(message));
+      rpc.onServerRequest((message) => this.#handleServerRequest(message, rpc));
+      rpc.onProtocolFault((error) => this.#handleProtocolFault(error));
+      rpc.onExit(() => this.#handleExit(rpc));
+      try {
+        await rpc.start();
+        await rpc.initialize();
+        this.#rpc = rpc;
+        return rpc;
+      } catch (error) {
+        await rpc.stop().catch(() => undefined);
+        throw error;
+      }
+    })();
+    this.#starting = starting;
+    try {
+      return await starting;
+    } finally {
+      if (this.#starting === starting) this.#starting = undefined;
+    }
   }
 
   #handleNotification(message: Record<string, unknown>) {
@@ -831,6 +961,80 @@ function activityStatus(
 ): ToolActivity["status"] {
   if (status === "inProgress") return "running";
   return status;
+}
+
+function updateCodexCapabilities(
+  current: readonly ProviderCapabilityEvidence[],
+  observedAt: string,
+  probe: CodexCapabilityProbe,
+): ProviderCapabilityEvidence[] {
+  const updates = new Map<
+    ProviderCapabilityEvidence["key"],
+    ProviderCapabilityEvidence
+  >();
+  const evidence = (
+    key: ProviderCapabilityEvidence["key"],
+    state: ProviderCapabilityEvidence["state"],
+    reason: string | null = null,
+  ) =>
+    updates.set(key, {
+      key,
+      state,
+      provenance: "provider_probe",
+      observedAt,
+      reason,
+    });
+  const controlled = probe.authenticated;
+  for (const key of [
+    "remote_control",
+    "list_sessions",
+    "create_session",
+    "resume_session",
+    "text_input",
+    "approval_policies",
+    "sandbox_policies",
+  ] as const) {
+    evidence(
+      key,
+      controlled ? "supported" : "unsupported",
+      controlled ? null : "Codex app-server is not authenticated",
+    );
+  }
+  evidence("list_models", "supported");
+  evidence(
+    "change_model",
+    probe.models.length > 0 ? "supported" : "unsupported",
+    probe.models.length > 0 ? null : "No provider models were advertised",
+  );
+  evidence(
+    "reasoning_levels",
+    probe.models.some((model) => model.reasoningEfforts.length > 0)
+      ? "supported"
+      : "unsupported",
+    probe.models.some((model) => model.reasoningEfforts.length > 0)
+      ? null
+      : "No reasoning options were advertised",
+  );
+  evidence(
+    "image_input",
+    probe.models.some((model) => model.inputModalities.includes("image"))
+      ? "supported"
+      : "unsupported",
+    probe.models.some((model) => model.inputModalities.includes("image"))
+      ? null
+      : "No advertised model accepts images",
+  );
+  evidence(
+    "file_input",
+    "unsupported",
+    "Managed file translation is not implemented yet",
+  );
+  evidence(
+    "network_policies",
+    "unknown",
+    "Network policy translation has not been verified",
+  );
+  return current.map((capability) => updates.get(capability.key) ?? capability);
 }
 
 function activityTerminalStatus(status: string): ToolActivity["status"] {

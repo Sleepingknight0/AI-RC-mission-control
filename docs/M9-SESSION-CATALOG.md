@@ -44,3 +44,11 @@ and append bounded audit rows. Existing M8 `sessions.snapshot` remains valid.
 ## Codex discovery
 
 The installed schema's `thread/list` is the source. The adapter paginates with a hard page/record/time budget, strips the unstable rollout `path`, validates `cwd` against configured roots, and maps `name ?? preview` to a bounded title. `thread/read` is used only for an explicit resume/detail operation.
+
+Discovery reads active and archived Codex rows with `useStateDbOnly=true`, a
+500-record hard cap, and a 2.5-second adapter budget. Rows outside configured
+project roots or with malformed metadata fail independently. Core retains only
+the latest ephemeral snapshot per provider/account and marks it stale on
+Connector loss; discovery does not create an AICL Session or durable history.
+`sessions.native.refresh` is accepted only for an authenticated remotely
+controllable account whose current capabilities support Session listing.

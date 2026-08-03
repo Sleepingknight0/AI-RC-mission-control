@@ -1569,3 +1569,32 @@ pnpm check                        -> 133 passed; lifecycle/maintenance gates pas
 
 M9.4 adds bounded Codex `thread/list`, `model/list`, and account capability
 probes plus explicit Session create/resume/binding commands.
+
+---
+
+### 2026-08-03 11:40 — Codex — M9.4 discovery checkpoint
+
+**Outcome**
+
+- Added bounded Codex `account/read`, paginated `model/list`, and active plus
+  archived `thread/list` probes without exposing email, plan, credential, or
+  rollout-path data.
+- Canonical project-root validation omits unauthorized native Sessions while
+  retaining healthy siblings. Discovery is ephemeral, timeout isolated, and
+  explicitly stale after Connector loss.
+- Added Connector→Core→Browser native snapshot relay, reconnect bootstrap, and
+  exact provider/account refresh authorization. Frozen Web source is unchanged.
+
+**Verification**
+
+```text
+protocol native-session tests       -> 22 protocol tests passed
+Codex discovery + adapter tests      -> 12 passed
+Core inventory/native relay tests    -> 3 passed
+Connector/Core/Web typecheck         -> pass
+```
+
+**Next**
+
+Complete M9.4 with durable Session create, explicit provider create/resume, and
+provider binding before marking the milestone complete.

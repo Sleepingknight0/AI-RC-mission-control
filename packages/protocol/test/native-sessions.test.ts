@@ -1,0 +1,89 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  ClientEnvelopeSchema,
+  ConnectorEnvelopeSchema,
+  ProviderNativeSessionSnapshotSchema,
+  ServerEnvelopeSchema,
+  makeEnvelope,
+} from "../src/index.js";
+
+const snapshot = {
+  snapshotId: "native-1",
+  revision: 1,
+  providerId: "codex",
+  accountId: "default",
+  observedAt: "2026-08-03T05:00:00.000Z",
+  staleAt: "2026-08-03T05:05:00.000Z",
+  freshness: "live" as const,
+  truncated: false,
+  sessions: [
+    {
+      providerId: "codex",
+      accountId: "default",
+      providerSessionId: "thread-1",
+      title: "Native work",
+      preview: "Inspect the repository",
+      projectPath: "C:\\Projects\\work",
+      projectName: "work",
+      branch: "main",
+      providerStatus: "idle" as const,
+      createdAt: "2026-08-03T04:00:00.000Z",
+      updatedAt: "2026-08-03T04:30:00.000Z",
+      pinned: false,
+      archived: false,
+      canResume: true,
+    },
+  ],
+  notice: null,
+};
+
+describe("provider-native Session protocol", () => {
+  it("validates refresh and both relay envelopes", () => {
+    expect(
+      ClientEnvelopeSchema.parse(
+        makeEnvelope("sessions.native.refresh", {
+          providerId: "codex",
+          accountId: "default",
+        }),
+      ).type,
+    ).toBe("sessions.native.refresh");
+    expect(
+      ConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.sessions.native.snapshot", { snapshot }),
+      ).type,
+    ).toBe("connector.sessions.native.snapshot");
+    expect(
+      ServerEnvelopeSchema.parse(
+        makeEnvelope("sessions.native.snapshot", { snapshot }),
+      ).type,
+    ).toBe("sessions.native.snapshot");
+  });
+
+  it("rejects duplicate identities, controls, cross-account rows, and bad expiry", () => {
+    expect(() =>
+      ProviderNativeSessionSnapshotSchema.parse({
+        ...snapshot,
+        sessions: [snapshot.sessions[0], snapshot.sessions[0]],
+      }),
+    ).toThrow();
+    expect(() =>
+      ProviderNativeSessionSnapshotSchema.parse({
+        ...snapshot,
+        sessions: [{ ...snapshot.sessions[0], title: "bad\u001b[31m" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ProviderNativeSessionSnapshotSchema.parse({
+        ...snapshot,
+        sessions: [{ ...snapshot.sessions[0], accountId: "other" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      ProviderNativeSessionSnapshotSchema.parse({
+        ...snapshot,
+        staleAt: snapshot.observedAt,
+      }),
+    ).toThrow();
+  });
+});
