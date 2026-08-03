@@ -28,10 +28,10 @@ afterEach(async () => {
 });
 
 describe("Core SQLite contract", () => {
-  it("applies schema v12 idempotently with checksummed migrations and required indexes", async () => {
+  it("applies schema v13 idempotently with checksummed migrations and required indexes", async () => {
     const path = databasePath();
     const first = open(path);
-    expect(first.schemaVersion).toBe(12);
+    expect(first.schemaVersion).toBe(13);
     expect(Object.values(first.pragma("journal_mode"))).toContain("wal");
     expect(Object.values(first.pragma("foreign_keys"))).toContain(1);
     expect(Object.values(first.pragma("busy_timeout"))).toContain(5000);
@@ -39,7 +39,7 @@ describe("Core SQLite contract", () => {
     openDatabases.splice(openDatabases.indexOf(first), 1);
 
     const second = open(path);
-    expect(second.schemaVersion).toBe(12);
+    expect(second.schemaVersion).toBe(13);
     await second.close();
     openDatabases.splice(openDatabases.indexOf(second), 1);
 
@@ -47,7 +47,7 @@ describe("Core SQLite contract", () => {
     const migrations = raw
       .prepare("SELECT checksum FROM schema_migrations ORDER BY version")
       .all() as unknown as Array<{ checksum: string | null }>;
-    expect(migrations).toHaveLength(12);
+    expect(migrations).toHaveLength(13);
     expect(migrations.every((migration) => /^[a-f0-9]{64}$/u.test(migration.checksum ?? ""))).toBe(true);
     const indexes = raw
       .prepare(
@@ -174,6 +174,12 @@ describe("Core SQLite contract", () => {
         "utf8",
       ),
     );
+    raw.exec(
+      readFileSync(
+        resolve("migrations/013_revoke_implicit_session_write.sql"),
+        "utf8",
+      ),
+    );
     expect(
       raw
         .prepare(
@@ -182,7 +188,7 @@ describe("Core SQLite contract", () => {
         .all(),
     ).toEqual([
       { session_id: "legacy", sandbox_policy: "read_only", network_policy: "denied" },
-      { session_id: "ready", sandbox_policy: "workspace_write", network_policy: "denied" },
+      { session_id: "ready", sandbox_policy: "read_only", network_policy: "denied" },
     ]);
     raw.prepare(
       "INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)",
@@ -274,8 +280,11 @@ describe("Core SQLite contract", () => {
     expect(database.priorCommand(changed)?.kind).toBe("conflict");
   });
 
-  it("rejects artifact assembly when byte length or SHA-256 does not match", async () => {
-    const database = open(databasePath());
+  it("consumes and diagnoses invalid Connector evidence without stranding its receipt", async () => {
+    const rejectedEvidence: Array<{ code: string; envelopeType: string }> = [];
+    const database = open(databasePath(), {
+      onConnectorIngestRejected: (rejection) => rejectedEvidence.push(rejection),
+    });
     const runtime: Runtime = {
       runtimeId: "runtime-artifact",
       generation: 1,
@@ -317,6 +326,45 @@ describe("Core SQLite contract", () => {
       runtimeId: runtime.runtimeId,
       runtimeGeneration: runtime.generation,
     });
+    const approval = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.approval.requested", {
+        sessionId: "artifact-session",
+        approval: {
+          approvalId: "approval-poison",
+          sessionId: "artifact-session",
+          runtimeId: runtime.runtimeId,
+          runtimeGeneration: runtime.generation,
+          turnId: "artifact-turn",
+          actionType: "command",
+          state: "pending",
+          revision: 0,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          payload: {
+            summary: "Run the test suite",
+            command: "pnpm test",
+            cwd: process.cwd(),
+            reason: "verify poison-row settlement",
+            activityId: null,
+            fileChangeId: null,
+          },
+          resolvedAt: null,
+          resolvedByDeviceId: null,
+        },
+        providerCorrelationId: "approval-poison-correlation",
+      }),
+    );
+    if (approval.type !== "connector.approval.requested") {
+      throw new Error("Expected approval envelope");
+    }
+    await expect(
+      database.requestApproval(approval, source("approval-first")),
+    ).resolves.toMatchObject({ type: "approval.requested" });
+    await expect(
+      database.requestApproval(approval, source("approval-conflict")),
+    ).resolves.toBeUndefined();
+    await expect(
+      database.requestApproval(approval, source("approval-conflict")),
+    ).resolves.toBeUndefined();
     const begin = ConnectorEnvelopeSchema.parse(
       makeEnvelope("connector.artifact.begin", {
         sessionId: "artifact-session",
@@ -421,6 +469,22 @@ describe("Core SQLite contract", () => {
     await expect(
       database.beginArtifact(overQuota, source("quota-overflow")),
     ).resolves.toBe(false);
+    expect(rejectedEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "CONNECTOR_APPROVAL_ID_CONFLICT",
+          envelopeType: "connector.approval.requested",
+        }),
+        expect.objectContaining({
+          code: "CONNECTOR_ARTIFACT_DECLARATION_INVALID",
+          envelopeType: "connector.artifact.begin",
+        }),
+        expect.objectContaining({
+          code: "CONNECTOR_ARTIFACT_INTEGRITY_INVALID",
+          envelopeType: "connector.artifact.complete",
+        }),
+      ]),
+    );
   });
 
   it("persists normalized terminal metadata without private cwd or forged Runtime identity", async () => {
@@ -574,8 +638,11 @@ function databasePath() {
   return join(directory, "core.db");
 }
 
-function open(path: string) {
-  const database = new CoreDatabase({ path });
+function open(
+  path: string,
+  options: Partial<ConstructorParameters<typeof CoreDatabase>[0]> = {},
+) {
+  const database = new CoreDatabase({ path, ...options });
   openDatabases.push(database);
   return database;
 }

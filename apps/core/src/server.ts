@@ -48,6 +48,7 @@ import { classifyApprovalPolicy } from "./approval-policy.js";
 import {
   CoreDatabase,
   InputAttachmentMutationError,
+  type ConnectorIngestRejection,
   type ConnectorSource,
 } from "./store.js";
 import { BrowserTicketRegistry } from "./browser-tickets.js";
@@ -61,6 +62,7 @@ export const DEFAULT_WEB_DIST_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../web/dist",
 );
+const MAX_CONNECTOR_INGEST_DIAGNOSTICS = 64;
 
 export interface CoreServerOptions {
   host?: string;
@@ -81,6 +83,7 @@ export interface CoreServerOptions {
   heartbeatIntervalMs?: number;
   beforeDurableBroadcast?: (event: ServerEnvelope) => void;
   onBroadcastError?: (error: unknown, event: ServerEnvelope) => void;
+  onConnectorIngestRejected?: (rejection: ConnectorIngestRejection) => void;
 }
 
 export interface CoreServerHandle {
@@ -344,7 +347,27 @@ export async function startCoreServer(
   const dbPath = options.dbPath ?? process.env.AICL_CORE_DB_PATH ?? DEFAULT_CORE_DB_PATH;
   const webDistPath =
     options.webDistPath ?? process.env.AICL_WEB_DIST_PATH ?? DEFAULT_WEB_DIST_PATH;
-  const store = new CoreDatabase({ path: dbPath });
+  let connectorIngestDiagnostics = 0;
+  const store = new CoreDatabase({
+    path: dbPath,
+    onConnectorIngestRejected: (rejection) => {
+      connectorIngestDiagnostics += 1;
+      if (connectorIngestDiagnostics <= MAX_CONNECTOR_INGEST_DIAGNOSTICS) {
+        if (options.onConnectorIngestRejected !== undefined) {
+          options.onConnectorIngestRejected(rejection);
+        } else {
+          console.error(
+            "Core dropped invalid Connector evidence:",
+            JSON.stringify(rejection),
+          );
+        }
+      } else if (
+        connectorIngestDiagnostics === MAX_CONNECTOR_INGEST_DIAGNOSTICS + 1
+      ) {
+        console.error("Core Connector ingest diagnostic limit reached");
+      }
+    },
+  });
   const coreBootId = `core-${crypto.randomUUID()}`;
   await store.revokeLeasesForCoreBoot(coreBootId);
   const artifactAccessToken =
@@ -618,31 +641,13 @@ export async function startCoreServer(
     refreshSelectedCapabilities();
   };
 
-  const canControlProvider = (providerId: string, accountId: string | null) => {
-    if (
-      providerFleetSnapshot === undefined ||
-      !["live", "local"].includes(providerFleetSnapshot.freshness)
-    ) {
-      return false;
-    }
-    const provider = providerFleetSnapshot.providers.find(
-      (candidate) => candidate.providerId === providerId,
-    );
-    if (
-      provider === undefined ||
-      provider.freshness === "stale" ||
-      provider.adapterSupport !== "remote_control"
-    ) {
-      return false;
-    }
-    const accounts = provider.accounts.filter(
-      (account) =>
-        account.authentication === "authenticated" &&
-        account.control === "remote_control",
-    );
-    return accountId === null
-      ? accounts.length > 0
-      : accounts.some((account) => account.accountId === accountId);
+  const canControlSession = (sessionId: string) => {
+    const settings = store.sessionSettings(sessionId);
+    return validateTurnControlAuthority(
+      settings?.settings,
+      store.sessionProviderAuthority(sessionId),
+      providerFleetSnapshot,
+    ) === undefined;
   };
 
   // Durable envelopes arrive here only after the writer transaction commits.
@@ -865,7 +870,7 @@ export async function startCoreServer(
         );
         return;
       case "sessions.catalog.list": {
-        const result = store.sessionCatalog(message.payload, canControlProvider);
+        const result = store.sessionCatalog(message.payload, canControlSession);
         if (!result.ok) {
           send(
             socket,

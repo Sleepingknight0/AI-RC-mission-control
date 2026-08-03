@@ -126,9 +126,9 @@ if (row.count !== 0) process.exitCode = 1;
         & (Join-Path $PSScriptRoot 'Migrate-Aicl.ps1') -ConfigPath $configPath
     )
     if ($firstMigration.migrated -or $secondMigration.migrated -or
-        $secondMigration.coreSchemaVersion -ne 12 -or
+        $secondMigration.coreSchemaVersion -ne 13 -or
         $secondMigration.connectorSchemaVersion -ne 3) {
-        throw 'Repeated migration was not idempotent at Core 12 / Connector 3.'
+        throw 'Repeated migration was not idempotent at Core 13 / Connector 3.'
     }
 
     Add-Content -LiteralPath (Join-Path $backup.backupPath 'aicl-core.db') `

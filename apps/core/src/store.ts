@@ -42,7 +42,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 12;
+export const CORE_SCHEMA_VERSION = 13;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -130,9 +130,26 @@ export interface ConnectorSource {
   runtimeGeneration: number;
 }
 
+export type ConnectorIngestRejectionCode =
+  | "CONNECTOR_RUNTIME_MISMATCH"
+  | "CONNECTOR_ACTIVITY_INVALID"
+  | "CONNECTOR_FILE_CHANGE_INVALID"
+  | "CONNECTOR_APPROVAL_ID_CONFLICT"
+  | "CONNECTOR_ARTIFACT_DECLARATION_INVALID"
+  | "CONNECTOR_ARTIFACT_CHUNK_INVALID"
+  | "CONNECTOR_ARTIFACT_INTEGRITY_INVALID";
+
+export interface ConnectorIngestRejection {
+  code: ConnectorIngestRejectionCode;
+  envelopeType: ConnectorEnvelope["type"];
+  connectorId: string;
+  sourceEventId: string;
+}
+
 export interface CoreDatabaseOptions {
   path: string;
   migrationDirectory?: string;
+  onConnectorIngestRejected?: (rejection: ConnectorIngestRejection) => void;
 }
 
 interface CommandRow {
@@ -409,6 +426,9 @@ export class InputAttachmentMutationError extends Error {
 
 export class CoreDatabase {
   readonly #database: DatabaseSync;
+  readonly #onConnectorIngestRejected:
+    | ((rejection: ConnectorIngestRejection) => void)
+    | undefined;
   #writerTail: Promise<void> = Promise.resolve();
   #closed = false;
 
@@ -417,6 +437,7 @@ export class CoreDatabase {
       mkdirSync(dirname(resolve(options.path)), { recursive: true });
     }
     this.#database = new DatabaseSync(options.path);
+    this.#onConnectorIngestRejected = options.onConnectorIngestRejected;
     this.#configure();
     this.#migrate(options.migrationDirectory ?? migrationsDirectory);
   }
@@ -1098,7 +1119,7 @@ export class CoreDatabase {
 
   sessionCatalog(
     query: SessionCatalogQuery,
-    canControlProvider: (providerId: string, accountId: string | null) => boolean,
+    canControlSession: (sessionId: string) => boolean,
   ): SessionCatalogResult {
     const catalogRevision = this.#catalogRevision();
     const cursor = decodeCatalogCursor(query.cursor);
@@ -1210,7 +1231,7 @@ export class CoreDatabase {
     const hasMore = rows.length > query.pageSize;
     const page = rows.slice(0, query.pageSize);
     const sessions = page.map((row) =>
-      sessionCatalogEntry(row, canControlProvider(row.provider_id, row.account_id)),
+      sessionCatalogEntry(row, canControlSession(row.id)),
     );
     const last = hasMore ? page.at(-1) : undefined;
     return {
@@ -2407,6 +2428,11 @@ export class CoreDatabase {
           source.runtimeGeneration,
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          "connector.session.bound",
+          "CONNECTOR_RUNTIME_MISMATCH",
+        );
         return undefined;
       }
       const now = new Date().toISOString();
@@ -2436,6 +2462,11 @@ export class CoreDatabase {
   ) {
     return this.#ingestSource(source, () => {
       if (!this.acceptsRuntimeEvent(sessionId, turnId, source.runtimeId, source.runtimeGeneration)) {
+        this.#rejectConnectorIngest(
+          source,
+          "connector.turn.bound",
+          "CONNECTOR_RUNTIME_MISMATCH",
+        );
         return undefined;
       }
       const now = new Date().toISOString();
@@ -2471,6 +2502,11 @@ export class CoreDatabase {
           ["running", "outcome_unknown"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_RUNTIME_MISMATCH",
+        );
         return undefined;
       }
       const now = new Date().toISOString();
@@ -2525,6 +2561,11 @@ export class CoreDatabase {
         (activity.runtimeGeneration !== undefined &&
           activity.runtimeGeneration !== source.runtimeGeneration)
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_RUNTIME_MISMATCH",
+        );
         return undefined;
       }
       if (
@@ -2536,6 +2577,11 @@ export class CoreDatabase {
           ["running", "outcome_unknown"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_RUNTIME_MISMATCH",
+        );
         return undefined;
       }
       if (activity.outputArtifact !== undefined && activity.outputArtifact !== null) {
@@ -2545,6 +2591,11 @@ export class CoreDatabase {
             turnId: activity.turnId,
           })
         ) {
+          this.#rejectConnectorIngest(
+            source,
+            message.type,
+            "CONNECTOR_ACTIVITY_INVALID",
+          );
           return undefined;
         }
       }
@@ -2664,6 +2715,11 @@ export class CoreDatabase {
           ["running", "outcome_unknown"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_RUNTIME_MISMATCH",
+        );
         return undefined;
       }
       const now = new Date().toISOString();
@@ -2673,6 +2729,11 @@ export class CoreDatabase {
           const content = message.payload.fileChange.inlineDiff;
           const byteLength = utf8ByteLength(content);
           if (byteLength > MAX_INLINE_DIFF_BYTES) {
+            this.#rejectConnectorIngest(
+              source,
+              message.type,
+              "CONNECTOR_FILE_CHANGE_INVALID",
+            );
             return undefined;
           }
           diff = {
@@ -2688,6 +2749,11 @@ export class CoreDatabase {
               turnId: fileChange.turnId,
             })
           ) {
+            this.#rejectConnectorIngest(
+              source,
+              message.type,
+              "CONNECTOR_FILE_CHANGE_INVALID",
+            );
             return undefined;
           }
           diff = {
@@ -2766,6 +2832,22 @@ export class CoreDatabase {
           ["running"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_RUNTIME_MISMATCH",
+        );
+        return undefined;
+      }
+      const existingApproval = this.#database
+        .prepare("SELECT 1 AS present FROM approval_requests WHERE id = ?")
+        .get(approval.approvalId) as { present: number } | undefined;
+      if (existingApproval !== undefined) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_APPROVAL_ID_CONFLICT",
+        );
         return undefined;
       }
       const now = new Date().toISOString();
@@ -3194,9 +3276,19 @@ export class CoreDatabase {
           ["running", "outcome_unknown"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_DECLARATION_INVALID",
+        );
         return false;
       }
       if (chunkCount !== Math.ceil(artifact.byteLength / ARTIFACT_CHUNK_BYTES)) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_DECLARATION_INVALID",
+        );
         return false;
       }
       const allocated = this.#database
@@ -3209,6 +3301,11 @@ export class CoreDatabase {
         )
         .get(turnId, turnId) as { bytes: number };
       if (allocated.bytes + artifact.byteLength > MAX_ARTIFACT_BYTES * 4) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_DECLARATION_INVALID",
+        );
         return false;
       }
       this.#database
@@ -3249,6 +3346,11 @@ export class CoreDatabase {
           ["running", "outcome_unknown"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_CHUNK_INVALID",
+        );
         return false;
       }
       const ingest = this.#database
@@ -3270,6 +3372,11 @@ export class CoreDatabase {
         ingest.turn_id !== turnId ||
         chunkIndex >= ingest.chunk_count
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_CHUNK_INVALID",
+        );
         return false;
       }
       const content = decodeBase64(contentBase64);
@@ -3281,6 +3388,11 @@ export class CoreDatabase {
         this.#database
           .prepare("DELETE FROM artifact_ingests WHERE id = ?")
           .run(artifactId);
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_CHUNK_INVALID",
+        );
         return false;
       }
       this.#database
@@ -3308,6 +3420,11 @@ export class CoreDatabase {
           ["running", "outcome_unknown"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_INTEGRITY_INVALID",
+        );
         return false;
       }
       const ingest = this.#database
@@ -3350,6 +3467,11 @@ export class CoreDatabase {
         this.#database
           .prepare("DELETE FROM artifact_ingests WHERE id = ?")
           .run(artifactId);
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_INTEGRITY_INVALID",
+        );
         return false;
       }
       const content = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.content)));
@@ -3358,6 +3480,11 @@ export class CoreDatabase {
         this.#database
           .prepare("DELETE FROM artifact_ingests WHERE id = ?")
           .run(artifactId);
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_ARTIFACT_INTEGRITY_INVALID",
+        );
         return false;
       }
       this.#database
@@ -4332,6 +4459,25 @@ export class CoreDatabase {
       if (Number(claimed.changes) === 0) return undefined;
       return operation();
     });
+  }
+
+  #rejectConnectorIngest(
+    source: ConnectorSource,
+    envelopeType: ConnectorEnvelope["type"],
+    code: ConnectorIngestRejectionCode,
+  ) {
+    try {
+      this.#onConnectorIngestRejected?.({
+        code,
+        envelopeType,
+        connectorId: source.connectorId,
+        sourceEventId: source.sourceEventId,
+      });
+    } catch {
+      // Diagnostics are non-authoritative and must never roll back a consumed
+      // poison receipt. The server callback itself emits only bounded output.
+      console.error("Core Connector ingest diagnostic callback failed");
+    }
   }
 
   #markMismatchedRuntimesLost(

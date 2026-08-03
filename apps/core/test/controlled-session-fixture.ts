@@ -82,6 +82,7 @@ export async function createControlledSession(
     providerId?: string;
     accountId?: string;
     projectPath?: string;
+    model?: string | null;
   } = {},
 ) {
   await waitUntil(() =>
@@ -98,7 +99,7 @@ export async function createControlledSession(
         providerId: options.providerId ?? "test-provider",
         accountId: options.accountId ?? "default",
         projectPath: options.projectPath ?? process.cwd(),
-        model: null,
+        model: options.model ?? null,
         reasoningLevel: null,
       }),
     ),

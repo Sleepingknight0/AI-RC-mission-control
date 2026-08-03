@@ -103,7 +103,7 @@ try {
     $migrationJson = & (Join-Path $cleanScripts 'Migrate-Aicl.ps1') `
         -ConfigPath $configPath
     $migration = (($migrationJson -join [Environment]::NewLine) | ConvertFrom-Json)
-    if ($migration.migrated -or $migration.coreSchemaVersion -ne 12 -or
+    if ($migration.migrated -or $migration.coreSchemaVersion -ne 13 -or
         $migration.connectorSchemaVersion -ne 3) {
         throw 'Clean compiled migration was not repeat-safe at the expected schemas.'
     }

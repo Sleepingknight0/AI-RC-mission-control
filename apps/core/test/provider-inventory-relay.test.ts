@@ -252,6 +252,76 @@ describe("provider inventory relay", () => {
     browser.socket.close();
   });
 
+  it("removes Catalog control when the bound model disappears from fresh inventory", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    let modelAvailable = true;
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider: new MockProvider(),
+      providerName: "mock",
+      providerInventory: (revision) => {
+        const current = controlledProviderFleet(revision);
+        return {
+          ...current,
+          providers: current.providers.map((provider) => ({
+            ...provider,
+            models: modelAvailable
+              ? [{
+                  modelId: "catalog-model",
+                  displayName: "Catalog model",
+                  description: "Catalog authority regression fixture",
+                  hidden: false,
+                  isDefault: true,
+                  inputModalities: ["text" as const],
+                  defaultReasoningEffort: null,
+                  reasoningEfforts: [],
+                }]
+              : [],
+          })),
+        };
+      },
+    });
+    handles.push(connector);
+    await connector.ready;
+    const browser = await openBrowser(core.browserUrl, core.browserToken);
+    await createControlledSession(browser, "catalog-model-session", {
+      model: "catalog-model",
+    });
+
+    requestCatalog(browser, "catalog-model-live");
+    await waitUntil(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "sessions.catalog.snapshot" &&
+          message.payload.requestId === "catalog-model-live" &&
+          message.payload.sessions[0]?.canControl === true,
+      ),
+    );
+
+    const refreshStart = browser.messages.length;
+    modelAvailable = false;
+    browser.socket.send(JSON.stringify(makeEnvelope("providers.refresh", {})));
+    await waitUntil(() =>
+      browser.messages.slice(refreshStart).some(
+        (message) =>
+          message.type === "providers.snapshot" &&
+          message.payload.snapshot.providers[0]?.models.length === 0,
+      ),
+    );
+    requestCatalog(browser, "catalog-model-removed");
+    await waitUntil(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "sessions.catalog.snapshot" &&
+          message.payload.requestId === "catalog-model-removed" &&
+          message.payload.sessions[0]?.canControl === false,
+      ),
+    );
+    browser.socket.close();
+  });
+
   it("relays, refreshes, reconnects, and stales native Session snapshots", async () => {
     const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
     handles.push(core);
@@ -419,6 +489,28 @@ function nativeSessions(revision: number): ProviderNativeSessionSnapshot {
       },
     ],
   };
+}
+
+function requestCatalog(browser: BrowserHarness, requestId: string) {
+  browser.socket.send(
+    JSON.stringify(
+      makeEnvelope("sessions.catalog.list", {
+        requestId,
+        deviceId: "catalog-authority-device",
+        pageSize: 100,
+        cursor: null,
+        filters: {
+          search: null,
+          providerIds: [],
+          accountIds: [],
+          states: [],
+          project: null,
+          archived: "exclude",
+          pinned: null,
+        },
+      }),
+    ),
+  );
 }
 
 async function openBrowser(url: string, token: string): Promise<BrowserHarness> {
