@@ -8,7 +8,9 @@ M8 envelopes remain valid. M9 adds message families instead of changing the froz
 
 After `server.hello`, Core sends:
 
-- `providers.snapshot` — inventory ID/revision, observed/expires timestamps, source, degraded flag, provider/account/capability/model data;
+- `providers.snapshot` — `snapshotId`, positive `revision`, `observedAt`,
+  `staleAt`, source, freshness, degraded flag, bounded
+  provider/account/capability/model/usage evidence, and an optional notice;
 - `sessions.catalog.snapshot` — bounded first page of AICL entries and a separate discovered-native page, filters, cursor, and catalog revision;
 - `session.capabilities.snapshot` when a Session is selected;
 - existing `sessions.snapshot` for M8 compatibility.
@@ -19,7 +21,11 @@ Live refresh uses the same full-snapshot envelopes. Stale data is carried with `
 
 All mutations carry stable `commandId`.
 
-- `providers.refresh`
+- `providers.refresh` with an empty strict payload; this is an idempotent query,
+  not a mutation, so it has no `commandId` or command receipt. Core returns the
+  retained snapshot immediately when present and asks the current Connector for
+  a new revision. With no retained snapshot and no Connector it returns
+  `PROVIDER_INVENTORY_UNAVAILABLE`.
 - `sessions.catalog.list`
 - `session.create`, `session.resume`, `session.rename`, `session.pin`, `session.archive`
 - `session.settings.update` with `expectedRevision`
@@ -31,7 +37,15 @@ Each accepted mutation receives `command.accepted`; conflicts and capability fai
 
 ## Provider payload
 
-Provider entries expose sanitized IDs/labels, installed/enabled/auth/compatibility/adapter/freshness states, bounded accounts, and a capability map. Each capability includes state, provenance, and optional bounded reason. Models contain provider-issued ID/display name, default/hidden flags, advertised input modalities, default reasoning effort, and bounded reasoning options. Usage contains values only when a real collector measured them.
+Provider entries expose sanitized IDs/labels, installed/enabled/auth/compatibility/adapter/freshness states, bounded accounts, and capability evidence. Each capability includes state, provenance, observation time, and optional bounded reason. Models contain provider-issued ID/display name, default/hidden flags, advertised input modalities, default reasoning effort, and bounded reasoning options. Usage contains values only when a real collector measured them. M9.2 may truthfully report model/usage state as unavailable or unsupported with empty arrays.
+
+The snapshot is operational state, not durable Session history. Core accepts it
+only from the active Connector socket with matching Connector, boot, Runtime,
+and generation identity. Revisions increase within a boot; a new Connector boot
+may restart at revision 1. Connector loss changes retained snapshot and provider
+freshness to `stale`. A newly connected browser receives the latest retained
+snapshot after `server.hello`; it may also request a refresh. Frozen M8 Web code
+may ignore this new envelope without losing its existing Session flow.
 
 ## Session payload
 

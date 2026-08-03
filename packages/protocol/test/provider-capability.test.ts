@@ -3,8 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_PROVIDER_ACCOUNTS,
   MAX_PROVIDER_MODELS,
+  ClientEnvelopeSchema,
+  ConnectorEnvelopeSchema,
+  CoreToConnectorEnvelopeSchema,
   ProviderFleetSnapshotSchema,
   ProviderRecordSchema,
+  ServerEnvelopeSchema,
+  makeEnvelope,
 } from "../src/index.js";
 
 const observedAt = "2026-08-03T03:40:00.000Z";
@@ -168,5 +173,38 @@ describe("provider capability protocol", () => {
         models: [provider.models[0], provider.models[0]],
       }),
     ).toThrow();
+  });
+
+  it("validates refresh and snapshot envelopes at every relay boundary", () => {
+    const snapshot = ProviderFleetSnapshotSchema.parse({
+      snapshotId: "fleet-1",
+      revision: 1,
+      source: "terminal_registry",
+      observedAt,
+      staleAt: "2026-08-03T03:45:00.000Z",
+      freshness: "live",
+      degraded: false,
+      providers: [provider],
+      notice: null,
+    });
+
+    expect(
+      ClientEnvelopeSchema.parse(makeEnvelope("providers.refresh", {})).type,
+    ).toBe("providers.refresh");
+    expect(
+      CoreToConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.providers.refresh", {}),
+      ).type,
+    ).toBe("connector.providers.refresh");
+    expect(
+      ConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.providers.snapshot", { snapshot }),
+      ).type,
+    ).toBe("connector.providers.snapshot");
+    expect(
+      ServerEnvelopeSchema.parse(
+        makeEnvelope("providers.snapshot", { snapshot }),
+      ).type,
+    ).toBe("providers.snapshot");
   });
 });

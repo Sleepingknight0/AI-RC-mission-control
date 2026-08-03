@@ -7,6 +7,7 @@ import { startConnector } from "./client.js";
 import { CodexProvider } from "./codex/adapter.js";
 import { probeInstalledCodex } from "./codex/compatibility.js";
 import { MockProvider } from "./mock-provider.js";
+import { readProviderFleet } from "./provider-inventory.js";
 
 const repositoryRoot =
   process.env.AICL_REPOSITORY_ROOT ??
@@ -47,6 +48,24 @@ const connector = startConnector({
   provider,
   providerName,
   journalPath,
+  providerInventory: (revision) =>
+    readProviderFleet({
+      revision,
+      activeProviderId: providerName,
+      activeAccountId: config.provider.profile,
+      ...(compatibility?.installedVersion === null || compatibility === null
+        ? {}
+        : { knownVersions: { codex: compatibility.installedVersion } }),
+      ...(compatibility === null
+        ? {}
+        : {
+            knownCompatibility: {
+              codex: compatibility.compatible
+                ? ("compatible" as const)
+                : ("incompatible" as const),
+            },
+          }),
+    }),
   healthDetails:
     compatibility === null
       ? {}

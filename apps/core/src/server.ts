@@ -17,6 +17,7 @@ import {
   BrowserRuntimeConfigSchema,
   MAX_OUTPUT_BATCH_BYTES,
   MAX_WEBSOCKET_MESSAGE_BYTES,
+  ProviderFleetSnapshotSchema,
   ServerEnvelopeSchema,
   decodeJson,
   makeEnvelope,
@@ -27,6 +28,7 @@ import {
   type Approval,
   type ConnectorEnvelope,
   type ProtocolError,
+  type ProviderFleetSnapshot,
   type Runtime,
   type ServerEnvelope,
 } from "@aicl/protocol";
@@ -130,6 +132,8 @@ export async function startCoreServer(
   let connectorConnection: ConnectorConnection | undefined;
   let connectorLossTimer: NodeJS.Timeout | undefined;
   let lastRuntime: Runtime | undefined = store.latestRuntime();
+  let providerFleetSnapshot: ProviderFleetSnapshot | undefined;
+  let providerSnapshotBootId: string | undefined;
   let closing = false;
   const rateWindows = new WeakMap<
     WebSocket,
@@ -306,6 +310,24 @@ export async function startCoreServer(
     }
   };
 
+  const markProviderFleetStale = () => {
+    if (providerFleetSnapshot === undefined) return;
+    providerFleetSnapshot = ProviderFleetSnapshotSchema.parse({
+      ...providerFleetSnapshot,
+      freshness: "stale",
+      degraded: true,
+      providers: providerFleetSnapshot.providers.map((provider) => ({
+        ...provider,
+        freshness: "stale",
+      })),
+      notice: "Connector offline; provider inventory may be stale",
+    });
+    broadcast(
+      null,
+      makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
+    );
+  };
+
   // Durable envelopes arrive here only after the writer transaction commits.
   // Ephemeral deltas deliberately bypass this hook and never create token rows.
   const broadcastDurable = (event: ServerEnvelope) => {
@@ -393,6 +415,35 @@ export async function startCoreServer(
           makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
         );
         return;
+      case "providers.refresh": {
+        if (providerFleetSnapshot !== undefined) {
+          send(
+            socket,
+            makeEnvelope("providers.snapshot", {
+              snapshot: providerFleetSnapshot,
+            }),
+          );
+        }
+        const connection = connectorConnection;
+        if (connection?.socket.readyState === WebSocket.OPEN) {
+          sendConnector(
+            connection.socket,
+            makeEnvelope("connector.providers.refresh", {}),
+          );
+        } else if (providerFleetSnapshot === undefined) {
+          send(
+            socket,
+            makeEnvelope("protocol.error", {
+              error: protocolError(
+                "PROVIDER_INVENTORY_UNAVAILABLE",
+                "Provider inventory is unavailable while the Connector is offline.",
+                { retryable: true },
+              ),
+            }),
+          );
+        }
+        return;
+      }
       case "session.subscribe": {
         const { sessionId, afterSeq } = message.payload;
         await store.ensureSession(sessionId);
@@ -670,6 +721,12 @@ export async function startCoreServer(
         bootId: message.payload.bootId,
         runtime: message.payload.runtime,
       };
+      if (
+        providerFleetSnapshot !== undefined &&
+        providerSnapshotBootId !== message.payload.bootId
+      ) {
+        markProviderFleetStale();
+      }
       lastRuntime = message.payload.runtime;
       const recovered = await store.reconcileRuntime(
         message.payload.runtime,
@@ -698,6 +755,32 @@ export async function startCoreServer(
           }),
         );
       }
+      return;
+    }
+
+    if (message.type === "connector.providers.snapshot") {
+      if (
+        connectorConnection?.socket !== socket ||
+        connectorConnection.connectorId !== message.connectorId ||
+        connectorConnection.bootId !== message.bootId ||
+        connectorConnection.runtime.runtimeId !== message.runtimeId ||
+        connectorConnection.runtime.generation !== message.runtimeGeneration
+      ) {
+        return;
+      }
+      if (
+        providerSnapshotBootId === message.bootId &&
+        providerFleetSnapshot !== undefined &&
+        message.payload.snapshot.revision <= providerFleetSnapshot.revision
+      ) {
+        return;
+      }
+      providerFleetSnapshot = message.payload.snapshot;
+      providerSnapshotBootId = message.bootId;
+      broadcast(
+        null,
+        makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
+      );
       return;
     }
 
@@ -869,6 +952,12 @@ export async function startCoreServer(
     if (lastRuntime !== undefined) {
       send(socket, makeEnvelope("runtime.status", { runtime: lastRuntime }));
     }
+    if (providerFleetSnapshot !== undefined) {
+      send(
+        socket,
+        makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
+      );
+    }
     socket.on("message", (data) => {
       if (!withinRate(socket, options.browserMessagesPerSecond ?? 100, rateWindows)) {
         socket.close(1008, "Browser message rate exceeded");
@@ -1006,6 +1095,7 @@ export async function startCoreServer(
       connector = undefined;
       const lost = connectorConnection;
       connectorConnection = undefined;
+      markProviderFleetStale();
       if (lost !== undefined) scheduleConnectorLoss(lost);
     });
   };

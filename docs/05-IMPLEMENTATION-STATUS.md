@@ -52,7 +52,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 - [x] M9.0 architecture, integration contracts, and exact-head baseline
 - [x] M9.1 provider capability Domain/protocol model
-- [ ] M9.2 provider inventory relay and authoritative Core snapshot
+- [x] M9.2 provider inventory relay and authoritative Core snapshot
 - [ ] M9.3 Session Catalog V2 backend and migration
 - [ ] M9.4 Codex native discovery, create, resume, and capabilities
 - [ ] M9.5 revision-fenced Session settings and effective Turn snapshots
@@ -65,10 +65,12 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**M9.2 provider inventory relay and authoritative Core snapshot.** M9.1 now
-defines bounded provider/account/model/capability evidence plus fail-closed
-Domain selection. The Grok visual checkpoint remains isolated and frozen. M8.5
-and Google/Cloudflare identity remain deferred outside M9.
+**M9.3 Session Catalog V2 backend and migration.** M9.2 now reads the actual
+terminal registry without credential contents, isolates malformed/duplicate
+providers, relays bounded snapshots through Connector and Core, marks retained
+state stale on Connector loss, and bootstraps reconnecting browsers. The Grok
+visual checkpoint remains isolated and frozen. M8.5 and Google/Cloudflare
+identity remain deferred outside M9.
 
 ## Last verified demo
 
@@ -95,3 +97,11 @@ and Google/Cloudflare identity remain deferred outside M9.
 - M8.4 production lifecycle: `pnpm build` creates self-contained Core, Connector, Host, and Doctor JavaScript bundles plus the Web build without runtime TypeScript or source maps. A Host supervisor starts Core before Connector, keeps the Connector capability out of state/logs, provides bounded redacted JSON logs, and shuts down Connector/provider then Core through IPC with verified process-tree fallback. Root start/stop/status/doctor commands and an interactive-user limited-privilege Scheduled Task are present; backup/restore commands deliberately fail closed until M8.6. An isolated Windows production smoke passed start, both health gates, same-origin HTML, status, clean stop, PID cleanup, and state cleanup. `pnpm check` passed 96 automated tests plus the compiled lifecycle smoke; the opt-in real-provider test remained skipped.
 - M8.5 deployment readiness (deferred, not completed): `pnpm remote:configure` derives an online device's exact HTTPS ts.net Origin, verifies a private `tailscale serve --bg --yes http://127.0.0.1:<core-port>` mapping, and persists the Origin only while AICL is stopped; no Funnel path exists. Doctor and `pnpm remote:status` distinguish app, Connector, Tailscale, Serve, Origin, Codex, and database state. Doctor also discovers the standard Windows Program Files install when the CLI is absent from PATH. A real collision exposed that production could briefly borrow health from an existing dev service; the Host now rejects occupied Core/Connector ports before spawning children. After confirming no active Turn, seven stale AICL dev launcher roots and their descendants were stopped. Compiled production then remained ready with stable supervisor/Core/Connector PIDs through 3/15/30-second checkpoints. Certificate issuance recovered: `/health` succeeds through the ts.net HTTPS endpoint, and a Playwright preflight on the host loaded production HTML, obtained a runtime ticket, opened authenticated WSS, reported Core/Connector ready, emitted no console warnings/errors, and stored no localStorage secret. `pnpm check` passed 102 automated tests plus compiled lifecycle and fake-CLI Serve smokes. No real second-device evidence was captured before the operator deferred this gate.
 - M8.6 maintenance/final gate: Node's SQLite backup API creates coherent Core/Connector snapshots without copying live WAL files. Each managed set includes a strict manifest, config snapshot, SHA-256/size, schema and SQLite source metadata, full integrity/foreign-key/domain checks, bounded retention, and an explicit at-rest policy. Restore requires stopped services, verifies before staging, atomically switches databases, and preserves replaced files for recovery; config is intentionally not auto-restored. Production startup migrates before children, existing upgrades create a verified pre-migration backup, and migration checksums reject drift. `pnpm check` passed 107 automated tests plus lifecycle, online backup/restore/restart/corruption, clean-directory compiled install, and fake-CLI Serve gates. The real LocalAppData databases upgraded from Core 4 / Connector 2 to 5 / 3 after pre-backup, a repeated migration made no change, a manual backup verified, and compiled Codex production returned ready. Evidence: `reviews/codex/M8-FINAL-GATE.md`.
+- M9.2 provider inventory: the Connector reads the bounded terminal registry,
+  probes installation/authentication without reading credential content,
+  sanitizes untrusted labels, and publishes operational snapshots outside the
+  durable Session journal. Core validates current Connector/boot/Runtime
+  ownership, rejects non-monotonic same-boot revisions, bootstraps browsers,
+  and marks retained inventory stale on loss. Connector/Core targeted tests and
+  the full `pnpm check` gate passed; the ordinary full suite skipped the opt-in
+  real-provider test, which had already passed on the M9.0 exact-head baseline.

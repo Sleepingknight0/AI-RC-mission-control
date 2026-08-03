@@ -577,6 +577,7 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
     }),
   ),
   envelope("sessions.list", z.object({}).strict()),
+  envelope("providers.refresh", z.object({}).strict()),
   envelope(
     "turn.submit",
     z.object({
@@ -630,6 +631,10 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
   envelope(
     "sessions.snapshot",
     z.object({ sessions: z.array(SessionSummarySchema) }),
+  ),
+  envelope(
+    "providers.snapshot",
+    z.object({ snapshot: ProviderFleetSnapshotSchema }).strict(),
   ),
   envelope("runtime.status", z.object({ runtime: RuntimeSchema })),
   envelope(
@@ -781,6 +786,7 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
     "connector.journal.ack",
     z.object({ sourceEventId: id }),
   ),
+  envelope("connector.providers.refresh", z.object({}).strict()),
 ]);
 
 export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
@@ -794,6 +800,10 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
     }),
   ),
   connectorEnvelope("connector.runtime.status", z.object({ runtime: RuntimeSchema })),
+  connectorEnvelope(
+    "connector.providers.snapshot",
+    z.object({ snapshot: ProviderFleetSnapshotSchema }).strict(),
+  ),
   connectorEnvelope(
     "connector.command.error",
     z.object({

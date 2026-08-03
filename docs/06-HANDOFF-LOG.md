@@ -1492,3 +1492,43 @@ pnpm --filter @aicl/domain check   -> 4 passed; typecheck/lint pass
 
 M9.2 reads the terminal registry in Connector, publishes bounded snapshots,
 and preserves the latest authoritative snapshot in Core for browser bootstrap.
+
+---
+
+### 2026-08-03 11:05 — Codex — M9.2 provider inventory relay
+
+**Outcome**
+
+- Added a bounded terminal-registry reader that never emits credential content
+  or private profile paths, keeps accounts distinct, sanitizes control bytes,
+  and degrades malformed or duplicate providers independently.
+- Added backward-compatible provider refresh/snapshot envelopes. Inventory is
+  ephemeral operational state and never enters the Connector journal or Core
+  Session event history.
+- Core now holds the latest current-Connector snapshot, validates socket/boot/
+  Runtime ownership plus same-boot revision monotonicity, bootstraps reconnecting
+  browsers, and marks retained data stale on Connector loss.
+- Inventory timeout produces a truthful unavailable snapshot without delaying
+  Turn dispatch. Non-Codex providers remain inventory-only; Codex control is
+  advertised only for the configured compatible authenticated account.
+
+**Verification**
+
+```text
+@aicl/protocol check                 -> 17 passed
+@aicl/connector check                -> 35 passed, including real registry parse
+provider-inventory-relay.test.ts     -> 2 passed
+@aicl/core check                     -> 31 passed; 1 opt-in real test skipped
+@aicl/web typecheck/build            -> pass without frozen-file edits
+pnpm check                           -> pass, all lifecycle/maintenance gates
+git diff --check                     -> pass
+```
+
+One first full-gate attempt hit a Windows `EPERM` while deleting a process-test
+temporary directory. The isolated test passed immediately and the complete gate
+then passed unchanged; no assertion or retry behavior was weakened.
+
+**Next**
+
+M9.3 adds the backward-compatible Session Catalog V2 schema, Core migration,
+bounded query semantics, revisions, human titles, pin/archive state, and tests.

@@ -15,6 +15,7 @@ import {
   websocketCapability,
   type ConnectorEnvelope,
   type CoreToConnectorEnvelope,
+  type ProviderFleetSnapshot,
   type Runtime,
 } from "@aicl/protocol";
 import WebSocket from "ws";
@@ -35,6 +36,10 @@ export interface ConnectorOptions {
   journalPath?: string;
   connectorId?: string;
   healthDetails?: Record<string, unknown>;
+  providerInventory?: (
+    revision: number,
+  ) => ProviderFleetSnapshot | Promise<ProviderFleetSnapshot>;
+  providerInventoryTimeoutMs?: number;
 }
 
 export interface MockConnectorOptions {
@@ -73,6 +78,8 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
   let reconnectTimer: NodeJS.Timeout | undefined;
   let healthServer: Server | undefined;
   const inFlightCommands = new Set<Promise<void>>();
+  let inventoryRevision = 0;
+  let inventoryRefreshInFlight: Promise<void> | undefined;
   let readyResolved = false;
   let resolveReady: () => void = () => undefined;
   const ready = new Promise<void>((resolve) => {
@@ -183,7 +190,8 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
   const emit = (envelope: ConnectorEnvelope) => {
     if (
       envelope.type === "connector.turn.delta" ||
-      envelope.type === "connector.command.output.batch"
+      envelope.type === "connector.command.output.batch" ||
+      envelope.type === "connector.providers.snapshot"
     ) {
       sendRaw(decorateEphemeral(envelope));
       return;
@@ -218,11 +226,67 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     emitRuntime("lost");
   });
 
+  const refreshProviderInventory = () => {
+    if (options.providerInventory === undefined) return Promise.resolve();
+    if (inventoryRefreshInFlight !== undefined) return inventoryRefreshInFlight;
+    const revision = ++inventoryRevision;
+    inventoryRefreshInFlight = (async () => {
+      const timeoutMs = options.providerInventoryTimeoutMs ?? 2_500;
+      let timeout: NodeJS.Timeout | undefined;
+      try {
+        const snapshot = await Promise.race([
+          Promise.resolve().then(() => options.providerInventory?.(revision)),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("Provider inventory refresh timed out")),
+              timeoutMs,
+            );
+          }),
+        ]);
+        if (snapshot === undefined || stopped) return;
+        emit(
+          makeEnvelope("connector.providers.snapshot", {
+            snapshot: {
+              ...snapshot,
+              revision,
+            },
+          }),
+        );
+      } catch {
+        if (stopped) return;
+        const observedAt = new Date().toISOString();
+        emit(
+          makeEnvelope("connector.providers.snapshot", {
+            snapshot: {
+              snapshotId: `fleet-${crypto.randomUUID()}`,
+              revision,
+              source: "unavailable" as const,
+              observedAt,
+              staleAt: new Date(Date.now() + 60_000).toISOString(),
+              freshness: "unavailable" as const,
+              degraded: true,
+              providers: [],
+              notice: "Provider inventory refresh failed or timed out",
+            },
+          }),
+        );
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+        inventoryRefreshInFlight = undefined;
+      }
+    })();
+    return inventoryRefreshInFlight;
+  };
+
   const handleCommand = async (
     command: CoreToConnectorEnvelope,
   ) => {
     if (command.type === "connector.journal.ack") {
       journal.acknowledge(command.payload.sourceEventId);
+      return;
+    }
+    if (command.type === "connector.providers.refresh") {
+      await refreshProviderInventory();
       return;
     }
     const decision = journal.recordCommand(command);
@@ -370,6 +434,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         ),
       );
       for (const event of journal.pendingEvents()) sendRaw(event);
+      void refreshProviderInventory();
       if (!readyResolved) {
         readyResolved = true;
         resolveReady();
