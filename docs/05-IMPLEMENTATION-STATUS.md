@@ -55,7 +55,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M9.2 provider inventory relay and authoritative Core snapshot
 - [x] M9.3 Session Catalog V2 backend and migration
 - [x] M9.4 Codex native discovery, create, resume, and capabilities
-- [ ] M9.5 revision-fenced Session settings and effective Turn snapshots
+- [x] M9.5 revision-fenced Session settings and effective Turn snapshots
 - [ ] M9.6 normalized execution-mode semantics
 - [ ] M9.7 approval policies and scoped Full Auto leases
 - [ ] M9.8 managed attachment lifecycle and security
@@ -65,12 +65,12 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**M9.5 revision-fenced Session settings and effective Turn snapshots.** M9.4
-now provides bounded Codex account/model/reasoning/native-Session discovery and
-durable, idempotent create/resume binding through the active Runtime. Core
-schema is 7. Ambiguous provider preparation settles to `outcome_unknown` and is
-never replayed. The Grok visual checkpoint remains isolated and frozen. M8.5
-and Google/Cloudflare identity remain deferred outside M9.
+**M9.6 normalized execution-mode semantics.** M9.5 now provides authoritative
+full-document Session settings CAS, conflict snapshots, active-Turn fencing,
+and immutable effective settings on every newly accepted Turn. Core schema is
+8. Codex revalidates and applies model/reasoning/project overrides at dispatch.
+The Grok visual checkpoint remains isolated and frozen. M8.5 and
+Google/Cloudflare identity remain deferred outside M9.
 
 ## Last verified demo
 
@@ -79,7 +79,7 @@ and Google/Cloudflare identity remain deferred outside M9.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 7 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, and fenced provider-Session bindings; Connector retains strict FIFO journal sequence.
+- Database schema: Core schema version 8 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fenced provider-Session bindings, and immutable effective Turn settings; Connector retains strict FIFO journal sequence.
 - Repository checks: `pnpm check` — strict typecheck, 66 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
 - Real Codex E2E: opt-in test passed in 66.70 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, new-process resume, no command replay, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
@@ -124,3 +124,13 @@ and Google/Cloudflare identity remain deferred outside M9.
   idempotent and ignores late Core messages. The full gate passed 143 automated
   tests plus compiled lifecycle/maintenance gates; the opt-in real-provider
   test remained skipped in this gate.
+- M9.5 Session settings: migration 008 adds audited Session-settings CAS and
+  immutable per-Turn settings JSON/revision. Stale tabs receive a stable
+  conflict plus the authoritative snapshot; semantic changes are blocked while
+  a Turn runs. Provider/account/project remain binding-owned and immutable.
+  Core validates current provider/account/model/reasoning evidence, and Codex
+  validates again before forwarding the model, effort, and canonical cwd.
+  Legacy Turn submissions remain compatible while new submissions may fence
+  the settings revision. `pnpm check` passed 150 automated tests plus compiled
+  lifecycle/maintenance gates; one opt-in real-provider test remained skipped.
+  Frozen Web source remains unchanged.

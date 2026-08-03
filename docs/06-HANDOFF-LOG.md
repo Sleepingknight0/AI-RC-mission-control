@@ -1634,3 +1634,36 @@ pnpm build / migrate twice / diff check -> passed
 
 M9.5 adds authoritative Session settings compare-and-set updates and stores the
 effective settings revision with every accepted Turn.
+
+---
+
+### 2026-08-03 12:12 — Codex — M9.5 Session settings and Turn snapshots
+
+**Outcome**
+
+- Added strict full-document Session settings get/update envelopes and
+  authoritative snapshots without changing frozen Web source.
+- Core schema 8 adds audited settings CAS, catalog invalidation, immutable Turn
+  settings snapshots, stale-revision rejection, and active-Turn fencing.
+- Provider/account/project remain owned by the existing binding. Model and
+  reasoning values require live capability evidence and are revalidated by the
+  Codex adapter before forwarding as `turn/start` overrides.
+- Every new Turn stores the effective settings and revision transactionally;
+  legacy M8 submissions may omit the fence but still receive a snapshot.
+
+**Verification**
+
+```text
+protocol tests                     -> 26 passed
+Session settings/database tests    -> 9 targeted passed
+Core package                       -> 41 passed, 1 opt-in real test skipped
+Connector package                  -> 40 passed
+Web typecheck / frozen-file diff   -> passed / no changes
+full repository gate              -> 150 passed, 1 opt-in real test skipped
+build / migration twice / lifecycle -> passed; Core 8, Connector 3
+```
+
+**Next**
+
+M9.6 defines and enforces ask/plan/auto execution semantics without weakening
+approval, sandbox, network, or lease boundaries.

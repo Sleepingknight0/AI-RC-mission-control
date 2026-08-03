@@ -84,6 +84,14 @@ failed or ambiguous provider operation.
 
 `session.settings.snapshot` includes settings plus `revision` and `mutable`. On stale update, Core returns `SESSION_SETTINGS_CONFLICT` with current revision/settings. During an active Turn, semantic fields return `SESSION_BUSY`. Controls absent from the capability snapshot are disabled with the supplied reason.
 
+`session.settings.update` is a strict full replacement containing `commandId`,
+`sessionId`, `deviceId`, `expectedRevision`, and `settings`. Provider, account,
+and project are binding-owned in M9 and return `SESSION_SETTING_IMMUTABLE` if
+changed. `session.settings.get` is a read-only query. Web must replace its local
+copy with every received snapshot and never retry a rejected CAS automatically.
+`turn.submit.settingsRevision` is optional only for M8 compatibility; the M9
+integration must send the currently displayed revision.
+
 Execution modes are `ask`, `plan`, and `auto`. Approval policies are `review`, `balanced`, `workspace_auto`, and `full_auto_lease`; the two enums must never be collapsed.
 
 ## Lease lifecycle

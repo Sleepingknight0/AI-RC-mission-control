@@ -11,6 +11,8 @@ import {
   ApprovalSchema,
   ArtifactReferenceSchema,
   FileChangeSchema,
+  SessionSettingsSchema,
+  SessionSettingsSnapshotSchema,
   ServerEnvelopeSchema,
   ToolActivitySchema,
   makeEnvelope,
@@ -26,11 +28,13 @@ import {
   type SessionCatalogFilter,
   type SessionSummary,
   type SessionSummaryV2,
+  type SessionSettings,
+  type SessionSettingsSnapshot,
   type ToolActivity,
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 7;
+export const CORE_SCHEMA_VERSION = 8;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -43,6 +47,10 @@ type MutationResult =
       kind: "new";
       result: ServerEnvelope;
       durableEvent?: ServerEnvelope;
+      turnSettings?: {
+        revision: number;
+        settings: SessionSettings;
+      };
     };
 
 type MutatingClientEnvelope = Extract<
@@ -57,7 +65,8 @@ type MutatingClientEnvelope = Extract<
       | "session.archive"
       | "session.read.mark"
       | "session.create"
-      | "session.resume";
+      | "session.resume"
+      | "session.settings.update";
   }
 >;
 
@@ -207,6 +216,24 @@ interface TurnRow {
   completed_at: string | null;
   failure_code: string | null;
   display_seq: number | null;
+  settings_revision: number | null;
+  settings_snapshot_json: string | null;
+}
+
+interface SessionSettingsRow {
+  session_id: string;
+  revision: number;
+  provider_id: string;
+  account_id: string | null;
+  model: string | null;
+  reasoning_level: string | null;
+  execution_mode: SessionSettings["executionMode"];
+  approval_policy: SessionSettings["approvalPolicy"];
+  sandbox_policy: SessionSettings["sandboxPolicy"];
+  network_policy: SessionSettings["networkPolicy"];
+  project_path: string | null;
+  branch: string | null;
+  active_turn_count?: number;
 }
 
 interface MessageRow {
@@ -342,7 +369,8 @@ export class CoreDatabase {
     const turns = this.#database
       .prepare(
         `SELECT id, client_command_id, provider_turn_id, state, revision, prompt,
-                started_at, completed_at, failure_code, display_seq
+                started_at, completed_at, failure_code, display_seq,
+                settings_revision, settings_snapshot_json
            FROM turns WHERE session_id = ? ORDER BY created_at, id`,
       )
       .all(sessionId) as unknown as TurnRow[];
@@ -391,6 +419,14 @@ export class CoreDatabase {
         failureCode: turn.failure_code,
         providerTurnId: turn.provider_turn_id,
         eventSeq: turn.display_seq ?? 0,
+        ...(turn.settings_revision === null || turn.settings_snapshot_json === null
+          ? {}
+          : {
+              settingsRevision: turn.settings_revision,
+              effectiveSettings: SessionSettingsSchema.parse(
+                JSON.parse(turn.settings_snapshot_json),
+              ),
+            }),
       })),
       messages: messages.map((message) => ({
         messageId: message.id,
@@ -451,6 +487,164 @@ export class CoreDatabase {
     return this.#database
       .prepare("SELECT 1 AS present FROM sessions WHERE id = ?")
       .get(sessionId) !== undefined;
+  }
+
+  sessionSettings(sessionId: string): SessionSettingsSnapshot | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT settings.session_id, settings.revision, settings.provider_id,
+                settings.account_id, settings.model, settings.reasoning_level,
+                settings.execution_mode, settings.approval_policy,
+                settings.sandbox_policy, settings.network_policy,
+                settings.project_path, settings.branch,
+                (SELECT COUNT(*) FROM turns
+                  WHERE session_id = settings.session_id AND state = 'running')
+                  AS active_turn_count
+           FROM session_settings settings WHERE settings.session_id = ?`,
+      )
+      .get(sessionId) as SessionSettingsRow | undefined;
+    return row === undefined ? undefined : sessionSettingsSnapshot(row);
+  }
+
+  async mutateSessionSettings(
+    message: Extract<ClientEnvelope, { type: "session.settings.update" }>,
+    validate: (
+      requested: SessionSettings,
+      current: SessionSettings,
+    ) => { code: string; message: string } | undefined,
+    rejection: (code: string, detail: string) => ServerEnvelope,
+  ) {
+    return this.#write(() => {
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? {
+              kind: "same" as const,
+              result: parseServer(prior.result_json),
+              snapshot: this.sessionSettings(message.payload.sessionId),
+            }
+          : { kind: "conflict" as const };
+      }
+      const row = this.#database
+        .prepare(
+          `SELECT settings.session_id, settings.revision, settings.provider_id,
+                  settings.account_id, settings.model, settings.reasoning_level,
+                  settings.execution_mode, settings.approval_policy,
+                  settings.sandbox_policy, settings.network_policy,
+                  settings.project_path, settings.branch,
+                  (SELECT COUNT(*) FROM turns
+                    WHERE session_id = settings.session_id AND state = 'running')
+                    AS active_turn_count
+             FROM session_settings settings WHERE settings.session_id = ?`,
+        )
+        .get(message.payload.sessionId) as SessionSettingsRow | undefined;
+      if (row === undefined) throw new Error("Session settings target disappeared");
+      const now = new Date().toISOString();
+      const current = sessionSettingsSnapshot(row);
+      if (row.revision !== message.payload.expectedRevision) {
+        const result = rejection(
+          "SESSION_SETTINGS_CONFLICT",
+          "Session settings changed; refresh before retrying.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return { kind: "new" as const, result, snapshot: current };
+      }
+      if ((row.active_turn_count ?? 0) > 0) {
+        const result = rejection(
+          "SESSION_BUSY",
+          "Execution settings cannot change during an active Turn.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return { kind: "new" as const, result, snapshot: current };
+      }
+      const requested = message.payload.settings;
+      if (
+        requested.providerId !== current.settings.providerId ||
+        requested.accountId !== current.settings.accountId ||
+        requested.projectPath !== current.settings.projectPath
+      ) {
+        const result = rejection(
+          "SESSION_SETTING_IMMUTABLE",
+          "Provider, account, and project are fixed by the provider Session binding.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return { kind: "new" as const, result, snapshot: current };
+      }
+      const invalid = validate(requested, current.settings);
+      if (invalid !== undefined) {
+        const result = rejection(invalid.code, invalid.message);
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return { kind: "new" as const, result, snapshot: current };
+      }
+      const changed = JSON.stringify(current.settings) !== JSON.stringify(requested);
+      const revision = row.revision + (changed ? 1 : 0);
+      if (changed) {
+        const updated = this.#database
+          .prepare(
+            `UPDATE session_settings SET provider_id = ?, account_id = ?,
+               model = ?, reasoning_level = ?, execution_mode = ?,
+               approval_policy = ?, sandbox_policy = ?, network_policy = ?,
+               project_path = ?, branch = ?, revision = revision + 1,
+               updated_at = ? WHERE session_id = ? AND revision = ?`,
+          )
+          .run(
+            requested.providerId,
+            requested.accountId,
+            requested.model,
+            requested.reasoningLevel,
+            requested.executionMode,
+            requested.approvalPolicy,
+            requested.sandboxPolicy,
+            requested.networkPolicy,
+            requested.projectPath,
+            requested.branch,
+            now,
+            message.payload.sessionId,
+            message.payload.expectedRevision,
+          );
+        if (Number(updated.changes) !== 1) {
+          throw new Error("Session settings CAS lost inside serialized writer");
+        }
+        this.#database
+          .prepare(
+            `INSERT INTO session_settings_audit (
+               audit_id, session_id, device_id, prior_revision, new_revision,
+               old_value_json, new_value_json, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            `audit-${crypto.randomUUID()}`,
+            message.payload.sessionId,
+            message.payload.deviceId,
+            row.revision,
+            revision,
+            JSON.stringify(current.settings),
+            JSON.stringify(requested),
+            now,
+          );
+      }
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("session.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            revision,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, now);
+      return {
+        kind: "new" as const,
+        result,
+        snapshot: SessionSettingsSnapshotSchema.parse({
+          sessionId: message.payload.sessionId,
+          revision,
+          mutable: true,
+          settings: requested,
+        }),
+      };
+    });
   }
 
   sessionCatalog(
@@ -1086,6 +1280,7 @@ export class CoreDatabase {
     bootId: string;
     activeRejection: ServerEnvelope;
     runtimeBusyRejection?: ServerEnvelope;
+    settingsConflictRejection?: ServerEnvelope;
   }): Promise<MutationResult> {
     return this.#write(() => {
       const payloadHash = commandHash(input.message);
@@ -1097,6 +1292,23 @@ export class CoreDatabase {
       }
       const now = new Date().toISOString();
       this.#ensureSession(input.message.payload.sessionId, now);
+      const settings = this.sessionSettings(input.message.payload.sessionId);
+      if (settings === undefined) throw new Error("Session settings disappeared");
+      if (
+        input.message.payload.settingsRevision !== undefined &&
+        input.message.payload.settingsRevision !== settings.revision
+      ) {
+        const rejection =
+          input.settingsConflictRejection ?? input.activeRejection;
+        this.#insertCommand(
+          input.message,
+          payloadHash,
+          "rejected",
+          rejection,
+          now,
+        );
+        return { kind: "new", result: rejection };
+      }
       this.#titleSessionFromFirstPrompt(
         input.message.payload.sessionId,
         input.message.payload.prompt,
@@ -1150,8 +1362,9 @@ export class CoreDatabase {
         .prepare(
           `INSERT INTO turns (
              id, session_id, runtime_id, runtime_generation, client_command_id,
-             state, prompt, started_at, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
+             state, prompt, started_at, created_at, updated_at,
+             settings_revision, settings_snapshot_json
+           ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.turnId,
@@ -1163,6 +1376,8 @@ export class CoreDatabase {
           now,
           now,
           now,
+          settings.revision,
+          JSON.stringify(settings.settings),
         );
       const durableEvent = this.#appendVisibleEvent({
         sessionId: input.message.payload.sessionId,
@@ -1180,7 +1395,12 @@ export class CoreDatabase {
       this.#database
         .prepare("UPDATE turns SET display_seq = ? WHERE id = ?")
         .run(durableEvent.payload.seq, input.turnId);
-      return { kind: "new", result: accepted, durableEvent };
+      return {
+        kind: "new",
+        result: accepted,
+        durableEvent,
+        turnSettings: { revision: settings.revision, settings: settings.settings },
+      };
     });
   }
 
@@ -3088,6 +3308,26 @@ function approvalFromRow(row: ApprovalRow) {
     payload: JSON.parse(row.payload_json),
     resolvedAt: row.resolved_at,
     resolvedByDeviceId: row.resolved_by_device_id,
+  });
+}
+
+function sessionSettingsSnapshot(row: SessionSettingsRow): SessionSettingsSnapshot {
+  return SessionSettingsSnapshotSchema.parse({
+    sessionId: row.session_id,
+    revision: row.revision,
+    mutable: (row.active_turn_count ?? 0) === 0,
+    settings: {
+      providerId: row.provider_id,
+      accountId: row.account_id,
+      model: row.model,
+      reasoningLevel: row.reasoning_level,
+      executionMode: row.execution_mode,
+      approvalPolicy: row.approval_policy,
+      sandboxPolicy: row.sandbox_policy,
+      networkPolicy: row.network_policy,
+      projectPath: row.project_path,
+      branch: row.branch,
+    },
   });
 }
 

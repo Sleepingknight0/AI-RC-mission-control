@@ -37,6 +37,7 @@ function provider(timeoutMs?: number) {
 function startCommand(
   prompt: string,
   providerSessionId: string | null = null,
+  withSettings = false,
 ): TurnStartCommand {
   return CoreToConnectorEnvelopeSchema.parse(
     makeEnvelope("connector.turn.start", {
@@ -47,6 +48,23 @@ function startCommand(
       providerSessionId,
       runtimeId: "runtime-1",
       runtimeGeneration: 1,
+      ...(withSettings
+        ? {
+            settingsRevision: 3,
+            effectiveSettings: {
+              providerId: "codex",
+              accountId: "default",
+              model: "fake-codex-model",
+              reasoningLevel: "high",
+              executionMode: "ask",
+              approvalPolicy: "review",
+              sandboxPolicy: "workspace_write",
+              networkPolicy: "restricted",
+              projectPath: process.cwd(),
+              branch: "main",
+            },
+          }
+        : {}),
     }),
   ) as TurnStartCommand;
 }
@@ -79,6 +97,20 @@ describe("Codex adapter normalization", () => {
       (event) => event.type === "connector.session.bound",
     );
     expect(binding?.payload.providerSessionId).toBe("fake-thread");
+  });
+
+  it("revalidates and forwards the immutable model and reasoning snapshot", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+    await adapter.startTurn(startCommand("report-settings", "fake-thread", true),
+      (event) => events.push(event));
+    const completed = events.find(
+      (event) => event.type === "connector.turn.message.completed",
+    );
+
+    expect(completed?.payload.content).toContain(
+      "fake-codex-model|high",
+    );
   });
 
   it("normalizes an interrupt terminal state", async () => {

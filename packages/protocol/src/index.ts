@@ -507,6 +507,35 @@ export const ApprovalPolicySchema = z.enum([
 export const SandboxPolicySchema = z.enum(["read_only", "workspace_write"]);
 export const NetworkPolicySchema = z.enum(["denied", "restricted"]);
 
+export const SessionSettingsSchema = z
+  .object({
+    providerId: providerSlug,
+    accountId: providerSlug.nullable(),
+    model: displayText(128).nullable(),
+    reasoningLevel: displayText(64).nullable(),
+    executionMode: ExecutionModeSchema,
+    approvalPolicy: ApprovalPolicySchema,
+    sandboxPolicy: SandboxPolicySchema,
+    networkPolicy: NetworkPolicySchema,
+    projectPath: z
+      .string()
+      .min(1)
+      .max(4_096)
+      .refine((value) => !hasControlCharacter(value))
+      .nullable(),
+    branch: displayText(512).nullable(),
+  })
+  .strict();
+
+export const SessionSettingsSnapshotSchema = z
+  .object({
+    sessionId: id,
+    revision: z.number().int().nonnegative(),
+    mutable: z.boolean(),
+    settings: SessionSettingsSchema,
+  })
+  .strict();
+
 export const ActivityStatusSchema = z.enum([
   "running",
   "completed",
@@ -611,6 +640,8 @@ export const TurnSchema = z.object({
   failureCode: z.string().nullable(),
   providerTurnId: id.nullable(),
   eventSeq: z.number().int().nonnegative().optional(),
+  settingsRevision: z.number().int().nonnegative().optional(),
+  effectiveSettings: SessionSettingsSchema.optional(),
 });
 
 export const AssistantMessageSchema = z.object({
@@ -826,12 +857,31 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       .strict(),
   ),
   envelope(
+    "session.settings.get",
+    z.object({ sessionId: id }).strict(),
+  ),
+  envelope(
+    "session.settings.update",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        expectedRevision: z.number().int().nonnegative(),
+        settings: SessionSettingsSchema,
+      })
+      .strict(),
+  ),
+  envelope(
     "turn.submit",
-    z.object({
-      commandId: id,
-      sessionId: id,
-      prompt: z.string().trim().min(1).max(20_000),
-    }),
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        prompt: z.string().trim().min(1).max(20_000),
+        settingsRevision: z.number().int().nonnegative().optional(),
+      })
+      .strict(),
   ),
   envelope(
     "turn.interrupt",
@@ -918,6 +968,10 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
         updatedAt: timestamp,
       })
       .strict(),
+  ),
+  envelope(
+    "session.settings.snapshot",
+    z.object({ snapshot: SessionSettingsSnapshotSchema }).strict(),
   ),
   envelope(
     "providers.snapshot",
@@ -1073,15 +1127,19 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   ),
   envelope(
     "connector.turn.start",
-    z.object({
-      sessionId: id,
-      turnId: id,
-      commandId: id,
-      prompt: z.string().min(1),
-      providerSessionId: id.nullable(),
-      runtimeId: id,
-      runtimeGeneration: z.number().int().positive(),
-    }),
+    z
+      .object({
+        sessionId: id,
+        turnId: id,
+        commandId: id,
+        prompt: z.string().min(1),
+        providerSessionId: id.nullable(),
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+        settingsRevision: z.number().int().nonnegative().optional(),
+        effectiveSettings: SessionSettingsSchema.optional(),
+      })
+      .strict(),
   ),
   envelope(
     "connector.turn.interrupt",
@@ -1321,6 +1379,10 @@ export type Runtime = z.infer<typeof RuntimeSchema>;
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 export type SessionSummaryV2 = z.infer<typeof SessionSummaryV2Schema>;
 export type SessionCatalogFilter = z.infer<typeof SessionCatalogFilterSchema>;
+export type SessionSettings = z.infer<typeof SessionSettingsSchema>;
+export type SessionSettingsSnapshot = z.infer<
+  typeof SessionSettingsSnapshotSchema
+>;
 export type ToolActivity = z.infer<typeof ToolActivitySchema>;
 export type FileChange = z.infer<typeof FileChangeSchema>;
 export type Approval = z.infer<typeof ApprovalSchema>;

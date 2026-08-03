@@ -13,7 +13,7 @@
 - [x] M9.2 Connector inventory reader, relay, Core snapshot, reconnect tests
 - [x] M9.3 Session Catalog V2 database/protocol backend
 - [x] M9.4 Codex discovery, create, resume, model/account capability control
-- [ ] M9.5 settings compare-and-set and effective Turn snapshots
+- [x] M9.5 settings compare-and-set and effective Turn snapshots
 - [ ] M9.6 ask/plan/auto semantics
 - [ ] M9.7 server policy enforcement and scoped Full Auto leases
 - [ ] M9.8 managed attachment lifecycle and Codex translation

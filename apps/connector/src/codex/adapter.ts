@@ -412,6 +412,44 @@ export class CodexProvider implements ConnectorProvider {
       throw new Error("Codex provider already has an active Turn");
     }
     const rpc = await this.#ensureProcess();
+    const settings = command.payload.effectiveSettings;
+    let effectiveProjectPath: string | undefined;
+    if (settings !== undefined) {
+      if (
+        settings.providerId !== "codex" ||
+        (settings.accountId !== null &&
+          settings.accountId !== (this.#options.accountId ?? "default"))
+      ) {
+        throw new Error("Turn settings select an inactive Codex account");
+      }
+      effectiveProjectPath =
+        settings.projectPath === null
+          ? undefined
+          : canonicalProjectRoot(
+              settings.projectPath,
+              this.#options.allowedRoots ?? [this.#options.cwd],
+            );
+      const probe = await probeCodexCapabilities(rpc, {
+        timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
+      });
+      if (!probe.authenticated) throw new Error("Codex is not authenticated");
+      const selectedModel =
+        settings.model === null
+          ? undefined
+          : probe.models.find((model) => model.modelId === settings.model);
+      if (settings.model !== null && selectedModel === undefined) {
+        throw new Error("Effective Codex model is unavailable");
+      }
+      if (
+        settings.reasoningLevel !== null &&
+        (selectedModel === undefined ||
+          !selectedModel.reasoningEfforts.some(
+            (option) => option.value === settings.reasoningLevel,
+          ))
+      ) {
+        throw new Error("Effective Codex reasoning level is unavailable");
+      }
+    }
     let providerSessionId: string;
     try {
       providerSessionId = command.payload.providerSessionId
@@ -489,6 +527,16 @@ export class CodexProvider implements ConnectorProvider {
           threadId: providerSessionId,
           clientUserMessageId: command.payload.commandId,
           input: [{ type: "text", text: command.payload.prompt }],
+          ...(effectiveProjectPath === undefined
+            ? {}
+            : { cwd: effectiveProjectPath }),
+          ...(settings?.model === null || settings?.model === undefined
+            ? {}
+            : { model: settings.model }),
+          ...(settings?.reasoningLevel === null ||
+          settings?.reasoningLevel === undefined
+            ? {}
+            : { effort: settings.reasoningLevel }),
         }),
       );
       active.providerTurnId = response.turn.id;

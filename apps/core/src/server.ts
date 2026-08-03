@@ -34,6 +34,7 @@ import {
   type ProviderRecord,
   type Runtime,
   type ServerEnvelope,
+  type SessionSettings,
 } from "@aicl/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 
@@ -424,7 +425,8 @@ export async function startCoreServer(
           | "session.archive"
           | "session.read.mark"
           | "session.create"
-          | "session.resume";
+          | "session.resume"
+          | "session.settings.update";
       }
     >,
   ) => {
@@ -836,6 +838,68 @@ export async function startCoreServer(
         else send(socket, result.result);
         return;
       }
+      case "session.settings.get": {
+        const snapshot = store.sessionSettings(message.payload.sessionId);
+        if (snapshot === undefined) {
+          send(
+            socket,
+            makeEnvelope("protocol.error", {
+              error: protocolError(
+                "SESSION_NOT_FOUND",
+                "Session settings do not exist.",
+                { sessionId: message.payload.sessionId },
+              ),
+            }),
+          );
+        } else {
+          send(socket, makeEnvelope("session.settings.snapshot", { snapshot }));
+        }
+        return;
+      }
+      case "session.settings.update": {
+        if (!store.hasSession(message.payload.sessionId)) {
+          send(
+            socket,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "SESSION_NOT_FOUND",
+              message: "Session does not exist.",
+            }),
+          );
+          return;
+        }
+        const result = await store.mutateSessionSettings(
+          message,
+          (requested, current) =>
+            validateSessionSettingsSelection(
+              requested,
+              current,
+              providerFleetSnapshot,
+            ),
+          (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        );
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        if (result.snapshot !== undefined) {
+          send(
+            socket,
+            makeEnvelope("session.settings.snapshot", {
+              snapshot: result.snapshot,
+            }),
+          );
+        }
+        return;
+      }
       case "session.subscribe": {
         const { sessionId, afterSeq } = message.payload;
         await store.ensureSession(sessionId);
@@ -853,6 +917,10 @@ export async function startCoreServer(
         );
         for (const event of replay) send(socket, event);
         send(socket, makeEnvelope("session.snapshot", { snapshot }));
+        const settings = store.sessionSettings(sessionId);
+        if (settings !== undefined) {
+          send(socket, makeEnvelope("session.settings.snapshot", { snapshot: settings }));
+        }
         send(
           socket,
           makeEnvelope("replay.boundary", {
@@ -920,6 +988,12 @@ export async function startCoreServer(
             code: "RUNTIME_BUSY",
             message: "The Connector runtime is already executing another Turn.",
           }),
+          settingsConflictRejection: rejection({
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            code: "SESSION_SETTINGS_CONFLICT",
+            message: "Turn settings changed; refresh before submitting.",
+          }),
         });
         if (result.kind === "conflict") {
           sendConflict(socket, message);
@@ -939,6 +1013,8 @@ export async function startCoreServer(
             providerSessionId: store.snapshot(message.payload.sessionId).providerSessionId,
             runtimeId: connection.runtime.runtimeId,
             runtimeGeneration: connection.runtime.generation,
+            settingsRevision: result.turnSettings?.revision,
+            effectiveSettings: result.turnSettings?.settings,
           }),
         );
         return;
@@ -1663,6 +1739,68 @@ function validProviderModel(
     (reasoningLevel === null ||
       model.reasoningEfforts.some((option) => option.value === reasoningLevel))
   );
+}
+
+function validateSessionSettingsSelection(
+  requested: SessionSettings,
+  current: SessionSettings,
+  snapshot: ProviderFleetSnapshot | undefined,
+): { code: string; message: string } | undefined {
+  if (
+    snapshot === undefined ||
+    !["live", "local"].includes(snapshot.freshness)
+  ) {
+    return {
+      code: "PROVIDER_CAPABILITIES_UNAVAILABLE",
+      message: "Current provider capabilities are unavailable.",
+    };
+  }
+  const provider = snapshot.providers.find(
+    (candidate) => candidate.providerId === requested.providerId,
+  );
+  const account = provider?.accounts.find((candidate) =>
+    requested.accountId === null
+      ? candidate.isDefault && candidate.control === "remote_control"
+      : candidate.accountId === requested.accountId,
+  );
+  if (
+    provider === undefined ||
+    provider.freshness === "stale" ||
+    provider.adapterSupport !== "remote_control" ||
+    account?.authentication !== "authenticated" ||
+    account.control !== "remote_control"
+  ) {
+    return {
+      code: "PROVIDER_ACCOUNT_UNAVAILABLE",
+      message: "The selected provider account is not currently controllable.",
+    };
+  }
+  if (!validProviderModel(provider, requested.model, requested.reasoningLevel)) {
+    return {
+      code: "PROVIDER_MODEL_UNAVAILABLE",
+      message: "Selected model or reasoning level is unavailable.",
+    };
+  }
+  if (
+    requested.executionMode !== current.executionMode &&
+    requested.executionMode !== "ask"
+  ) {
+    return {
+      code: "EXECUTION_MODE_UNAVAILABLE",
+      message: "This execution mode is not enabled by the current adapter.",
+    };
+  }
+  if (
+    requested.approvalPolicy !== current.approvalPolicy ||
+    requested.sandboxPolicy !== current.sandboxPolicy ||
+    requested.networkPolicy !== current.networkPolicy
+  ) {
+    return {
+      code: "SESSION_POLICY_UNAVAILABLE",
+      message: "Policy changes are not enabled until Core enforcement is active.",
+    };
+  }
+  return undefined;
 }
 
 function constantTimeEqual(left: string, right: string) {
