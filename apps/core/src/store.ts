@@ -42,7 +42,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 10;
+export const CORE_SCHEMA_VERSION = 11;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -315,6 +315,19 @@ interface ActivityRow {
   exit_code: number | null;
   duration_ms: number | null;
   output_preview: string;
+  command_text: string | null;
+  cwd_label: string | null;
+  provider_started_at: string | null;
+  provider_completed_at: string | null;
+  stdout_preview: string;
+  stderr_preview: string;
+  stdout_truncated: number;
+  stderr_truncated: number;
+  stderr_available: number;
+  output_artifact_json: string | null;
+  runtime_id: string | null;
+  runtime_generation: number | null;
+  provider_correlation_id: string | null;
   display_seq: number | null;
 }
 
@@ -474,7 +487,11 @@ export class CoreDatabase {
     const activities = this.#database
       .prepare(
         `SELECT id, turn_id, kind, title, cwd, state, revision, exit_code,
-                duration_ms, output_preview, display_seq
+                duration_ms, output_preview, command_text, cwd_label,
+                provider_started_at, provider_completed_at, stdout_preview,
+                stderr_preview, stdout_truncated, stderr_truncated,
+                stderr_available, output_artifact_json, runtime_id,
+                runtime_generation, provider_correlation_id, display_seq
            FROM tool_activities WHERE session_id = ? ORDER BY created_at, id`,
       )
       .all(sessionId) as unknown as ActivityRow[];
@@ -2461,6 +2478,13 @@ export class CoreDatabase {
     return this.#ingestSource(source, () => {
       const { activity } = message.payload;
       if (
+        (activity.runtimeId !== undefined && activity.runtimeId !== source.runtimeId) ||
+        (activity.runtimeGeneration !== undefined &&
+          activity.runtimeGeneration !== source.runtimeGeneration)
+      ) {
+        throw new Error("Activity Runtime identity does not match its authenticated source");
+      }
+      if (
         !this.#matchesRuntimeEvent(
           message.payload.sessionId,
           activity.turnId,
@@ -2471,19 +2495,49 @@ export class CoreDatabase {
       ) {
         return undefined;
       }
+      if (activity.outputArtifact !== undefined && activity.outputArtifact !== null) {
+        this.#assertArtifact(activity.outputArtifact, {
+          sessionId: message.payload.sessionId,
+          turnId: activity.turnId,
+        });
+      }
       const now = new Date().toISOString();
       this.#database
         .prepare(
           `INSERT INTO tool_activities (
              id, session_id, turn_id, kind, title, cwd, state, revision,
-             exit_code, duration_ms, output_preview, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             exit_code, duration_ms, output_preview, created_at, updated_at,
+             command_text, cwd_label, provider_started_at, provider_completed_at,
+             stdout_preview, stderr_preview, stdout_truncated, stderr_truncated,
+             stderr_available, output_artifact_json, runtime_id,
+             runtime_generation, provider_correlation_id
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              state = excluded.state,
              revision = tool_activities.revision + 1,
              exit_code = excluded.exit_code,
              duration_ms = excluded.duration_ms,
              output_preview = excluded.output_preview,
+             command_text = COALESCE(excluded.command_text, tool_activities.command_text),
+             cwd_label = COALESCE(excluded.cwd_label, tool_activities.cwd_label),
+             provider_started_at = COALESCE(
+               tool_activities.provider_started_at, excluded.provider_started_at
+             ),
+             provider_completed_at = excluded.provider_completed_at,
+             stdout_preview = excluded.stdout_preview,
+             stderr_preview = excluded.stderr_preview,
+             stdout_truncated = excluded.stdout_truncated,
+             stderr_truncated = excluded.stderr_truncated,
+             stderr_available = excluded.stderr_available,
+             output_artifact_json = COALESCE(
+               excluded.output_artifact_json, tool_activities.output_artifact_json
+             ),
+             runtime_id = excluded.runtime_id,
+             runtime_generation = excluded.runtime_generation,
+             provider_correlation_id = COALESCE(
+               tool_activities.provider_correlation_id,
+               excluded.provider_correlation_id
+             ),
              updated_at = excluded.updated_at`,
         )
         .run(
@@ -2492,7 +2546,7 @@ export class CoreDatabase {
           activity.turnId,
           activity.kind,
           activity.title,
-          activity.cwd,
+          null,
           activity.status,
           activity.revision,
           activity.exitCode,
@@ -2500,6 +2554,21 @@ export class CoreDatabase {
           activity.outputPreview,
           now,
           now,
+          activity.command ?? null,
+          activity.cwdLabel ?? null,
+          activity.startedAt ?? now,
+          activity.completedAt ?? null,
+          activity.stdoutPreview ?? activity.outputPreview,
+          activity.stderrPreview ?? "",
+          activity.stdoutTruncated ? 1 : 0,
+          activity.stderrTruncated ? 1 : 0,
+          activity.stderrAvailable ? 1 : 0,
+          activity.outputArtifact === undefined || activity.outputArtifact === null
+            ? null
+            : JSON.stringify(activity.outputArtifact),
+          source.runtimeId,
+          source.runtimeGeneration,
+          activity.providerCorrelationId ?? null,
         );
       const stored = this.#activity(activity.activityId);
       const event = this.#appendVisibleEvent({
@@ -3776,7 +3845,11 @@ export class CoreDatabase {
     const row = this.#database
       .prepare(
         `SELECT id, turn_id, kind, title, cwd, state, revision, exit_code,
-                duration_ms, output_preview, display_seq
+                duration_ms, output_preview, command_text, cwd_label,
+                provider_started_at, provider_completed_at, stdout_preview,
+                stderr_preview, stdout_truncated, stderr_truncated,
+                stderr_available, output_artifact_json, runtime_id,
+                runtime_generation, provider_correlation_id, display_seq
            FROM tool_activities WHERE id = ?`,
       )
       .get(activityId) as ActivityRow | undefined;
@@ -4502,6 +4575,22 @@ function activityFromRow(row: ActivityRow) {
     exitCode: row.exit_code,
     durationMs: row.duration_ms,
     outputPreview: row.output_preview,
+    command: row.command_text,
+    cwdLabel: row.cwd_label,
+    startedAt: row.provider_started_at ?? undefined,
+    completedAt: row.provider_completed_at,
+    stdoutPreview: row.stdout_preview,
+    stderrPreview: row.stderr_preview,
+    stdoutTruncated: row.stdout_truncated === 1,
+    stderrTruncated: row.stderr_truncated === 1,
+    stderrAvailable: row.stderr_available === 1,
+    outputArtifact:
+      row.output_artifact_json === null
+        ? null
+        : ArtifactReferenceSchema.parse(JSON.parse(row.output_artifact_json)),
+    runtimeId: row.runtime_id ?? undefined,
+    runtimeGeneration: row.runtime_generation ?? undefined,
+    providerCorrelationId: row.provider_correlation_id ?? undefined,
     eventSeq: row.display_seq ?? 0,
   });
 }

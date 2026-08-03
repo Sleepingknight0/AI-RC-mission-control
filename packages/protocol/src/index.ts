@@ -570,7 +570,37 @@ export const ToolActivitySchema = z.object({
   revision: z.number().int().nonnegative(),
   exitCode: z.number().int().nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
-  outputPreview: z.string().max(32 * 1024),
+  outputPreview: z
+    .string()
+    .max(32 * 1024)
+    .refine((value) => utf8ByteLength(value) <= 32 * 1024, {
+      message: "activity output preview exceeds 32 KiB",
+    }),
+  command: z.string().max(20_000).nullable().optional(),
+  cwdLabel: displayText(512).nullable().optional(),
+  startedAt: timestamp.optional(),
+  completedAt: timestamp.nullable().optional(),
+  stdoutPreview: z
+    .string()
+    .max(32 * 1024)
+    .refine((value) => utf8ByteLength(value) <= 32 * 1024, {
+      message: "activity stdout preview exceeds 32 KiB",
+    })
+    .optional(),
+  stderrPreview: z
+    .string()
+    .max(32 * 1024)
+    .refine((value) => utf8ByteLength(value) <= 32 * 1024, {
+      message: "activity stderr preview exceeds 32 KiB",
+    })
+    .optional(),
+  stdoutTruncated: z.boolean().optional(),
+  stderrTruncated: z.boolean().optional(),
+  stderrAvailable: z.boolean().optional(),
+  outputArtifact: z.lazy(() => ArtifactReferenceSchema).nullable().optional(),
+  runtimeId: id.optional(),
+  runtimeGeneration: z.number().int().positive().optional(),
+  providerCorrelationId: id.optional(),
   eventSeq: z.number().int().nonnegative().optional(),
 });
 
@@ -1692,6 +1722,20 @@ export function utf8ByteLength(value: string) {
 }
 
 export function redactSensitiveText(value: unknown) {
+  return truncateUtf8(redactSecretsAndPrivatePaths(value), 4_096);
+}
+
+export function redactSensitiveOutput(
+  value: unknown,
+  maxBytes = MAX_ARTIFACT_BYTES,
+) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > MAX_ARTIFACT_BYTES) {
+    throw new RangeError("redacted output byte limit is invalid");
+  }
+  return truncateUtf8(redactSecretsAndPrivatePaths(value), maxBytes);
+}
+
+function redactSecretsAndPrivatePaths(value: unknown) {
   return String(value)
     .replace(/(authorization\s*:\s*bearer\s+)[^\s,;]+/giu, "$1[REDACTED]")
     .replace(/(cookie\s*:\s*)[^\r\n]+/giu, "$1[REDACTED]")
@@ -1704,7 +1748,21 @@ export function redactSensitiveText(value: unknown) {
       "[REDACTED PRIVATE KEY]",
     )
     .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/giu, "$1[REDACTED]@")
-    .slice(0, 4_096);
+    .replace(/[A-Za-z]:\\Users\\[^\\\s"']+(?:\\[^\s"']*)?/gu, "[REDACTED_PATH]")
+    .replace(/\/(?:home|Users)\/[^/\s"']+(?:\/[^\s"']*)?/gu, "[REDACTED_PATH]");
+}
+
+function truncateUtf8(value: string, maxBytes: number) {
+  if (utf8ByteLength(value) <= maxBytes) return value;
+  const parts: string[] = [];
+  let bytes = 0;
+  for (const character of value) {
+    const next = utf8ByteLength(character);
+    if (bytes + next > maxBytes) break;
+    parts.push(character);
+    bytes += next;
+  }
+  return parts.join("");
 }
 
 function decodedBase64Length(value: string) {

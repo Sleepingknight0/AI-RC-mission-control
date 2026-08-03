@@ -1773,3 +1773,42 @@ real Codex E2E                             -> skipped (opt-in credentials/quota 
 
 M9.9 enriches normalized terminal/activity metadata and bounded redacted output
 without adding PTY, arbitrary shell, or raw filesystem access.
+
+---
+
+### 2026-08-03 13:36 — Codex — M9.9 normalized terminal evidence
+
+**Outcome**
+
+- Added Core schema 11 for sanitized command evidence, project-relative cwd
+  labels, provider start/completion times, stdout/stderr availability and
+  truncation, authenticated output artifacts, Runtime identity, and opaque
+  activity correlation.
+- Codex strips ANSI/control sequences and common credentials/private user paths.
+  Output above the 32 KiB preview becomes a checksummed `text/plain` artifact;
+  Core validates artifact Session/Turn/hash/length scope before accepting the
+  activity reference.
+- Core ignores legacy raw `cwd`, derives Runtime identity from the authenticated
+  Connector source, and rejects a conflicting nested Runtime generation.
+- Codex app-server exposes aggregate output, not separate stderr, so the
+  normalized contract reports `stderrAvailable: false` instead of inventing it.
+- Existing Web fields remain compatible. Frozen Web files and the isolated Grok
+  checkpoint remain untouched.
+
+**Verification**
+
+```text
+protocol validation/redaction package       -> 31 passed
+Connector adapter/artifact package           -> 44 passed
+Core package                                 -> 52 passed, 1 real test skipped
+Core schema migration                        -> 10 -> 11, repeat no-op
+terminal artifact/hash/scope/Runtime tests   -> passed
+host maintenance package                     -> 15 passed
+full repository/production gate              -> 170 passed, 1 opt-in real test skipped
+frozen Web diff                              -> no changes
+```
+
+**Next**
+
+M9.10 consolidates the hostile-input, recovery, fault-isolation, catalog-scale,
+and practical performance evidence before the non-visual final gate.

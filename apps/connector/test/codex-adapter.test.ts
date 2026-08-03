@@ -242,6 +242,78 @@ describe("Codex adapter normalization", () => {
     const serialized = JSON.stringify(events);
     expect(serialized).not.toMatch(/provider-command-item|provider-file-item/);
     expect(serialized).not.toMatch(/item\/commandExecution|item\/fileChange/);
+    const completed = events.find(
+      (event) => event.type === "connector.activity.completed",
+    );
+    expect(completed?.type).toBe("connector.activity.completed");
+    if (completed?.type === "connector.activity.completed") {
+      expect(completed.payload.activity).toMatchObject({
+        command: "pnpm test",
+        cwd: null,
+        cwdLabel: ".",
+        stdoutPreview: "tests passed",
+        stdoutTruncated: false,
+        stderrPreview: "",
+        stderrTruncated: false,
+        stderrAvailable: false,
+        outputArtifact: null,
+        runtimeId: "runtime-1",
+        runtimeGeneration: 1,
+      });
+      expect(completed.payload.activity.startedAt).toMatch(/^\d{4}-/u);
+      expect(completed.payload.activity.completedAt).toMatch(/^\d{4}-/u);
+      expect(completed.payload.activity.providerCorrelationId).toMatch(
+        /^activity-correlation-/u,
+      );
+    }
+  });
+
+  it("emits large terminal evidence as a redacted authenticated artifact", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+
+    await adapter.startTurn(startCommand("large-terminal-output"), (event) =>
+      events.push(event),
+    );
+
+    const completed = events.find(
+      (event) => event.type === "connector.activity.completed",
+    );
+    expect(completed?.type).toBe("connector.activity.completed");
+    if (completed?.type !== "connector.activity.completed") return;
+    const artifact = completed.payload.activity.outputArtifact;
+    expect(artifact).not.toBeNull();
+    expect(completed.payload.activity.stdoutTruncated).toBe(true);
+    expect(completed.payload.activity.command).toBe("print bounded output");
+    expect(completed.payload.activity.stdoutPreview?.length ?? 0).toBeLessThanOrEqual(
+      32 * 1024,
+    );
+    expect(completed.payload.activity.cwd).toBeNull();
+    expect(JSON.stringify(completed)).not.toMatch(/BlueWhaleX|TERMINAL_SECRET/u);
+    if (artifact === null || artifact === undefined) return;
+    const chunks = events
+      .filter(
+        (event) =>
+          event.type === "connector.artifact.chunk" &&
+          event.payload.artifactId === artifact.artifactId,
+      )
+      .sort((left, right) => {
+        if (
+          left.type !== "connector.artifact.chunk" ||
+          right.type !== "connector.artifact.chunk"
+        ) return 0;
+        return left.payload.chunkIndex - right.payload.chunkIndex;
+      });
+    const content = Buffer.concat(
+      chunks.map((event) => {
+        if (event.type !== "connector.artifact.chunk") return Buffer.alloc(0);
+        return Buffer.from(event.payload.contentBase64, "base64");
+      }),
+    ).toString("utf8");
+    expect(content).not.toMatch(/BlueWhaleX|TERMINAL_SECRET/u);
+    expect(content).toContain("[REDACTED]");
+    expect(content).toContain("[REDACTED_PATH]");
+    expect(Buffer.byteLength(content, "utf8")).toBe(artifact.byteLength);
   });
 
   it("reconciles a terminal command item when item/completed is omitted", async () => {

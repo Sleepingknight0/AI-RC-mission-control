@@ -144,7 +144,35 @@ without operator action.
 
 ## Terminal activity
 
-M9 activity includes command, redacted working-directory label, kind/status, start/end/duration, exit code, bounded stdout/stderr previews, truncation flags, optional authenticated output artifact, Runtime/Turn/activity IDs, provider correlation label, and durable event sequence. Absolute private paths and raw provider IDs are omitted or redacted.
+`activity.started` and `activity.completed` retain the Prototype-compatible
+fields and add the following optional fields. Grok may adopt them incrementally:
+
+```text
+command                    sanitized normalized command, or null for tools
+cwdLabel                   "." or a project-relative label; never an absolute path
+startedAt / completedAt    provider timestamps normalized to ISO-8601
+stdoutPreview              at most 32 KiB of completed normalized output
+stderrPreview              at most 32 KiB when the adapter can separate stderr
+stdoutTruncated            true when the preview is not the complete output
+stderrTruncated            true when the stderr preview is incomplete
+stderrAvailable            false when the provider exposes only aggregated output
+outputArtifact             authenticated text artifact for larger bounded output
+runtimeId / generation     authenticated execution identity
+providerCorrelationId      AICL-generated opaque correlation, never a provider item ID
+eventSeq                   durable per-Session display order assigned by Core
+```
+
+Codex currently exposes aggregated command output, so `stderrAvailable` is
+truthfully `false`; the UI must not manufacture a separate stderr stream. Output
+artifacts use the existing authenticated `/artifacts/<opaque-id>` endpoint and
+are downloadable only with the artifact capability. A missing artifact means
+the bounded preview is the only retained evidence. Raw `cwd`, private user-home
+paths, credentials, ANSI sequences, and raw provider item IDs must not render.
+
+The frozen Web may continue consuming `title`, `outputPreview`, `durationMs`, and
+`exitCode`. Later integration should prefer the richer fields when present and
+show `unavailable`, not an empty success state, when the provider lacks evidence.
+No activity envelope grants PTY, shell dispatch, or filesystem-read authority.
 
 ## Required state handling
 

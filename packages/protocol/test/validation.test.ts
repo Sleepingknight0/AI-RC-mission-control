@@ -12,6 +12,7 @@ import {
   ServerEnvelopeSchema,
   decodeJson,
   makeEnvelope,
+  redactSensitiveOutput,
   redactSensitiveText,
   websocketCapabilityToken,
 } from "../src/index.js";
@@ -212,5 +213,40 @@ describe("normalized protocol validation", () => {
     expect(diagnostic).not.toMatch(
       /AICL_TEST_SECRET|COOKIE_SECRET|KEY_SECRET|PASS_SECRET|PRIVATE_SECRET/u,
     );
+  });
+
+  it("redacts private paths and bounds terminal evidence by UTF-8 bytes", () => {
+    const output = redactSensitiveOutput(
+      "C:\\Users\\BlueWhaleX\\private\\secret.txt " +
+        "/home/operator/private/token.txt api_key=TERMINAL_SECRET " +
+        "ก".repeat(2_000),
+      1_024,
+    );
+
+    expect(output).not.toMatch(/BlueWhaleX|operator|TERMINAL_SECRET/u);
+    expect(output).toContain("[REDACTED_PATH]");
+    expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(1_024);
+    expect(() => redactSensitiveOutput("x", MAX_ARTIFACT_BYTES + 1)).toThrow(
+      RangeError,
+    );
+    const unicodePreview = ConnectorEnvelopeSchema.safeParse(
+      makeEnvelope("connector.activity.completed", {
+        sessionId: "session-1",
+        activity: {
+          activityId: "activity-unicode",
+          turnId: "turn-1",
+          kind: "command",
+          title: "unicode output",
+          cwd: null,
+          status: "completed",
+          revision: 1,
+          exitCode: 0,
+          durationMs: 1,
+          outputPreview: "ก".repeat(32 * 1024),
+          stdoutPreview: "ก".repeat(32 * 1024),
+        },
+      }),
+    );
+    expect(unicodePreview.success).toBe(false);
   });
 });

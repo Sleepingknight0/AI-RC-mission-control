@@ -247,6 +247,52 @@ lines.on("line", (line) => {
           });
           finishTurn("Activity complete");
         }, 15);
+      } else if (text === "large-terminal-output") {
+        setTimeout(() => {
+          const startedAtMs = Date.now();
+          const output =
+            "api_key=TERMINAL_SECRET C:\\Users\\BlueWhaleX\\private\\token.txt\n" +
+            "bounded-output\n".repeat(3_000);
+          send({
+            method: "item/started",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              startedAtMs,
+              item: {
+                type: "commandExecution",
+                id: "provider-large-command-item",
+                command: "\u001b[31mprint bounded output\u001b[0m",
+                commandActions: [],
+                cwd: process.cwd(),
+                status: "inProgress",
+                aggregatedOutput: null,
+                exitCode: null,
+                durationMs: null,
+              },
+            },
+          });
+          send({
+            method: "item/completed",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              completedAtMs: startedAtMs + 25,
+              item: {
+                type: "commandExecution",
+                id: "provider-large-command-item",
+                command: "\u001b[31mprint bounded output\u001b[0m",
+                commandActions: [],
+                cwd: process.cwd(),
+                status: "completed",
+                aggregatedOutput: output,
+                exitCode: 0,
+                durationMs: 25,
+              },
+            },
+          });
+          finishTurn("Large activity complete");
+        }, 15);
       } else if (text === "terminal-item-reconciliation") {
         setTimeout(() => {
           const command = {

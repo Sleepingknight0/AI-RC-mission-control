@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,10 +28,10 @@ afterEach(async () => {
 });
 
 describe("Core SQLite contract", () => {
-  it("applies schema v10 idempotently with checksummed migrations and required indexes", async () => {
+  it("applies schema v11 idempotently with checksummed migrations and required indexes", async () => {
     const path = databasePath();
     const first = open(path);
-    expect(first.schemaVersion).toBe(10);
+    expect(first.schemaVersion).toBe(11);
     expect(Object.values(first.pragma("journal_mode"))).toContain("wal");
     expect(Object.values(first.pragma("foreign_keys"))).toContain(1);
     expect(Object.values(first.pragma("busy_timeout"))).toContain(5000);
@@ -38,7 +39,7 @@ describe("Core SQLite contract", () => {
     openDatabases.splice(openDatabases.indexOf(first), 1);
 
     const second = open(path);
-    expect(second.schemaVersion).toBe(10);
+    expect(second.schemaVersion).toBe(11);
     await second.close();
     openDatabases.splice(openDatabases.indexOf(second), 1);
 
@@ -46,7 +47,7 @@ describe("Core SQLite contract", () => {
     const migrations = raw
       .prepare("SELECT checksum FROM schema_migrations ORDER BY version")
       .all() as unknown as Array<{ checksum: string | null }>;
-    expect(migrations).toHaveLength(10);
+    expect(migrations).toHaveLength(11);
     expect(migrations.every((migration) => /^[a-f0-9]{64}$/u.test(migration.checksum ?? ""))).toBe(true);
     const indexes = raw
       .prepare(
@@ -54,18 +55,21 @@ describe("Core SQLite contract", () => {
           WHERE type = 'index' AND name IN (
             'uq_turn_one_executing_per_session',
             'uq_turn_one_executing_per_runtime',
-            'uq_session_events_connector_source'
+            'uq_session_events_connector_source',
+            'ix_tool_activities_turn_started'
           ) ORDER BY name`,
       )
       .all() as unknown as Array<{ name: string; sql: string }>;
     expect(indexes.map((index) => index.name)).toEqual([
+      "ix_tool_activities_turn_started",
       "uq_session_events_connector_source",
       "uq_turn_one_executing_per_runtime",
       "uq_turn_one_executing_per_session",
     ]);
-    expect(indexes[0]?.sql).toContain("source_event_id IS NOT NULL");
-    expect(indexes[1]?.sql).toContain("runtime_id, runtime_generation");
-    expect(indexes[2]?.sql).toContain("WHERE state = 'running'");
+    expect(indexes[0]?.sql).toContain("provider_started_at");
+    expect(indexes[1]?.sql).toContain("source_event_id IS NOT NULL");
+    expect(indexes[2]?.sql).toContain("runtime_id, runtime_generation");
+    expect(indexes[3]?.sql).toContain("WHERE state = 'running'");
 
     const now = new Date().toISOString();
     raw.prepare(
@@ -305,6 +309,146 @@ describe("Core SQLite contract", () => {
     await expect(
       database.beginArtifact(overQuota, source("quota-overflow")),
     ).rejects.toThrow("Artifact quota");
+  });
+
+  it("persists normalized terminal metadata without private cwd or forged Runtime identity", async () => {
+    const database = open(databasePath());
+    const runtime: Runtime = {
+      runtimeId: "runtime-terminal",
+      generation: 2,
+      status: "ready",
+    };
+    const turn = ClientEnvelopeSchema.parse(
+      makeEnvelope("turn.submit", {
+        commandId: "terminal-turn-command",
+        sessionId: "terminal-session",
+        prompt: "produce bounded terminal evidence",
+      }),
+    );
+    if (turn.type !== "turn.submit") throw new Error("Expected turn.submit");
+    await database.acceptTurn({
+      message: turn,
+      turnId: "terminal-turn",
+      runtime,
+      connectorId: "terminal-connector",
+      bootId: "terminal-boot",
+      activeRejection: ServerEnvelopeSchema.parse(
+        makeEnvelope("command.rejected", {
+          commandId: turn.payload.commandId,
+          sessionId: turn.payload.sessionId,
+          error: { code: "TURN_ALREADY_ACTIVE", message: "active", retryable: false },
+        }),
+      ),
+    });
+    const source = (sourceEventId: string) => ({
+      connectorId: "terminal-connector",
+      sourceEventId,
+      runtimeId: runtime.runtimeId,
+      runtimeGeneration: runtime.generation,
+    });
+    const content = Buffer.from("redacted bounded terminal evidence", "utf8");
+    const artifact = {
+      artifactId: "artifact-terminal",
+      mediaType: "text/plain; charset=utf-8" as const,
+      byteLength: content.byteLength,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      downloadPath: "/artifacts/artifact-terminal",
+    };
+    const begin = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.artifact.begin", {
+        sessionId: "terminal-session",
+        turnId: "terminal-turn",
+        artifact,
+        chunkCount: 1,
+      }),
+    );
+    const chunk = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.artifact.chunk", {
+        sessionId: "terminal-session",
+        turnId: "terminal-turn",
+        artifactId: artifact.artifactId,
+        chunkIndex: 0,
+        contentBase64: content.toString("base64"),
+      }),
+    );
+    const complete = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.artifact.complete", {
+        sessionId: "terminal-session",
+        turnId: "terminal-turn",
+        artifactId: artifact.artifactId,
+      }),
+    );
+    if (
+      begin.type !== "connector.artifact.begin" ||
+      chunk.type !== "connector.artifact.chunk" ||
+      complete.type !== "connector.artifact.complete"
+    ) throw new Error("Expected artifact envelopes");
+    await database.beginArtifact(begin, source("terminal-artifact-begin"));
+    await database.appendArtifactChunk(chunk, source("terminal-artifact-chunk"));
+    await database.completeArtifact(complete, source("terminal-artifact-complete"));
+
+    const startedAt = "2026-08-03T01:02:03.000Z";
+    const completedAt = "2026-08-03T01:02:03.025Z";
+    const normalized = {
+      activityId: "activity-terminal",
+      turnId: "terminal-turn",
+      kind: "command" as const,
+      title: "pnpm test",
+      cwd: "C:\\Users\\operator\\private",
+      status: "completed" as const,
+      revision: 1,
+      exitCode: 0,
+      durationMs: 25,
+      outputPreview: "bounded terminal evidence",
+      command: "pnpm test",
+      cwdLabel: ".",
+      startedAt,
+      completedAt,
+      stdoutPreview: "bounded terminal evidence",
+      stderrPreview: "",
+      stdoutTruncated: true,
+      stderrTruncated: false,
+      stderrAvailable: false,
+      outputArtifact: artifact,
+      runtimeId: runtime.runtimeId,
+      runtimeGeneration: runtime.generation,
+      providerCorrelationId: "activity-correlation-terminal",
+    };
+    const message = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.activity.completed", {
+        sessionId: "terminal-session",
+        activity: normalized,
+      }),
+    );
+    if (message.type !== "connector.activity.completed") {
+      throw new Error("Expected activity envelope");
+    }
+    await database.recordActivity(message, source("terminal-activity-complete"));
+    const activity = database.snapshot("terminal-session").activities[0];
+    expect(activity).toMatchObject({
+      cwd: null,
+      cwdLabel: ".",
+      command: "pnpm test",
+      startedAt,
+      completedAt,
+      runtimeId: runtime.runtimeId,
+      runtimeGeneration: runtime.generation,
+      outputArtifact: artifact,
+    });
+    expect(JSON.stringify(activity)).not.toContain("C:\\Users\\operator");
+
+    const forged = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.activity.completed", {
+        sessionId: "terminal-session",
+        activity: { ...normalized, runtimeGeneration: runtime.generation + 1 },
+      }),
+    );
+    if (forged.type !== "connector.activity.completed") {
+      throw new Error("Expected forged activity envelope");
+    }
+    await expect(
+      database.recordActivity(forged, source("terminal-activity-forged")),
+    ).rejects.toThrow("Runtime identity");
   });
 });
 

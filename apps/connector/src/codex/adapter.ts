@@ -1,8 +1,17 @@
+import { createHash } from "node:crypto";
+import { relative } from "node:path";
+
 import {
+  ARTIFACT_CHUNK_BYTES,
   ConnectorEnvelopeSchema,
+  MAX_ARTIFACT_BYTES,
+  MAX_OUTPUT_BATCH_BYTES,
   ProviderFleetSnapshotSchema,
   makeEnvelope,
+  redactSensitiveOutput,
+  utf8ByteLength,
   type Approval,
+  type ArtifactReference,
   type ConnectorEnvelope,
   type ProviderCapabilityEvidence,
   type ProviderFleetSnapshot,
@@ -122,6 +131,8 @@ const ItemLifecycleSchema = z.object({
   params: z.object({
     threadId: z.string(),
     turnId: z.string(),
+    startedAtMs: z.number().int().nonnegative().optional(),
+    completedAtMs: z.number().int().nonnegative().optional(),
     item: z.union([ActivityItemSchema, FileChangeItemSchema]),
   }),
 });
@@ -174,6 +185,8 @@ interface ActiveTurn {
   contentByMessage: Map<string, string>;
   completedMessages: Set<string>;
   activityIds: Map<string, string>;
+  activityStartedAt: Map<string, string>;
+  activityCorrelations: Map<string, string>;
   completedActivityItems: Set<string>;
   fileChangeIds: Map<string, string>;
   completedFileChangeItems: Set<string>;
@@ -500,7 +513,7 @@ export class CodexProvider implements ConnectorProvider {
             turnId: current.command.payload.turnId,
             activityId,
             streamSeq,
-            output,
+            output: redactSensitiveOutput(output, MAX_OUTPUT_BATCH_BYTES),
           }),
         );
       },
@@ -514,6 +527,8 @@ export class CodexProvider implements ConnectorProvider {
       contentByMessage: new Map(),
       completedMessages: new Set(),
       activityIds: new Map(),
+      activityStartedAt: new Map(),
+      activityCorrelations: new Map(),
       completedActivityItems: new Set(),
       fileChangeIds: new Map(),
       completedFileChangeItems: new Set(),
@@ -752,7 +767,14 @@ export class CodexProvider implements ConnectorProvider {
         if (parsed.data.params.item.type === "fileChange") {
           this.#emitFileChange(active, parsed.data.method, parsed.data.params.item);
         } else {
-          this.#emitActivity(active, parsed.data.method, parsed.data.params.item);
+          this.#emitActivity(
+            active,
+            parsed.data.method,
+            parsed.data.params.item,
+            undefined,
+            parsed.data.params.startedAtMs,
+            parsed.data.params.completedAtMs,
+          );
         }
         return;
       }
@@ -851,6 +873,8 @@ export class CodexProvider implements ConnectorProvider {
     method: "item/started" | "item/completed",
     item: z.infer<typeof ActivityItemSchema>,
     statusOverride?: ToolActivity["status"],
+    startedAtMs?: number,
+    completedAtMs?: number,
   ) {
     if (
       method === "item/completed" &&
@@ -865,24 +889,66 @@ export class CodexProvider implements ConnectorProvider {
     const status =
       statusOverride ??
       (method === "item/started" ? "running" : activityStatus(item.status));
+    const observedAt = timestampFromMs(startedAtMs) ?? new Date().toISOString();
+    let startedAt = active.activityStartedAt.get(item.id);
+    if (startedAt === undefined) {
+      startedAt = observedAt;
+      active.activityStartedAt.set(item.id, startedAt);
+    }
+    let providerCorrelationId = active.activityCorrelations.get(item.id);
+    if (providerCorrelationId === undefined) {
+      providerCorrelationId = `activity-correlation-${crypto.randomUUID()}`;
+      active.activityCorrelations.set(item.id, providerCorrelationId);
+    }
+    const rawOutput = isCommand && method === "item/completed"
+      ? (item.aggregatedOutput ?? "")
+      : "";
+    const normalizedOutput = redactSensitiveOutput(rawOutput);
+    const stdoutPreview = tailUtf8(normalizedOutput, 32 * 1024);
+    const outputArtifact =
+      method === "item/completed" && utf8ByteLength(normalizedOutput) > 32 * 1024
+        ? this.#emitTextArtifact(active, normalizedOutput)
+        : null;
+    const completedAt =
+      method === "item/completed"
+        ? timestampFromMs(completedAtMs) ??
+          (item.durationMs === null || item.durationMs === undefined
+            ? new Date().toISOString()
+            : new Date(Date.parse(startedAt) + item.durationMs).toISOString())
+        : null;
+    const command = isCommand
+      ? sanitizeTerminalText(item.command, 20_000)
+      : null;
     const activity: ToolActivity = {
       activityId,
       turnId: active.command.payload.turnId,
       kind: isCommand ? "command" : "tool",
       title: isCommand
-        ? item.command
+        ? command ?? "Command"
         : item.type === "mcpToolCall"
-          ? `${item.server}/${item.tool}`
-          : `${item.namespace ?? "dynamic"}/${item.tool}`,
-      cwd: isCommand ? item.cwd : null,
+          ? sanitizeTerminalText(`${item.server}/${item.tool}`, 20_000)
+          : sanitizeTerminalText(`${item.namespace ?? "dynamic"}/${item.tool}`, 20_000),
+      cwd: null,
       status,
       revision: method === "item/started" ? 0 : 1,
       exitCode: isCommand ? (item.exitCode ?? null) : null,
       durationMs: item.durationMs ?? null,
-      outputPreview:
-        isCommand && method === "item/completed"
-          ? (item.aggregatedOutput ?? "").slice(-(32 * 1024))
-          : "",
+      outputPreview: stdoutPreview,
+      command,
+      cwdLabel: isCommand ? this.#cwdLabel(active, item.cwd) : null,
+      startedAt,
+      completedAt,
+      stdoutPreview,
+      stderrPreview: "",
+      stdoutTruncated:
+        utf8ByteLength(normalizedOutput) > utf8ByteLength(stdoutPreview) ||
+        utf8ByteLength(rawOutput) > MAX_ARTIFACT_BYTES,
+      stderrTruncated: false,
+      stderrAvailable: false,
+      outputArtifact,
+      runtimeId: active.command.payload.runtimeId,
+      runtimeGeneration: active.command.payload.runtimeGeneration,
+      providerCorrelationId,
     };
     active.emit(
       this.#envelope(
@@ -892,6 +958,69 @@ export class CodexProvider implements ConnectorProvider {
         { sessionId: active.command.payload.sessionId, activity },
       ),
     );
+  }
+
+  #emitTextArtifact(active: ActiveTurn, output: string): ArtifactReference {
+    const content = Buffer.from(output, "utf8");
+    if (content.byteLength === 0 || content.byteLength > MAX_ARTIFACT_BYTES) {
+      throw new RangeError("Normalized terminal artifact exceeds its byte limit");
+    }
+    const artifactId = `artifact-${crypto.randomUUID()}`;
+    const artifact: ArtifactReference = {
+      artifactId,
+      mediaType: "text/plain; charset=utf-8",
+      byteLength: content.byteLength,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      downloadPath: `/artifacts/${artifactId}`,
+    };
+    const common = {
+      sessionId: active.command.payload.sessionId,
+      turnId: active.command.payload.turnId,
+    };
+    const chunkCount = Math.ceil(content.byteLength / ARTIFACT_CHUNK_BYTES);
+    active.emit(
+      this.#envelope("connector.artifact.begin", {
+        ...common,
+        artifact,
+        chunkCount,
+      }),
+    );
+    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+      const start = chunkIndex * ARTIFACT_CHUNK_BYTES;
+      active.emit(
+        this.#envelope("connector.artifact.chunk", {
+          ...common,
+          artifactId,
+          chunkIndex,
+          contentBase64: content
+            .subarray(start, start + ARTIFACT_CHUNK_BYTES)
+            .toString("base64"),
+        }),
+      );
+    }
+    active.emit(
+      this.#envelope("connector.artifact.complete", {
+        ...common,
+        artifactId,
+      }),
+    );
+    return artifact;
+  }
+
+  #cwdLabel(active: ActiveTurn, cwd: string) {
+    try {
+      const projectPath = active.command.payload.effectiveSettings?.projectPath ??
+        this.#options.cwd;
+      const projectRoot = canonicalProjectRoot(
+        projectPath,
+        this.#options.allowedRoots ?? [this.#options.cwd],
+      );
+      const canonicalCwd = canonicalProjectRoot(cwd, [projectRoot]);
+      const label = relative(projectRoot, canonicalCwd).replaceAll("\\", "/");
+      return label === "" ? "." : sanitizeTerminalText(label, 512);
+    } catch {
+      return null;
+    }
   }
 
   #emitFileChange(
@@ -1240,6 +1369,57 @@ function codexSandboxPolicy(
     excludeSlashTmp: true,
     excludeTmpdirEnvVar: true,
   };
+}
+
+function timestampFromMs(value: number | undefined) {
+  if (value === undefined || !Number.isSafeInteger(value) || value < 0) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? null : date.toISOString();
+}
+
+function sanitizeTerminalText(value: string, maxBytes: number) {
+  let cleaned = "";
+  let escape: "none" | "start" | "csi" | "osc" | "osc_escape" = "none";
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (escape === "start") {
+      escape = character === "[" ? "csi" : character === "]" ? "osc" : "none";
+      continue;
+    }
+    if (escape === "csi") {
+      if (code >= 0x40 && code <= 0x7e) escape = "none";
+      continue;
+    }
+    if (escape === "osc") {
+      if (code === 0x07) escape = "none";
+      else if (code === 0x1b) escape = "osc_escape";
+      continue;
+    }
+    if (escape === "osc_escape") {
+      escape = character === "\\" ? "none" : "osc";
+      continue;
+    }
+    if (code === 0x1b) {
+      escape = "start";
+      continue;
+    }
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
+      if (code === 0x09 || code === 0x0a || code === 0x0d) cleaned += " ";
+      continue;
+    }
+    cleaned += character;
+  }
+  return redactSensitiveOutput(cleaned.trim() || "Unavailable", maxBytes);
+}
+
+function tailUtf8(value: string, maxBytes: number) {
+  const content = Buffer.from(value, "utf8");
+  if (content.byteLength <= maxBytes) return value;
+  let start = content.byteLength - maxBytes;
+  while (start < content.byteLength && (content[start]! & 0xc0) === 0x80) {
+    start += 1;
+  }
+  return content.subarray(start).toString("utf8");
 }
 
 function activityTerminalStatus(status: string): ToolActivity["status"] {

@@ -59,19 +59,19 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M9.6 normalized execution-mode semantics
 - [x] M9.7 approval policies and scoped Full Auto leases
 - [x] M9.8 managed attachment lifecycle and security
-- [ ] M9.9 normalized terminal/activity metadata
+- [x] M9.9 normalized terminal/activity metadata
 - [ ] M9.10 security, recovery, fault, and performance gate
 - [ ] M9.11 non-visual final gate and Grok integration handoff
 
 ## Current milestone
 
-**M9.9 normalized terminal/activity metadata.** M9.8 adds Core schema 10,
-single-use Session/device-owned uploads, chunk/hash/MIME/magic/expiry checks,
-provider/model capability enforcement, a second checksummed Core-to-Connector
-materialization stream, private temporary image files, bounded text translation,
-and reconnect-without-submit coverage. The Grok visual checkpoint remains
-isolated and frozen. M8.5 and Google/Cloudflare identity remain deferred outside
-M9.
+**M9.10 security, recovery, fault, and performance gate.** M9.9 adds Core
+schema 11, sanitized commands, project-relative cwd labels, provider timing,
+bounded stdout/stderr evidence, authenticated large-output artifacts, immutable
+Runtime identity, opaque activity correlation, and durable sequence metadata.
+Codex truthfully reports stderr unavailable because app-server currently exposes
+aggregated output. The Grok visual checkpoint remains isolated and frozen. M8.5
+and Google/Cloudflare identity remain deferred outside M9.
 
 ## Last verified demo
 
@@ -80,7 +80,7 @@ M9.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 8 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fenced provider-Session bindings, and immutable effective Turn settings; Connector retains strict FIFO journal sequence.
+- Database schema: Core schema version 11 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, and bounded terminal evidence; Connector retains strict FIFO journal sequence.
 - Repository checks: `pnpm check` — strict typecheck, 66 tests, ESLint, Windows process-tree test, and Web production build passed; the opt-in real test remained skipped.
 - Real Codex E2E: opt-in test passed in 66.70 s, covering first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, new-process resume, no command replay, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.

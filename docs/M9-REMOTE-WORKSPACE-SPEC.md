@@ -27,7 +27,10 @@ Browser -> Core -> Connector -> provider adapter -> provider
 2. M9.1–M9.2 add truthful provider capabilities and inventory relay.
 3. M9.3–M9.4 add Catalog V2 and verified Codex native-session control.
 4. M9.5–M9.7 add settings CAS, execution modes, policy, and leases.
-5. M9.8–M9.9 add managed inputs and richer terminal evidence.
+5. M9.8–M9.9 add managed inputs and richer terminal evidence. Core schema 11
+   persists sanitized commands, relative cwd labels, timestamps, truncation,
+   authenticated evidence artifacts, Runtime fencing, and opaque correlations;
+   no PTY or new dispatch surface is introduced.
 6. M9.10–M9.11 prove fault, security, recovery, and performance behavior.
 
 ## Explicit non-goals
