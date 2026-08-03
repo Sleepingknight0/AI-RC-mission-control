@@ -11,10 +11,12 @@ import {
   attachmentKindForMediaType,
   basenameOnly,
   capabilitySupported,
+  catalogRequestStarted,
   controllableProviders,
   defaultCatalogFilters,
   initialCatalogState,
   initialFleetState,
+  mergeCatalogPage,
   reduceCatalog,
   reduceFleet,
 } from "../src/m9/state.js";
@@ -107,47 +109,51 @@ describe("m9 state helpers", () => {
     expect(capabilitySupported(inventoryOnly, "remote_control").ok).toBe(false);
   });
 
+  const seed = (id: string, title = id): SessionSummaryV2 => ({
+    sessionId: id,
+    title,
+    providerId: "codex",
+    accountId: "default",
+    providerSessionId: null,
+    source: "aicl",
+    providerBindingStatus: "ready",
+    projectPath: "C:\\proj",
+    projectName: "proj",
+    branch: null,
+    model: null,
+    reasoningLevel: null,
+    executionMode: "ask",
+    approvalPolicy: "review",
+    sandboxPolicy: "workspace_write",
+    networkPolicy: "restricted",
+    state: "idle",
+    runtimeStatus: "ready",
+    activeTurnId: null,
+    pendingApprovalCount: 0,
+    turnCount: 0,
+    unreadCount: 0,
+    lastActivityAt: "2026-08-03T00:00:00.000Z",
+    lastEventSeq: 0,
+    canResume: false,
+    canControl: true,
+    pinned: false,
+    archived: false,
+    revision: 1,
+    settingsRevision: 1,
+  });
+
   it("discards catalog cursor on stale cursor rejection", () => {
-    const seed: SessionSummaryV2 = {
-      sessionId: "session-1",
-      title: "Demo",
-      providerId: "codex",
-      accountId: "default",
-      providerSessionId: null,
-      source: "aicl",
-      providerBindingStatus: "ready",
-      projectPath: "C:\\proj",
-      projectName: "proj",
-      branch: null,
-      model: null,
-      reasoningLevel: null,
-      executionMode: "ask",
-      approvalPolicy: "review",
-      sandboxPolicy: "workspace_write",
-      networkPolicy: "restricted",
-      state: "idle",
-      runtimeStatus: "ready",
-      activeTurnId: null,
-      pendingApprovalCount: 0,
-      turnCount: 0,
-      unreadCount: 0,
-      lastActivityAt: "2026-08-03T00:00:00.000Z",
-      lastEventSeq: 0,
-      canResume: false,
-      canControl: true,
-      pinned: false,
-      archived: false,
-      revision: 1,
-      settingsRevision: 1,
-    };
-    const loaded = reduceCatalog(initialCatalogState(), makeEnvelope("sessions.catalog.snapshot", {
-      requestId: "req-1",
-      catalogRevision: 3,
-      generatedAt: "2026-08-03T00:00:00.000Z",
-      sessions: [seed],
-      nextCursor: "cursor-1",
-      total: 1,
-    }));
+    const loaded = reduceCatalog(
+      catalogRequestStarted(initialCatalogState(), "req-1", false),
+      makeEnvelope("sessions.catalog.snapshot", {
+        requestId: "req-1",
+        catalogRevision: 3,
+        generatedAt: "2026-08-03T00:00:00.000Z",
+        sessions: [seed("session-1", "Demo")],
+        nextCursor: "cursor-1",
+        total: 1,
+      }),
+    );
     expect(loaded.nextCursor).toBe("cursor-1");
     const rejected = reduceCatalog(
       loaded,
@@ -163,6 +169,53 @@ describe("m9 state helpers", () => {
     );
     expect(rejected.nextCursor).toBeNull();
     expect(rejected.sessions).toHaveLength(1);
+  });
+
+  it("appends cursor pages and ignores superseded requestIds", () => {
+    const first = reduceCatalog(
+      catalogRequestStarted(initialCatalogState(), "req-a", false),
+      makeEnvelope("sessions.catalog.snapshot", {
+        requestId: "req-a",
+        catalogRevision: 1,
+        generatedAt: "2026-08-03T00:00:00.000Z",
+        sessions: [seed("s1")],
+        nextCursor: "c1",
+        total: 2,
+      }),
+    );
+    expect(first.sessions.map((item) => item.sessionId)).toEqual(["s1"]);
+
+    const pending = catalogRequestStarted(first, "req-b", true);
+    const second = reduceCatalog(
+      pending,
+      makeEnvelope("sessions.catalog.snapshot", {
+        requestId: "req-b",
+        catalogRevision: 1,
+        generatedAt: "2026-08-03T00:00:01.000Z",
+        sessions: [seed("s2")],
+        nextCursor: null,
+        total: 2,
+      }),
+    );
+    expect(second.sessions.map((item) => item.sessionId)).toEqual(["s1", "s2"]);
+    expect(second.pendingAppend).toBe(false);
+
+    const stale = reduceCatalog(
+      catalogRequestStarted(second, "req-c", false),
+      makeEnvelope("sessions.catalog.snapshot", {
+        requestId: "req-old",
+        catalogRevision: 1,
+        generatedAt: "2026-08-03T00:00:02.000Z",
+        sessions: [seed("stale")],
+        nextCursor: null,
+        total: 1,
+      }),
+    );
+    expect(stale.sessions.map((item) => item.sessionId)).toEqual(["s1", "s2"]);
+    expect(mergeCatalogPage([seed("a")], [seed("a"), seed("b")]).map((s) => s.sessionId)).toEqual([
+      "a",
+      "b",
+    ]);
   });
 
   it("keeps default catalog filters fail-closed for archive", () => {

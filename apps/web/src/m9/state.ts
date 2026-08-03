@@ -26,6 +26,8 @@ export interface CatalogState {
   total: number;
   filters: SessionCatalogFilter;
   requestId: string | null;
+  /** True while a cursor page request is in flight — snapshot should append. */
+  pendingAppend: boolean;
   notice: string | null;
   error: string | null;
 }
@@ -83,9 +85,21 @@ export function initialCatalogState(): CatalogState {
     total: 0,
     filters: defaultCatalogFilters(),
     requestId: null,
+    pendingAppend: false,
     notice: null,
     error: null,
   };
+}
+
+/** Merge a cursor page into the existing list without duplicates. */
+export function mergeCatalogPage(
+  existing: SessionSummaryV2[],
+  incoming: SessionSummaryV2[],
+): SessionSummaryV2[] {
+  if (existing.length === 0) return incoming;
+  const seen = new Set(existing.map((session) => session.sessionId));
+  const appended = incoming.filter((session) => !seen.has(session.sessionId));
+  return appended.length === 0 ? existing : [...existing, ...appended];
 }
 
 export function initialFleetState(): FleetState {
@@ -139,14 +153,25 @@ export function reduceCatalog(
   message: ServerEnvelope,
 ): CatalogState {
   if (message.type === "sessions.catalog.snapshot") {
+    // Ignore late responses for superseded list requests.
+    if (
+      current.requestId !== null &&
+      message.payload.requestId !== current.requestId
+    ) {
+      return current;
+    }
+    const append = current.pendingAppend;
     return {
       ...current,
       status: "ready",
       revision: message.payload.catalogRevision,
-      sessions: message.payload.sessions,
+      sessions: append
+        ? mergeCatalogPage(current.sessions, message.payload.sessions)
+        : message.payload.sessions,
       nextCursor: message.payload.nextCursor,
       total: message.payload.total,
       requestId: message.payload.requestId,
+      pendingAppend: false,
       error: null,
     };
   }
@@ -163,6 +188,7 @@ export function reduceCatalog(
       return {
         ...current,
         nextCursor: null,
+        pendingAppend: false,
         error: `${code}: ${message.payload.error.message}`,
         status: current.sessions.length > 0 ? "stale" : "error",
       };
@@ -195,6 +221,29 @@ export function reduceCatalog(
     };
   }
   return current;
+}
+
+/** Mark a catalog list request as replace (first page) or append (cursor page). */
+export function catalogRequestStarted(
+  current: CatalogState,
+  requestId: string,
+  append: boolean,
+  filters?: SessionCatalogFilter,
+): CatalogState {
+  return {
+    ...current,
+    status: append
+      ? current.sessions.length > 0
+        ? current.status
+        : "loading"
+      : current.sessions.length > 0
+        ? "stale"
+        : "loading",
+    requestId,
+    pendingAppend: append,
+    filters: filters ?? current.filters,
+    error: append ? current.error : null,
+  };
 }
 
 export function reduceNative(
