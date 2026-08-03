@@ -71,6 +71,33 @@ function startCommand(
 }
 
 describe("Codex adapter normalization", () => {
+  it("starts a Turn on a Session prepared in the current provider process", async () => {
+    const adapter = provider();
+    const prepared = CoreToConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.session.create", {
+        commandId: "prepare-command",
+        sessionId: "session-1",
+        providerId: "codex",
+        accountId: "default",
+        projectPath: process.cwd(),
+        model: null,
+        reasoningLevel: null,
+        runtimeId: "runtime-1",
+        runtimeGeneration: 1,
+      }),
+    );
+    if (prepared.type !== "connector.session.create") throw new Error("type");
+    const identity = await adapter.prepareSession(prepared);
+    const events: ConnectorEnvelope[] = [];
+
+    await adapter.startTurn(
+      startCommand("hello", identity.providerSessionId),
+      (event) => events.push(event),
+    );
+
+    expect(events.at(-1)?.type).toBe("connector.turn.completed");
+  });
+
   it("maps the verified event subset without raw-provider leakage", async () => {
     const adapter = provider();
     const events: ConnectorEnvelope[] = [];

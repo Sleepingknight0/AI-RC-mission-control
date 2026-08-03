@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 let active;
+const loadedThreads = new Set();
 
 lines.on("line", (line) => {
   const message = JSON.parse(line);
@@ -39,9 +40,18 @@ lines.on("line", (line) => {
     case "initialized":
       break;
     case "thread/start":
+      loadedThreads.add("fake-thread");
       send({ id: message.id, result: { thread: { id: "fake-thread" } } });
       break;
     case "thread/resume":
+      if (loadedThreads.has(message.params.threadId)) {
+        send({
+          id: message.id,
+          error: { code: -32600, message: "thread is already loaded" },
+        });
+        break;
+      }
+      loadedThreads.add(message.params.threadId);
       send({
         id: message.id,
         result: { thread: { id: message.params.threadId } },

@@ -225,6 +225,7 @@ export class CodexProvider implements ConnectorProvider {
   #starting: Promise<CodexRpcProcess> | undefined;
   #active: ActiveTurn | undefined;
   #preparing = false;
+  readonly #loadedProviderSessions = new Set<string>();
   #earlyNotifications: Array<Record<string, unknown>> = [];
   readonly #pendingApprovals = new Map<string, PendingApproval>();
   #closing = false;
@@ -303,6 +304,7 @@ export class CodexProvider implements ConnectorProvider {
       ) {
         throw new Error("Codex resumed a different Session identity");
       }
+      this.#loadedProviderSessions.add(response.thread.id);
       return {
         providerSessionId: response.thread.id,
         projectPath,
@@ -515,20 +517,28 @@ export class CodexProvider implements ConnectorProvider {
     }
     let providerSessionId: string;
     try {
-      providerSessionId = command.payload.providerSessionId
-        ? ThreadResponseSchema.parse(
-            await rpc.request("thread/resume", {
-              threadId: command.payload.providerSessionId,
-            }),
-          ).thread.id
-        : ThreadResponseSchema.parse(
-            await rpc.request("thread/start", {
-              cwd: this.#options.cwd,
-              approvalPolicy: "on-request",
-              sandbox: "read-only",
-              personality: "none",
-            }),
-          ).thread.id;
+      if (command.payload.providerSessionId === null) {
+        providerSessionId = ThreadResponseSchema.parse(
+          await rpc.request("thread/start", {
+            cwd: this.#options.cwd,
+            approvalPolicy: "on-request",
+            sandbox: "read-only",
+            personality: "none",
+          }),
+        ).thread.id;
+        this.#loadedProviderSessions.add(providerSessionId);
+      } else if (
+        this.#loadedProviderSessions.has(command.payload.providerSessionId)
+      ) {
+        providerSessionId = command.payload.providerSessionId;
+      } else {
+        providerSessionId = ThreadResponseSchema.parse(
+          await rpc.request("thread/resume", {
+            threadId: command.payload.providerSessionId,
+          }),
+        ).thread.id;
+        this.#loadedProviderSessions.add(providerSessionId);
+      }
     } catch (error) {
       if (error instanceof ProviderRpcTimeoutError) throw new ProviderLostError();
       throw error;
@@ -715,6 +725,7 @@ export class CodexProvider implements ConnectorProvider {
     if (starting !== undefined) await starting.catch(() => undefined);
     await this.#rpc?.stop();
     this.#rpc = undefined;
+    this.#loadedProviderSessions.clear();
   }
 
   async killForTest() {
@@ -1275,10 +1286,12 @@ export class CodexProvider implements ConnectorProvider {
       );
     }
     void this.#rpc?.killTree();
+    this.#loadedProviderSessions.clear();
   }
 
   #handleExit(rpc: CodexRpcProcess) {
     if (this.#rpc === rpc) this.#rpc = undefined;
+    this.#loadedProviderSessions.clear();
     if (this.#closing) return;
     const active = this.#active;
     if (active !== undefined) {
