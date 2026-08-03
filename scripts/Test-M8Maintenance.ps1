@@ -58,8 +58,8 @@ try {
             -ConfigPath $configPath -Json
     )
     $health = Invoke-RestMethod -Uri ($firstStatus.url + '/health') -TimeoutSec 5
-    if ($health.databaseSchemaVersion -ne 12 -or -not $health.connectorConnected) {
-        throw 'Empty production startup did not reach Core schema 12 with Connector ready.'
+    if ($health.databaseSchemaVersion -ne 13 -or -not $health.connectorConnected) {
+        throw 'Empty production startup did not reach Core schema 13 with Connector ready.'
     }
 
     $backup = ConvertFrom-CommandJson -Lines @(
