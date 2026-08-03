@@ -1,4 +1,6 @@
 import {
+  INPUT_ATTACHMENT_CHUNK_BYTES,
+  MAX_INPUT_ATTACHMENTS_PER_TURN,
   PROTOCOL_VERSION,
   ServerEnvelopeSchema,
   makeEnvelope,
@@ -6,11 +8,14 @@ import {
   type Approval,
   type FileChange,
   type Runtime,
+  type SessionSettings,
   type SessionSnapshot,
   type SessionSummary,
+  type SessionSummaryV2,
   type ToolActivity,
 } from "@aicl/protocol";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -37,6 +42,33 @@ import {
   requestBrowserRuntimeConfig,
   resolveCoreWebSocketUrl,
 } from "./runtime.js";
+import {
+  attachmentKindForMediaType,
+  basenameOnly,
+  capabilitySupported,
+  controllableProviders,
+  defaultCatalogFilters,
+  initialAttachmentState,
+  initialCatalogState,
+  initialFleetState,
+  initialLeaseState,
+  initialNativeState,
+  initialSettingsState,
+  reduceAttachments,
+  reduceCatalog,
+  reduceFleet,
+  reduceLease,
+  reduceNative,
+  reduceSettings,
+} from "./m9/state.js";
+import {
+  AttachmentComposer,
+  CreateSessionForm,
+  ProviderFleetPanel,
+  SessionCatalogPanel,
+  SessionControlsPanel,
+  TerminalActivityDetails,
+} from "./m9/ui.js";
 
 const SESSION_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
 const requestedSessionId = new URLSearchParams(window.location.search).get("session");
@@ -206,15 +238,21 @@ function ActivityBlock({ activity }: { activity: ToolActivity }) {
         </span>
         <StatusPill value={activity.status} pulse={running} />
       </summary>
-      <dl className="compact-facts">
-        <div>
-          <dt>Working directory</dt>
-          <dd title={activity.cwd ?? undefined}>{activity.cwd ?? "Unavailable"}</dd>
-        </div>
-        <div><dt>Exit code</dt><dd>{activity.exitCode ?? "—"}</dd></div>
-        <div><dt>Duration</dt><dd>{activity.durationMs == null ? "—" : `${activity.durationMs} ms`}</dd></div>
-      </dl>
-      <pre>{activity.outputPreview || "No output captured."}</pre>
+      <TerminalActivityDetails
+        activity={{
+          title: activity.title,
+          command: activity.command ?? null,
+          cwdLabel: activity.cwdLabel ?? activity.cwd,
+          stdoutPreview: activity.stdoutPreview ?? activity.outputPreview,
+          stderrPreview: activity.stderrPreview ?? "",
+          stdoutTruncated: activity.stdoutTruncated ?? false,
+          stderrTruncated: activity.stderrTruncated ?? false,
+          stderrAvailable: activity.stderrAvailable ?? false,
+          outputPreview: activity.outputPreview,
+          exitCode: activity.exitCode,
+          durationMs: activity.durationMs,
+        }}
+      />
     </details>
   );
 }
@@ -347,18 +385,77 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [now, setNow] = useState(Date.now());
   const compactLayout = useMediaQuery("(max-width: 860px)");
+  const [fleet, setFleet] = useState(initialFleetState);
+  const [catalog, setCatalog] = useState(initialCatalogState);
+  const [native, setNative] = useState(initialNativeState);
+  const [settingsUi, setSettingsUi] = useState(initialSettingsState);
+  const [leaseUi, setLeaseUi] = useState(initialLeaseState);
+  const [attachmentsUi, setAttachmentsUi] = useState(initialAttachmentState);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [pendingAttachmentIds, setPendingAttachmentIds] = useState<string[]>([]);
+  const deviceIdRef = useRef(deviceId());
+  const catalogFiltersRef = useRef(defaultCatalogFilters());
+  const pendingUploadsRef = useRef(
+    new Map<string, { bytes: Uint8Array; chunkCount: number; name: string }>(),
+  );
+
+  const send = useCallback((socket: WebSocket, envelope: unknown) => {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(envelope));
+    }
+  }, []);
+
+  const requestCatalog = useCallback(
+    (socket: WebSocket, cursor: string | null = null) => {
+      const requestId = crypto.randomUUID();
+      setCatalog((current) => ({
+        ...current,
+        status: current.sessions.length > 0 ? current.status : "loading",
+        requestId,
+      }));
+      send(
+        socket,
+        makeEnvelope("sessions.catalog.list", {
+          requestId,
+          deviceId: deviceIdRef.current,
+          pageSize: 100,
+          cursor,
+          filters: catalogFiltersRef.current,
+        }),
+      );
+    },
+    [send],
+  );
 
   const subscribe = (socket: WebSocket, sessionId: string) => {
     lastSeenSeqRef.current = readCursor(sessionId);
     outputSeqRef.current.clear();
-    socket.send(JSON.stringify(makeEnvelope("sessions.list", {})));
-    socket.send(
-      JSON.stringify(
-        makeEnvelope("session.subscribe", {
-          sessionId,
-          afterSeq: lastSeenSeqRef.current,
-        }),
-      ),
+    setAttachmentsUi(initialAttachmentState());
+    setSettingsUi(initialSettingsState());
+    setLeaseUi(initialLeaseState());
+    setPendingAttachmentIds([]);
+    send(socket, makeEnvelope("sessions.list", {}));
+    send(socket, makeEnvelope("providers.refresh", {}));
+    requestCatalog(socket, null);
+    send(
+      socket,
+      makeEnvelope("session.subscribe", {
+        sessionId,
+        afterSeq: lastSeenSeqRef.current,
+      }),
+    );
+    send(
+      socket,
+      makeEnvelope("session.settings.get", { sessionId }),
+    );
+    send(
+      socket,
+      makeEnvelope("attachments.list", {
+        sessionId,
+        deviceId: deviceIdRef.current,
+      }),
     );
   };
 
@@ -434,8 +531,35 @@ export function App() {
         if (message.type === "server.hello") {
           setArtifactAccessToken(message.payload.artifactAccessToken);
         }
+        setFleet((current) => reduceFleet(current, message));
+        setCatalog((current) => reduceCatalog(current, message));
+        setNative((current) => reduceNative(current, message));
+        setSettingsUi((current) => reduceSettings(current, message));
+        setLeaseUi((current) => reduceLease(current, message));
+        setAttachmentsUi((current) =>
+          reduceAttachments(current, message, selectedSessionRef.current),
+        );
         if (message.type === "sessions.snapshot") setSessions(message.payload.sessions);
         if (message.type === "runtime.status") setRuntime(message.payload.runtime);
+        if (message.type === "providers.snapshot") {
+          const controllable = controllableProviders(message.payload.snapshot);
+          setSelectedProviderId((current) => {
+            if (current && controllable.some((item) => item.providerId === current)) {
+              return current;
+            }
+            return controllable[0]?.providerId ?? null;
+          });
+        }
+        if (message.type === "session.command.accepted") {
+          setNotice(`Session command accepted · rev ${message.payload.revision}`);
+        }
+        if (message.type === "session.provider.status") {
+          setNotice(
+            `Provider binding ${message.payload.status}${
+              message.payload.failureCode ? ` · ${message.payload.failureCode}` : ""
+            }`,
+          );
+        }
         if (message.type === "command.accepted") {
           setNotice(`Command accepted · ${message.payload.commandId}`);
         }
@@ -641,6 +765,46 @@ export function App() {
   };
 
   const availability = turnAvailability(connection, runtime, snapshot);
+  const selectedProvider =
+    fleet.snapshot?.providers.find((item) => item.providerId === selectedProviderId) ??
+    null;
+
+  useEffect(() => {
+    if (!selectedProvider) {
+      setSelectedAccountId(null);
+      return;
+    }
+    const defaultAccount =
+      selectedProvider.accounts.find((account) => account.isDefault)?.accountId ??
+      selectedProvider.accounts[0]?.accountId ??
+      null;
+    setSelectedAccountId((current) => {
+      if (current && selectedProvider.accounts.some((account) => account.accountId === current)) {
+        return current;
+      }
+      return defaultAccount;
+    });
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (
+      socket?.readyState !== WebSocket.OPEN ||
+      !selectedProviderId ||
+      !selectedAccountId
+    ) {
+      return;
+    }
+    const remote = capabilitySupported(selectedProvider, "list_sessions");
+    if (!remote.ok) return;
+    send(
+      socket,
+      makeEnvelope("sessions.native.refresh", {
+        providerId: selectedProviderId,
+        accountId: selectedAccountId,
+      }),
+    );
+  }, [selectedProviderId, selectedAccountId, selectedProvider, send]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -649,18 +813,31 @@ export function App() {
     if (!availability.canSubmit || value === "" || socket?.readyState !== WebSocket.OPEN) {
       return;
     }
+    const settingsRevision = settingsUi.snapshot?.revision;
+    if (settingsRevision === undefined) {
+      setNotice("Settings revision unavailable — wait for session.settings.snapshot");
+      return;
+    }
     const commandId = crypto.randomUUID();
-    socket.send(
-      JSON.stringify(
-        makeEnvelope("turn.submit", {
-          commandId,
-          sessionId: selectedSessionId,
-          prompt: value,
-        }),
+    const readyIds = pendingAttachmentIds.filter((id) =>
+      attachmentsUi.attachments.some(
+        (item) => item.attachmentId === id && item.status === "ready",
       ),
+    );
+    send(
+      socket,
+      makeEnvelope("turn.submit", {
+        commandId,
+        sessionId: selectedSessionId,
+        prompt: value,
+        deviceId: deviceIdRef.current,
+        settingsRevision,
+        attachmentIds: readyIds.length > 0 ? readyIds : undefined,
+      }),
     );
     sessionStorage.removeItem(draftKey(selectedSessionId));
     setPrompt("");
+    setPendingAttachmentIds([]);
     setNotice(`Dispatching command · ${commandId}`);
   };
 
@@ -841,6 +1018,137 @@ export function App() {
     () => (displayedDiff === null ? null : splitDiff(displayedDiff)),
     [displayedDiff],
   );
+  const createDisabledReason = (() => {
+    if (connection !== "online") return "Core offline";
+    if (!selectedProviderId || !selectedAccountId) return "Select provider and account";
+    const remote = capabilitySupported(selectedProvider, "create_session");
+    if (!remote.ok) return remote.reason;
+    const account = selectedProvider?.accounts.find(
+      (item) => item.accountId === selectedAccountId,
+    );
+    if (account?.control !== "remote_control") {
+      return "Selected account is inventory-only";
+    }
+    return null;
+  })();
+
+  const textAttach = capabilitySupported(selectedProvider, "file_input");
+  const imageAttach = capabilitySupported(selectedProvider, "image_input");
+  const attachDisabledReason =
+    !textAttach.ok && !imageAttach.ok
+      ? textAttach.reason ?? imageAttach.reason
+      : null;
+
+  const uploadFiles = async (files: FileList) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const remaining =
+      MAX_INPUT_ATTACHMENTS_PER_TURN -
+      pendingAttachmentIds.length -
+      attachmentsUi.attachments.filter((item) => item.status === "ready").length;
+    const queue = Array.from(files).slice(0, Math.max(0, remaining));
+    for (const file of queue) {
+      const name = basenameOnly(file.name);
+      if (!name) {
+        setNotice("Attachment name must be a basename only");
+        continue;
+      }
+      const mediaType = file.type || "text/plain";
+      const kind = attachmentKindForMediaType(mediaType);
+      if (kind === "image" && !imageAttach.ok) {
+        setNotice(imageAttach.reason ?? "Image input unsupported");
+        continue;
+      }
+      if (kind === "text" && !textAttach.ok) {
+        setNotice(textAttach.reason ?? "File input unsupported");
+        continue;
+      }
+      if (kind === "document" || kind === "archive") {
+        setNotice("PDF/ZIP/document attachments are rejected by M9 policy");
+        continue;
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const digest = await sha256Hex(bytes.buffer);
+      const chunkCount = Math.max(1, Math.ceil(bytes.byteLength / INPUT_ATTACHMENT_CHUNK_BYTES));
+      const commandId = crypto.randomUUID();
+      send(
+        socket,
+        makeEnvelope("attachment.upload.begin", {
+          commandId,
+          sessionId: selectedSessionId,
+          deviceId: deviceIdRef.current,
+          name,
+          kind,
+          mediaType: mediaType as
+            | "text/plain"
+            | "text/markdown"
+            | "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp",
+          byteLength: bytes.byteLength,
+          sha256: digest,
+          chunkCount,
+        }),
+      );
+      // Chunks are driven after attachment.command.accepted via notice flow —
+      // store pending file bytes keyed by command for the accepted handler path.
+      pendingUploadsRef.current.set(commandId, { bytes, chunkCount, name });
+    }
+  };
+
+  useEffect(() => {
+    // When an attachment becomes uploading with progress 0, stream chunks for matching pending upload by name+size
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    for (const attachment of attachmentsUi.attachments) {
+      if (attachment.status !== "uploading") continue;
+      if (attachmentsUi.uploadProgress[attachment.attachmentId]) continue;
+      const pending = [...pendingUploadsRef.current.entries()].find(
+        ([, value]) =>
+          value.name === attachment.name &&
+          value.bytes.byteLength === attachment.byteLength,
+      );
+      if (!pending) continue;
+      const [commandId, value] = pending;
+      pendingUploadsRef.current.delete(commandId);
+      void (async () => {
+        for (let index = 0; index < value.chunkCount; index += 1) {
+          const start = index * INPUT_ATTACHMENT_CHUNK_BYTES;
+          const end = Math.min(value.bytes.byteLength, start + INPUT_ATTACHMENT_CHUNK_BYTES);
+          const slice = value.bytes.subarray(start, end);
+          let binary = "";
+          for (const byte of slice) binary += String.fromCharCode(byte);
+          const contentBase64 = btoa(binary);
+          send(
+            socket,
+            makeEnvelope("attachment.upload.chunk", {
+              sessionId: selectedSessionId,
+              deviceId: deviceIdRef.current,
+              attachmentId: attachment.attachmentId,
+              chunkIndex: index,
+              contentBase64,
+            }),
+          );
+        }
+        send(
+          socket,
+          makeEnvelope("attachment.upload.complete", {
+            commandId: crypto.randomUUID(),
+            sessionId: selectedSessionId,
+            deviceId: deviceIdRef.current,
+            attachmentId: attachment.attachmentId,
+          }),
+        );
+        setPendingAttachmentIds((ids) =>
+          ids.includes(attachment.attachmentId)
+            ? ids
+            : [...ids, attachment.attachmentId],
+        );
+      })();
+    }
+  }, [attachmentsUi.attachments, attachmentsUi.uploadProgress, selectedSessionId, send]);
+
   const operationalAnnouncement = `${connectionLabel(connection)}. Session ${selectedSessionId} is ${formatState(sessionState)}. ${pendingApprovals.length} pending ${pendingApprovals.length === 1 ? "approval" : "approvals"}.`;
   const systemThinking =
     connection === "connecting" ||
@@ -917,19 +1225,145 @@ export function App() {
           id="mission-metrics"
           hidden={compactLayout && !overviewOpen}
         >
-          <div><dt>Sessions</dt><dd>{sessions.length.toString().padStart(2, "0")}</dd></div>
+          <div>
+            <dt>Catalog</dt>
+            <dd>{catalog.total.toString().padStart(2, "0")}</dd>
+          </div>
+          <div>
+            <dt>Providers</dt>
+            <dd>{(fleet.snapshot?.providers.length ?? 0).toString().padStart(2, "0")}</dd>
+          </div>
           <div><dt>Active</dt><dd>{activeCount.toString().padStart(2, "0")}</dd></div>
           <div><dt>Approval</dt><dd>{approvalCount.toString().padStart(2, "0")}</dd></div>
-          <div><dt>Degraded</dt><dd>{degradedCount.toString().padStart(2, "0")}</dd></div>
         </dl>
       </section>
+
+      <div className="m9-top-grid">
+        <ProviderFleetPanel
+          fleet={fleet}
+          selectedProviderId={selectedProviderId}
+          selectedAccountId={selectedAccountId}
+          onRefresh={() => {
+            const socket = socketRef.current;
+            if (socket) send(socket, makeEnvelope("providers.refresh", {}));
+          }}
+          onSelectProvider={setSelectedProviderId}
+          onSelectAccount={setSelectedAccountId}
+        />
+        <SessionCatalogPanel
+          catalog={catalog}
+          native={native}
+          selectedSessionId={selectedSessionId}
+          createDisabledReason={createDisabledReason}
+          onSearch={(search) => {
+            catalogFiltersRef.current = {
+              ...catalogFiltersRef.current,
+              search: search.trim() === "" ? null : search.trim(),
+            };
+            const socket = socketRef.current;
+            if (socket) requestCatalog(socket, null);
+          }}
+          onLoadMore={() => {
+            const socket = socketRef.current;
+            if (socket && catalog.nextCursor) requestCatalog(socket, catalog.nextCursor);
+          }}
+          onCreate={() => setShowCreateForm((open) => !open)}
+          onSelectSession={(sessionId) => switchSession(sessionId)}
+          onPin={(session) => {
+            const socket = socketRef.current;
+            if (!socket) return;
+            send(
+              socket,
+              makeEnvelope("session.pin", {
+                commandId: crypto.randomUUID(),
+                sessionId: session.sessionId,
+                deviceId: deviceIdRef.current,
+                expectedRevision: session.revision,
+                pinned: !session.pinned,
+              }),
+            );
+          }}
+          onArchive={(session) => {
+            const socket = socketRef.current;
+            if (!socket) return;
+            send(
+              socket,
+              makeEnvelope("session.archive", {
+                commandId: crypto.randomUUID(),
+                sessionId: session.sessionId,
+                deviceId: deviceIdRef.current,
+                expectedRevision: session.revision,
+                archived: !session.archived,
+              }),
+            );
+          }}
+          onResumeNative={(providerSessionId) => {
+            const socket = socketRef.current;
+            if (!socket || !selectedProviderId || !selectedAccountId) return;
+            send(
+              socket,
+              makeEnvelope("session.resume", {
+                commandId: crypto.randomUUID(),
+                sessionId: selectedSessionId,
+                deviceId: deviceIdRef.current,
+                providerId: selectedProviderId,
+                accountId: selectedAccountId,
+                providerSessionId: providerSessionId,
+              }),
+            );
+          }}
+          onRefreshNative={() => {
+            const socket = socketRef.current;
+            if (!socket || !selectedProviderId || !selectedAccountId) return;
+            send(
+              socket,
+              makeEnvelope("sessions.native.refresh", {
+                providerId: selectedProviderId,
+                accountId: selectedAccountId,
+              }),
+            );
+          }}
+        />
+        {showCreateForm && (
+          <CreateSessionForm
+            fleet={fleet.snapshot}
+            selectedProviderId={selectedProviderId}
+            selectedAccountId={selectedAccountId}
+            disabledReason={createDisabledReason}
+            onSubmit={(input) => {
+              const socket = socketRef.current;
+              if (!socket || !selectedProviderId || !selectedAccountId) return;
+              if (!SESSION_PATTERN.test(input.sessionId)) {
+                setNotice("Invalid Session ID");
+                return;
+              }
+              send(
+                socket,
+                makeEnvelope("session.create", {
+                  commandId: crypto.randomUUID(),
+                  sessionId: input.sessionId,
+                  deviceId: deviceIdRef.current,
+                  title: input.title,
+                  providerId: selectedProviderId,
+                  accountId: selectedAccountId,
+                  projectPath: input.projectPath,
+                  model: input.model,
+                  reasoningLevel: input.reasoningLevel,
+                }),
+              );
+              setShowCreateForm(false);
+              switchSession(input.sessionId);
+            }}
+          />
+        )}
+      </div>
 
       <div className="workspace">
         <aside className="session-rail" aria-labelledby="sessions-title">
           <div className="rail-heading">
             <div>
-              <p className="eyebrow">VEHICLE INDEX</p>
-              <h2 id="sessions-title">Sessions</h2>
+              <p className="eyebrow">COMPAT · M8 STRIP</p>
+              <h2 id="sessions-title">Quick open</h2>
             </div>
             <span className="mono-meta">{String(sessions.length).padStart(2, "0")}</span>
           </div>
@@ -944,7 +1378,7 @@ export function App() {
                   onClick={() => switchSession(session.sessionId)}
                 >
                   <span className="session-strip-top">
-                    <span className="provider-label">CODEX</span>
+                    <span className="provider-label">SESSION</span>
                     <StatusPill
                       value={session.state}
                       pulse={session.state === "running" || session.state === "awaiting_approval"}
@@ -962,7 +1396,7 @@ export function App() {
                 </button>
               ))
             ) : (
-              <p className="empty-state">No durable Sessions yet. Open a Session ID below.</p>
+              <p className="empty-state">Legacy M8 snapshot empty — use Catalog V2 above.</p>
             )}
           </div>
           <form className="open-session" onSubmit={openSession}>
@@ -1128,11 +1562,117 @@ export function App() {
             )}
           </section>
 
+          <SessionControlsPanel
+            settings={settingsUi}
+            fleet={fleet.snapshot}
+            lease={leaseUi.snapshot}
+            runtimeId={runtime?.runtimeId ?? null}
+            runtimeGeneration={runtime?.generation ?? null}
+            now={now}
+            onUpdateSettings={(nextSettings: SessionSettings) => {
+              const socket = socketRef.current;
+              const revision = settingsUi.snapshot?.revision;
+              if (!socket || revision === undefined) return;
+              send(
+                socket,
+                makeEnvelope("session.settings.update", {
+                  commandId: crypto.randomUUID(),
+                  sessionId: selectedSessionId,
+                  deviceId: deviceIdRef.current,
+                  expectedRevision: revision,
+                  settings: nextSettings,
+                }),
+              );
+            }}
+            onCreateLease={(minutes) => {
+              const socket = socketRef.current;
+              const settings = settingsUi.snapshot;
+              if (
+                !socket ||
+                !settings ||
+                !runtime ||
+                !settings.settings.accountId ||
+                !settings.settings.projectPath
+              ) {
+                setNotice("Lease requires runtime, account, and project path");
+                return;
+              }
+              send(
+                socket,
+                makeEnvelope("approval.lease.create", {
+                  commandId: crypto.randomUUID(),
+                  sessionId: selectedSessionId,
+                  deviceId: deviceIdRef.current,
+                  expectedSettingsRevision: settings.revision,
+                  expectedLeaseRevision: leaseUi.snapshot?.revision ?? 0,
+                  providerId: settings.settings.providerId,
+                  accountId: settings.settings.accountId,
+                  projectPath: settings.settings.projectPath,
+                  runtimeId: runtime.runtimeId,
+                  runtimeGeneration: runtime.generation,
+                  durationMinutes: minutes,
+                }),
+              );
+            }}
+            onRevokeLease={() => {
+              const socket = socketRef.current;
+              const lease = leaseUi.snapshot?.leases.find((item) => item.state === "active");
+              if (!socket || !lease) return;
+              send(
+                socket,
+                makeEnvelope("approval.lease.revoke", {
+                  commandId: crypto.randomUUID(),
+                  sessionId: selectedSessionId,
+                  deviceId: deviceIdRef.current,
+                  leaseId: lease.leaseId,
+                  expectedLeaseRevision: lease.revision,
+                }),
+              );
+            }}
+            onEmergencyStop={() => {
+              const socket = socketRef.current;
+              if (!socket) return;
+              send(
+                socket,
+                makeEnvelope("approval.emergency_stop", {
+                  commandId: crypto.randomUUID(),
+                  sessionId: selectedSessionId,
+                  deviceId: deviceIdRef.current,
+                }),
+              );
+            }}
+          />
+
           <form onSubmit={submit} className="composer">
             <div className="composer-heading">
               <label htmlFor="prompt">Uplink command</label>
-              <span className="mono-meta">CTRL / CMD + ENTER</span>
+              <span className="mono-meta">
+                CTRL / CMD + ENTER · settings rev {settingsUi.snapshot?.revision ?? "—"}
+              </span>
             </div>
+            <AttachmentComposer
+              attachments={attachmentsUi.attachments}
+              uploadProgress={attachmentsUi.uploadProgress}
+              error={attachmentsUi.error}
+              canAttachText={textAttach.ok}
+              canAttachImage={imageAttach.ok}
+              disabledReason={attachDisabledReason}
+              onPickFiles={(files) => void uploadFiles(files)}
+              onDelete={(attachmentId) => {
+                const socket = socketRef.current;
+                if (!socket) return;
+                send(
+                  socket,
+                  makeEnvelope("attachment.delete", {
+                    commandId: crypto.randomUUID(),
+                    sessionId: selectedSessionId,
+                    deviceId: deviceIdRef.current,
+                    attachmentId,
+                  }),
+                );
+                setPendingAttachmentIds((ids) => ids.filter((id) => id !== attachmentId));
+              }}
+            />
             <textarea
               id="prompt"
               value={prompt}
@@ -1156,7 +1696,11 @@ export function App() {
                 <button
                   type="submit"
                   className={timelineBusy ? "btn-busy" : undefined}
-                  disabled={!availability.canSubmit || prompt.trim() === ""}
+                  disabled={
+                    !availability.canSubmit ||
+                    prompt.trim() === "" ||
+                    settingsUi.snapshot === null
+                  }
                 >
                   {timelineBusy ? "Working…" : "Launch"}
                 </button>
