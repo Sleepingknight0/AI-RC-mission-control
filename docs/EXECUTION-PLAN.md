@@ -15,6 +15,12 @@ complete. Google identity plus
 Cloudflare is planned as separate, unresolved remote-access work and is not
 part of M8.6.
 
+M9 is now the active post-M8 phase. Codex owns the non-visual Domain, protocol,
+Core, Connector, provider, database, policy, attachment, security, and final
+integration work. The Web visual layer is frozen at Grok commit `c2f1d481` and
+will consume `docs/M9-WEB-INTEGRATION-CONTRACT.md` only during a later authorized
+integration pass.
+
 ## Scope
 
 - M0.1 target-Windows toolchain verification — **done**
@@ -36,13 +42,15 @@ part of M8.6.
 - M8.4 compiled lifecycle and Windows startup task — **done**
 - M8.5 private Tailscale Serve second-device acceptance — **deferred; not complete**
 - M8.6 backup/restore and clean-install gate — **done**
+- M9.0 architecture, Web contract, and exact-head baseline — **done**
+- M9.1–M9.11 Remote AI Workspace non-visual implementation — **active**
 
 ## Non-goals
 
 - Anything excluded by `docs/00-PROTOTYPE-0-SCOPE.md`
 - Optional external visual/audit passes before Prototype 0 is complete
 - Claude provider integration, multi-user, cloud control plane
-- M9 project/profile/session product operations, PWA, installer, and updater
+- M9 PWA, signed installer, updater, and non-Codex remote-control adapters
 - New Cloudflare/Google authentication implementation or unauthenticated public
   Internet exposure during M8.6
 
@@ -105,6 +113,17 @@ part of M8.6.
 - Compact layouts collapse Overview and expose Health/Diff in a keyboard-safe
   drawer; large timelines use bounded DOM windowing after 200 items
 - Grok and Claude launchers remain optional post-prototype tools only
+- M9 architecture and exact-head evidence are recorded under `docs/M9-*.md`
+  and `reviews/codex/M9-BASELINE.md`; provider capability implementation is the
+  first incomplete slice.
+
+## M9 active extension
+
+Follow `docs/M9-EXECUTION-PLAN.md` as the detailed loop authority. Preserve M8
+envelopes while adding provider fleet, Catalog V2, settings, policy/lease,
+attachment, and terminal contracts. Each vertical slice includes tests,
+status/handoff updates, a frozen-Web diff review, and a clean commit before the
+next slice begins.
 
 ## Implementation sequence
 

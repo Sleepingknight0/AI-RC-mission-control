@@ -1435,3 +1435,33 @@ real pnpm start
 
 Prototype 0 plus the local compiled daily-use host is ready. Treat the future
 Google/Cloudflare authentication work as a separate architecture milestone.
+
+---
+
+### 2026-08-03 10:37 — Codex — M9.0 contracts and authoritative baseline
+
+**Outcome**
+
+- Verified clean main/Grok worktree isolation and preserved the obsolete visual
+  stash without applying or changing it.
+- Re-ran the complete M8.6 baseline and the opt-in Real Codex lifecycle on exact
+  HEAD `4ebd88d`.
+- Defined M9 provider capability, Session Catalog, settings, execution/approval,
+  lease, attachment, terminal, and frozen-Web integration boundaries.
+- Recorded AD-021 through AD-028 and the canonical M9 domain vocabulary.
+
+**Verification**
+
+```text
+pnpm install --frozen-lockfile -> pass
+pnpm migrate (twice)           -> Core 5 / Connector 3; no-op
+pnpm build                     -> pass
+pnpm check                     -> 107 passed; 1 opt-in test skipped
+Real Codex E2E                 -> 1 passed in 70.39 s
+git diff --check               -> pass before documentation changes
+```
+
+**Next**
+
+M9.1 adds the normalized provider/account/capability schemas and tests without
+editing the frozen Web visual files.

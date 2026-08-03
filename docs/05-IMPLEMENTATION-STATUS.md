@@ -48,13 +48,28 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - P2 Claude independent correctness/security audit
 - P3 Codex triage of reproducible external feedback
 
+## M9 — Remote AI Workspace (non-visual backend)
+
+- [x] M9.0 architecture, integration contracts, and exact-head baseline
+- [ ] M9.1 provider capability Domain/protocol model
+- [ ] M9.2 provider inventory relay and authoritative Core snapshot
+- [ ] M9.3 Session Catalog V2 backend and migration
+- [ ] M9.4 Codex native discovery, create, resume, and capabilities
+- [ ] M9.5 revision-fenced Session settings and effective Turn snapshots
+- [ ] M9.6 normalized execution-mode semantics
+- [ ] M9.7 approval policies and scoped Full Auto leases
+- [ ] M9.8 managed attachment lifecycle and security
+- [ ] M9.9 normalized terminal/activity metadata
+- [ ] M9.10 security, recovery, fault, and performance gate
+- [ ] M9.11 non-visual final gate and Grok integration handoff
+
 ## Current milestone
 
-**No active local daily-use milestone.** M8.6 is complete and Prototype 0 is
-running locally through the compiled production Host. M8.5 remains explicitly
-deferred and incomplete: Google Login plus Cloudflare is only a plan, and its
-authentication boundary has not been selected or implemented. External AI
-reviews remain optional.
+**M9.1 provider capability Domain/protocol model.** M8.6 and the exact-head M9
+baseline are complete. The Grok visual checkpoint remains isolated and frozen;
+M9 proceeds through non-visual contracts, Core, Connector, provider, database,
+security, and tests. M8.5 and Google/Cloudflare identity remain deferred outside
+M9.
 
 ## Last verified demo
 

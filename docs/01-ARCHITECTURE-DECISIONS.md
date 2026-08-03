@@ -201,3 +201,59 @@ existing supported database that needs an upgrade receives a verified
 pre-migration backup first. Schema ledgers bind every SQL migration name and
 contents to SHA-256; mismatch and newer schemas fail closed, while repeated
 migration is a no-op.
+
+## AD-021 — Provider inventory is not provider authority
+
+The terminal launcher registry is the source of provider/account inventory.
+Only a compatible, tested AICL adapter grants remote control. Capability values
+carry state, provenance, and freshness; unknown support is never inferred from
+installation or a provider name. Inventory snapshots are replaceable operational
+state and are not written into Session event history.
+
+## AD-022 — Catalog preserves separate Session identities
+
+Core-owned AICL Sessions and provider-native discovered Sessions are separate
+records. Discovery is read-only. Import/resume creates an explicit binding by
+provider, account, and provider-native ID; title or path similarity never merges
+Sessions.
+
+## AD-023 — Settings and Turn execution are revision-fenced
+
+Core owns Session settings in a separate compare-and-set revision. Semantic
+settings cannot change during an executing Turn. The accepted Turn stores an
+immutable effective-settings snapshot and settings revision. Connector validates
+provider capabilities again before dispatch.
+
+## AD-024 — Execution mode does not grant authority
+
+`ask`, `plan`, and `auto` describe orchestration only. Approval, sandbox,
+network, project, adapter capability, and lease checks remain independent.
+Unknown action classification always fails closed.
+
+## AD-025 — Full Auto is a scoped lease
+
+Full Auto authority is an explicit 15/30/60-minute Core lease fenced by Session,
+project, provider, account, device, Runtime ID/generation, and revision. It is
+audited, replay-resistant, revocable, and expires automatically. A boolean from
+Web cannot grant authority.
+
+## AD-026 — Input attachments are managed capabilities
+
+Browser uploads use opaque IDs, bounded chunks, content hashing, MIME plus magic
+validation, Session/device ownership, expiry, and retention. Core transfers
+verified content to an application-owned Connector temp root; browser paths and
+arbitrary project paths are never accepted. Uploaded content is never executed.
+
+## AD-027 — M9 protocol evolution remains M8-compatible
+
+M9 adds dedicated provider, Catalog, settings, lease, attachment, and terminal
+message families while retaining M8 envelopes for the frozen Web. Compatibility
+adapters may preserve valid old shapes but may not weaken validation or invent
+state.
+
+## AD-028 — Grok visual checkpoint stays isolated until integration
+
+The visual baseline at `grok/spacex-ui` commit `c2f1d481` is preserved in its
+own worktree. Codex owns all non-visual M9 contracts and implementation but does
+not edit or merge the frozen Web visual files until the operator authorizes the
+final integration pass.
