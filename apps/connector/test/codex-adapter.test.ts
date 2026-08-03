@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 
 import {
   CoreToConnectorEnvelopeSchema,
@@ -374,7 +374,7 @@ describe("Codex adapter normalization", () => {
     const adapter = provider();
     const events: ConnectorEnvelope[] = [];
     const running = adapter.startTurn(
-      startCommand("approval", "fake-thread", "auto"),
+      startCommand("approval", "fake-thread", "auto", `${process.cwd()}${sep}`),
       (event) => events.push(event),
     );
     await waitUntil(() =>
@@ -386,6 +386,7 @@ describe("Codex adapter normalization", () => {
     expect(requested?.type).toBe("connector.approval.requested");
     if (requested?.type !== "connector.approval.requested") return;
     expect(JSON.stringify(requested)).not.toContain("raw-provider-request-id");
+    expect(requested.payload.approval.payload.cwd).toBe(resolve(process.cwd()));
     await adapter.resolveApproval(
       CoreToConnectorEnvelopeSchema.parse(
         makeEnvelope("connector.approval.resolve", {

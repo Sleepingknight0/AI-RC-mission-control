@@ -256,4 +256,60 @@ describe("provider capability protocol", () => {
       ).type,
     ).toBe("providers.snapshot");
   });
+
+  it("validates an authoritative per-Session capability projection", () => {
+    const support = { state: "supported" as const, reason: null };
+    const snapshot = {
+      sessionId: "session-one",
+      settingsRevision: 3,
+      observedAt,
+      freshness: "live" as const,
+      provider: { providerId: "codex", ...support },
+      account: { accountId: "default", ...support },
+      model: { modelId: null, ...support },
+      controlAuthority: {
+        canControl: true,
+        bindingStatus: "ready" as const,
+        reason: null,
+      },
+      executionModes: ["ask", "plan", "auto"].map((mode) => ({
+        mode,
+        ...support,
+      })),
+      attachments: [
+        { kind: "text" as const, ...support },
+        {
+          kind: "image" as const,
+          state: "unsupported" as const,
+          reason: "Selected model does not advertise image input.",
+        },
+      ],
+      approvalPolicies: [
+        "review",
+        "balanced",
+        "workspace_auto",
+        "full_auto_lease",
+      ].map((policy) => ({ policy, ...support })),
+      fullAutoLease: {
+        state: "unsupported" as const,
+        reason: "A scoped lease is not active.",
+      },
+    };
+
+    expect(
+      ServerEnvelopeSchema.parse(
+        makeEnvelope("session.capabilities.snapshot", { snapshot }),
+      ).type,
+    ).toBe("session.capabilities.snapshot");
+    expect(() =>
+      ServerEnvelopeSchema.parse(
+        makeEnvelope("session.capabilities.snapshot", {
+          snapshot: {
+            ...snapshot,
+            controlAuthority: { canControl: true, bindingStatus: "ready" },
+          },
+        }),
+      ),
+    ).toThrow();
+  });
 });

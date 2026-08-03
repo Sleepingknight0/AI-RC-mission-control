@@ -25,6 +25,10 @@ import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startCoreServer } from "../src/server.js";
+import {
+  controlledProviderFleet,
+  createControlledSession,
+} from "./controlled-session-fixture.js";
 
 interface BrowserHarness {
   socket: WebSocket;
@@ -136,6 +140,7 @@ describe("approval compare-and-set", () => {
       providerName: "approval-test",
       journalPath,
       reconnectDelayMs: 20,
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(firstConnector);
     await firstConnector.ready;
@@ -143,6 +148,7 @@ describe("approval compare-and-set", () => {
       core.browserUrl,
       core.browserToken,
       "generation-session",
+      true,
     );
     const approval = await requestApproval(browser, "generation-turn");
 
@@ -156,6 +162,7 @@ describe("approval compare-and-set", () => {
       providerName: "approval-test",
       journalPath,
       reconnectDelayMs: 20,
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(secondConnector);
     await secondConnector.ready;
@@ -181,6 +188,7 @@ describe("approval compare-and-set", () => {
       provider,
       providerName: "interrupt-test",
       journalPath: ":memory:",
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(connector);
     await connector.ready;
@@ -188,6 +196,7 @@ describe("approval compare-and-set", () => {
       core.browserUrl,
       core.browserToken,
       "interrupt-session",
+      true,
     );
     send(
       browser,
@@ -230,6 +239,7 @@ describe("approval compare-and-set", () => {
       provider,
       providerName: "secret-interrupt-test",
       journalPath: ":memory:",
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(connector);
     await connector.ready;
@@ -237,6 +247,7 @@ describe("approval compare-and-set", () => {
       core.browserUrl,
       core.browserToken,
       "secret-interrupt-session",
+      true,
     );
     send(
       browser,
@@ -537,6 +548,17 @@ class InterruptingProvider implements ConnectorProvider {
     return () => undefined;
   }
 
+  async prepareSession(
+    command: SessionPrepareCommand,
+  ): Promise<ProviderSessionPreparation> {
+    return {
+      providerSessionId: `provider-${command.payload.sessionId}`,
+      projectPath: command.payload.projectPath,
+      model: command.payload.model,
+      reasoningLevel: command.payload.reasoningLevel,
+    };
+  }
+
   async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {
     emitNormalized(
       emit,
@@ -634,6 +656,7 @@ async function approvalSetup(expiresAt?: number) {
     provider,
     providerName: "approval-test",
     journalPath: ":memory:",
+    providerInventory: (revision) => controlledProviderFleet(revision),
   });
   handles.push(connector);
   await connector.ready;
@@ -641,6 +664,7 @@ async function approvalSetup(expiresAt?: number) {
     core.browserUrl,
     core.browserToken,
     "approval-session",
+    true,
   );
   return { core, provider, connector, firstTab };
 }
@@ -675,8 +699,10 @@ async function openBrowser(
   url: string,
   token: string,
   sessionId: string,
+  create = false,
 ): Promise<BrowserHarness> {
   const browser = await connectBrowser(url, token);
+  if (create) await createControlledSession(browser, sessionId);
   send(browser, makeEnvelope("session.subscribe", { sessionId, afterSeq: 0 }));
   await waitFor(browser, "session.snapshot");
   return browser;

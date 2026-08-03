@@ -4,6 +4,7 @@ import { startConnector } from "@aicl/connector";
 import type {
   ConnectorEmit,
   ConnectorProvider,
+  SessionPrepareCommand,
   TurnStartCommand,
 } from "@aicl/connector/provider";
 import {
@@ -21,6 +22,10 @@ import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startCoreServer } from "../src/server.js";
+import {
+  controlledProviderFleet,
+  createControlledSession,
+} from "./controlled-session-fixture.js";
 
 interface BrowserHarness {
   socket: WebSocket;
@@ -49,6 +54,7 @@ describe("artifact-backed diff flow", () => {
       provider,
       providerName: "diff-test",
       journalPath: ":memory:",
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(connector);
     await connector.ready;
@@ -132,6 +138,15 @@ describe("artifact-backed diff flow", () => {
 class DiffProvider implements ConnectorProvider {
   onLost() {
     return () => undefined;
+  }
+
+  async prepareSession(command: SessionPrepareCommand) {
+    return {
+      providerSessionId: `provider-${command.payload.sessionId}`,
+      projectPath: command.payload.projectPath,
+      model: command.payload.model,
+      reasoningLevel: command.payload.reasoningLevel,
+    };
   }
 
   async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {
@@ -242,6 +257,7 @@ async function openBrowser(
     socket.once("error", reject);
   });
   const browser = { socket, messages };
+  await createControlledSession(browser, sessionId);
   socket.send(
     JSON.stringify(makeEnvelope("session.subscribe", { sessionId, afterSeq: 0 })),
   );

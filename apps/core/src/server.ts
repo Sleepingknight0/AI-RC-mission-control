@@ -14,6 +14,7 @@ import { httpOrigin, webSocketOrigin } from "@aicl/config";
 import {
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
+  CoreToConnectorEnvelopeSchema,
   BrowserRuntimeConfigSchema,
   MAX_OUTPUT_BATCH_BYTES,
   INPUT_ATTACHMENT_CHUNK_BYTES,
@@ -29,6 +30,7 @@ import {
   type ClientEnvelope,
   type Approval,
   type ConnectorEnvelope,
+  type CoreToConnectorEnvelope,
   type InputAttachment,
   type ProtocolError,
   type ProviderFleetSnapshot,
@@ -36,7 +38,9 @@ import {
   type ProviderRecord,
   type Runtime,
   type ServerEnvelope,
+  type SessionCapabilitiesSnapshot,
   type SessionSettings,
+  type SessionSettingsSnapshot,
 } from "@aicl/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 
@@ -101,6 +105,224 @@ function validatedServerEnvelope(value: unknown): ServerEnvelope {
   return ServerEnvelopeSchema.parse(value);
 }
 
+export function validatedConnectorCommand(value: unknown): CoreToConnectorEnvelope {
+  return CoreToConnectorEnvelopeSchema.parse(value);
+}
+
+type SessionProviderAuthority = ReturnType<
+  CoreDatabase["sessionProviderAuthority"]
+>;
+
+export function projectSessionCapabilities(
+  settingsSnapshot: SessionSettingsSnapshot,
+  authority: SessionProviderAuthority,
+  fleet: ProviderFleetSnapshot | undefined,
+): SessionCapabilitiesSnapshot {
+  const { settings } = settingsSnapshot;
+  const provider = fleet?.providers.find(
+    (candidate) => candidate.providerId === settings.providerId,
+  );
+  const account = provider?.accounts.find(
+    (candidate) => candidate.accountId === settings.accountId,
+  );
+  const model =
+    settings.model === null
+      ? provider?.models.find((candidate) => candidate.isDefault) ??
+        provider?.models[0]
+      : provider?.models.find((candidate) => candidate.modelId === settings.model);
+  const freshness =
+    fleet === undefined
+      ? "unavailable"
+      : provider !== undefined &&
+          ["stale", "offline", "unavailable"].includes(provider.freshness)
+        ? provider.freshness
+        : fleet.freshness;
+  const fresh = ["live", "local"].includes(freshness);
+  const providerState =
+    provider === undefined || !fresh
+      ? "unknown"
+      : provider.adapterSupport !== "remote_control"
+        ? "unsupported"
+        : provider.authentication === "authenticated"
+          ? "supported"
+          : provider.authentication === "not_authenticated"
+            ? "unsupported"
+            : "unknown";
+  const providerReason =
+    provider === undefined
+      ? "Provider inventory is unavailable."
+      : !fresh
+        ? "Provider capability evidence is stale or unavailable."
+        : provider.adapterSupport !== "remote_control"
+          ? "Provider is inventory-only."
+          : provider.authentication !== "authenticated"
+            ? "Provider authentication is not currently verified."
+            : null;
+  const accountState =
+    settings.accountId === null
+      ? "unsupported"
+      : providerState === "unknown"
+        ? "unknown"
+        : account === undefined ||
+            account.authentication === "not_authenticated" ||
+            account.control !== "remote_control"
+          ? "unsupported"
+          : account.authentication === "authenticated"
+            ? "supported"
+            : "unknown";
+  const accountReason =
+    settings.accountId === null
+      ? "Session has no bound provider account."
+      : providerState === "unknown"
+        ? providerReason
+        : account === undefined
+          ? "Bound provider account is absent from current inventory."
+          : account.authentication !== "authenticated"
+            ? "Bound provider account is not currently authenticated."
+            : account.control !== "remote_control"
+              ? "Bound provider account is inventory-only."
+              : null;
+  const modelSupported =
+    providerState === "supported" &&
+    (settings.model === null ||
+      (provider?.modelsState === "available" && model !== undefined));
+  const modelState =
+    modelSupported
+      ? "supported"
+      : providerState === "unknown" || provider?.modelsState !== "available"
+        ? "unknown"
+        : "unsupported";
+  const modelReason = modelSupported
+    ? null
+    : providerState === "unknown"
+      ? providerReason
+      : provider?.modelsState !== "available"
+        ? "Provider model evidence is unavailable."
+        : "Selected model is not advertised by the provider.";
+  const controlError = validateTurnControlAuthority(
+    settings,
+    authority,
+    fleet,
+  );
+  const canControl = controlError === undefined;
+  const featureSupport = (
+    key: ProviderRecord["capabilities"][number]["key"],
+    unavailableReason: string,
+  ) => {
+    if (!canControl) {
+      return {
+        state: freshness === "stale" || freshness === "unavailable"
+          ? ("unknown" as const)
+          : ("unsupported" as const),
+        reason: controlError?.message ?? unavailableReason,
+      };
+    }
+    const evidence = provider?.capabilities.find(
+      (capability) => capability.key === key,
+    );
+    return evidence?.state === "supported"
+      ? { state: "supported" as const, reason: null }
+      : {
+          state: evidence?.state ?? ("unknown" as const),
+          reason: evidence?.reason ?? unavailableReason,
+        };
+  };
+  const executionSupport = featureSupport(
+    "execution_modes",
+    "Execution modes are not supported by this provider.",
+  );
+  const textSupport = featureSupport(
+    "text_input",
+    "Text attachments are not supported by this provider.",
+  );
+  const imageCapability = featureSupport(
+    "image_input",
+    "Image attachments are not supported by this provider.",
+  );
+  const imageSupported =
+    imageCapability.state === "supported" &&
+    model !== undefined &&
+    model.inputModalities.includes("image");
+  const approvalSupport = featureSupport(
+    "approval_policies",
+    "Approval policies are not supported by this provider.",
+  );
+  const scopedLease =
+    approvalSupport.state === "supported" &&
+    settings.approvalPolicy === "full_auto_lease" &&
+    settings.sandboxPolicy === "workspace_write" &&
+    settings.projectPath !== null &&
+    settings.accountId !== null;
+
+  return {
+    sessionId: settingsSnapshot.sessionId,
+    settingsRevision: settingsSnapshot.revision,
+    observedAt: fleet?.observedAt ?? new Date().toISOString(),
+    freshness,
+    provider: {
+      providerId: settings.providerId,
+      state: providerState,
+      reason: providerReason,
+    },
+    account: {
+      accountId: settings.accountId,
+      state: accountState,
+      reason: accountReason,
+    },
+    model: {
+      modelId: settings.model,
+      state: modelState,
+      reason: modelReason,
+    },
+    controlAuthority: {
+      canControl,
+      bindingStatus: authority?.state ?? "unbound",
+      reason: controlError?.message ?? null,
+    },
+    executionModes: ["ask", "plan", "auto"].map((mode) => ({
+      mode: mode as "ask" | "plan" | "auto",
+      ...executionSupport,
+    })),
+    attachments: [
+      { kind: "text", ...textSupport },
+      {
+        kind: "image",
+        state: imageSupported
+          ? "supported"
+          : imageCapability.state === "supported"
+            ? "unsupported"
+            : imageCapability.state,
+        reason: imageSupported
+          ? null
+          : imageCapability.reason ??
+            "Selected model does not advertise image input.",
+      },
+    ],
+    approvalPolicies: [
+      "review",
+      "balanced",
+      "workspace_auto",
+      "full_auto_lease",
+    ].map((policy) => ({
+      policy: policy as
+        | "review"
+        | "balanced"
+        | "workspace_auto"
+        | "full_auto_lease",
+      ...approvalSupport,
+    })),
+    fullAutoLease: scopedLease
+      ? { state: "supported", reason: null }
+      : {
+          state:
+            approvalSupport.state === "unknown" ? "unknown" : "unsupported",
+          reason:
+            approvalSupport.reason ??
+            "A lease requires Full Auto policy and an explicit writable project scope.",
+        },
+  };
+}
+
 function protocolError(
   code: string,
   message: string,
@@ -154,8 +376,9 @@ export async function startCoreServer(
   let closing = false;
   const rateWindows = new WeakMap<
     WebSocket,
-    { startedAt: number; count: number; violations: number }
+    { startedAt: number; count: number }
   >();
+  const protocolViolations = new WeakMap<WebSocket, number>();
   const liveSockets = new Map<WebSocket, boolean>();
   const pendingExpiryDispatches: Array<{
     approval: Approval;
@@ -302,8 +525,9 @@ export async function startCoreServer(
   };
 
   const sendConnector = (socket: WebSocket, value: unknown) => {
+    const envelope = validatedConnectorCommand(value);
     if (socket.readyState === WebSocket.OPEN) {
-      const json = JSON.stringify(value);
+      const json = JSON.stringify(envelope);
       if (utf8ByteLength(json) > MAX_WEBSOCKET_MESSAGE_BYTES) {
         throw new Error("Connector envelope exceeds the WebSocket message limit");
       }
@@ -339,6 +563,33 @@ export async function startCoreServer(
     }
   };
 
+  const publishSessionCapabilities = (
+    sessionId: string,
+    requester?: WebSocket,
+  ) => {
+    const settings = store.sessionSettings(sessionId);
+    if (settings === undefined) return;
+    const snapshot = projectSessionCapabilities(
+      settings,
+      store.sessionProviderAuthority(sessionId),
+      providerFleetSnapshot,
+    );
+    const envelope = makeEnvelope("session.capabilities.snapshot", { snapshot });
+    broadcast(sessionId, envelope);
+    if (requester !== undefined && clients.get(requester) !== sessionId) {
+      send(requester, envelope);
+    }
+  };
+
+  const refreshSelectedCapabilities = () => {
+    const selected = new Set(
+      [...clients.values()].filter(
+        (sessionId): sessionId is string => sessionId !== null,
+      ),
+    );
+    for (const sessionId of selected) publishSessionCapabilities(sessionId);
+  };
+
   const markProviderFleetStale = () => {
     if (providerFleetSnapshot === undefined) return;
     providerFleetSnapshot = ProviderFleetSnapshotSchema.parse({
@@ -364,6 +615,7 @@ export async function startCoreServer(
       nativeSessionSnapshots.set(key, { ...retained, snapshot });
       broadcast(null, makeEnvelope("sessions.native.snapshot", { snapshot }));
     }
+    refreshSelectedCapabilities();
   };
 
   const canControlProvider = (providerId: string, accountId: string | null) => {
@@ -404,6 +656,9 @@ export async function startCoreServer(
         null,
         makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
       );
+      if (event.type === "session.provider.status") {
+        publishSessionCapabilities(event.payload.sessionId);
+      }
     } catch (error) {
       options.onBroadcastError?.(error, event);
       if (options.onBroadcastError === undefined) {
@@ -1040,6 +1295,7 @@ export async function startCoreServer(
             store.approvalLeaseSnapshot(message.payload.sessionId),
             socket,
           );
+          publishSessionCapabilities(message.payload.sessionId, socket);
         }
         return;
       }
@@ -1120,7 +1376,19 @@ export async function startCoreServer(
       }
       case "session.subscribe": {
         const { sessionId, afterSeq } = message.payload;
-        await store.ensureSession(sessionId);
+        if (!store.hasSession(sessionId)) {
+          send(
+            socket,
+            makeEnvelope("protocol.error", {
+              error: protocolError(
+                "SESSION_NOT_FOUND",
+                "Session must be created before it can be selected.",
+                { sessionId },
+              ),
+            }),
+          );
+          return;
+        }
         const snapshot = store.snapshot(sessionId);
         const upperBoundSeq = snapshot.lastEventSeq;
         const replay = store.replay(sessionId, afterSeq, upperBoundSeq);
@@ -1138,6 +1406,7 @@ export async function startCoreServer(
         const settings = store.sessionSettings(sessionId);
         if (settings !== undefined) {
           send(socket, makeEnvelope("session.settings.snapshot", { snapshot: settings }));
+          publishSessionCapabilities(sessionId, socket);
         }
         send(
           socket,
@@ -1253,6 +1522,39 @@ export async function startCoreServer(
           sendConflict(socket, message);
           return;
         }
+        if (!store.hasSession(message.payload.sessionId)) {
+          send(
+            socket,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "SESSION_NOT_FOUND",
+              message: "Session must be created before a Turn can be submitted.",
+            }),
+          );
+          return;
+        }
+        const settings = store.sessionSettings(message.payload.sessionId);
+        const authority = store.sessionProviderAuthority(message.payload.sessionId);
+        const controlError = validateTurnControlAuthority(
+          settings?.settings,
+          authority,
+          providerFleetSnapshot,
+        );
+        if (controlError !== undefined) {
+          const denied = await store.recordRejectedCommand(
+            message,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: controlError.code,
+              message: controlError.message,
+            }),
+          );
+          if (denied.kind === "conflict") sendConflict(socket, message);
+          else send(socket, denied.result);
+          return;
+        }
         const connection = connectorConnection;
         if (connection?.socket.readyState !== WebSocket.OPEN) {
           await recordOfflineRejection(socket, message);
@@ -1325,6 +1627,12 @@ export async function startCoreServer(
             sessionId: message.payload.sessionId,
             code: "SESSION_SETTINGS_CONFLICT",
             message: "Turn settings changed; refresh before submitting.",
+          }),
+          sessionNotFoundRejection: rejection({
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            code: "SESSION_NOT_FOUND",
+            message: "Session must be created before a Turn can be submitted.",
           }),
           attachmentRejection: (code, detail) =>
             rejection({
@@ -1656,6 +1964,7 @@ export async function startCoreServer(
         null,
         makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
       );
+      refreshSelectedCapabilities();
       return;
     }
 
@@ -1906,8 +2215,9 @@ export async function startCoreServer(
             error: protocolError("MESSAGE_INVALID", "Invalid client envelope."),
           }),
         );
-        const state = rateWindows.get(socket);
-        if (state !== undefined && ++state.violations >= 3) {
+        const violations = (protocolViolations.get(socket) ?? 0) + 1;
+        protocolViolations.set(socket, violations);
+        if (violations >= 3) {
           socket.close(1008, "Protocol violation budget exceeded");
         }
         return;
@@ -2026,8 +2336,9 @@ export async function startCoreServer(
       const parsed = ConnectorEnvelopeSchema.safeParse(parseSocketData(data.toString()));
       if (!parsed.success) {
         console.error("Core rejected an invalid Connector envelope");
-        const state = rateWindows.get(socket);
-        if (state !== undefined && ++state.violations >= 3) {
+        const violations = (protocolViolations.get(socket) ?? 0) + 1;
+        protocolViolations.set(socket, violations);
+        if (violations >= 3) {
           socket.close(1008, "Protocol violation budget exceeded");
         }
         return;
@@ -2045,6 +2356,7 @@ export async function startCoreServer(
       connector = undefined;
       const lost = connectorConnection;
       connectorConnection = undefined;
+      if (closing) return;
       markProviderFleetStale();
       if (lost !== undefined) scheduleConnectorLoss(lost);
     });
@@ -2169,12 +2481,12 @@ function hasCapability(header: string | undefined, expected: string) {
 function withinRate(
   socket: WebSocket,
   limit: number,
-  windows: WeakMap<WebSocket, { startedAt: number; count: number; violations: number }>,
+  windows: WeakMap<WebSocket, { startedAt: number; count: number }>,
 ) {
   const now = Date.now();
   let window = windows.get(socket);
   if (window === undefined || now - window.startedAt >= 1_000) {
-    window = { startedAt: now, count: 0, violations: 0 };
+    window = { startedAt: now, count: 0 };
     windows.set(socket, window);
   }
   window.count += 1;
@@ -2312,6 +2624,87 @@ function validateSessionSettingsSelection(
     return {
       code: "APPROVAL_POLICY_SCOPE_INVALID",
       message: "Workspace policies require an account, project, and workspace sandbox.",
+    };
+  }
+  return undefined;
+}
+
+function validateTurnControlAuthority(
+  settings: SessionSettings | undefined,
+  authority: ReturnType<CoreDatabase["sessionProviderAuthority"]>,
+  snapshot: ProviderFleetSnapshot | undefined,
+): { code: string; message: string } | undefined {
+  if (
+    settings === undefined ||
+    authority === undefined ||
+    authority.state !== "ready" ||
+    settings.accountId === null ||
+    settings.projectPath === null ||
+    authority.providerId !== settings.providerId ||
+    authority.accountId !== settings.accountId
+  ) {
+    return {
+      code: "SESSION_NOT_CONTROLLABLE",
+      message: "Session has no ready, validated provider binding.",
+    };
+  }
+  if (
+    snapshot === undefined ||
+    !["live", "local"].includes(snapshot.freshness)
+  ) {
+    return {
+      code: "PROVIDER_CAPABILITIES_UNAVAILABLE",
+      message: "Fresh provider capability evidence is required before a Turn.",
+    };
+  }
+  const provider = snapshot.providers.find(
+    (candidate) => candidate.providerId === settings.providerId,
+  );
+  const account = provider?.accounts.find(
+    (candidate) => candidate.accountId === settings.accountId,
+  );
+  const requiredCapabilities = [
+    "remote_control",
+    "text_input",
+    "execution_modes",
+    "approval_policies",
+    "sandbox_policies",
+  ] as const;
+  if (
+    provider === undefined ||
+    provider.freshness === "stale" ||
+    provider.adapterSupport !== "remote_control" ||
+    provider.authentication !== "authenticated" ||
+    account?.authentication !== "authenticated" ||
+    account.control !== "remote_control" ||
+    requiredCapabilities.some(
+      (key) =>
+        !provider.capabilities.some(
+          (capability) => capability.key === key && capability.state === "supported",
+        ),
+    )
+  ) {
+    return {
+      code: "PROVIDER_CAPABILITY_UNAVAILABLE",
+      message: "Selected provider/account is not currently controllable.",
+    };
+  }
+  if (!validProviderModel(provider, settings.model, settings.reasoningLevel)) {
+    return {
+      code: "PROVIDER_MODEL_UNAVAILABLE",
+      message: "Selected model or reasoning level is unavailable.",
+    };
+  }
+  if (
+    settings.networkPolicy !== "denied" &&
+    !provider.capabilities.some(
+      (capability) =>
+        capability.key === "network_policies" && capability.state === "supported",
+    )
+  ) {
+    return {
+      code: "NETWORK_POLICY_UNAVAILABLE",
+      message: "The requested network policy is not supported.",
     };
   }
   return undefined;

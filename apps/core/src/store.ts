@@ -42,7 +42,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 11;
+export const CORE_SCHEMA_VERSION = 12;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -389,6 +389,12 @@ interface InputAttachmentRow {
 export interface StoredTurnAttachment {
   attachment: InputAttachment;
   content: Buffer;
+}
+
+export interface SessionProviderAuthority {
+  providerId: string;
+  accountId: string;
+  state: "pending" | "ready" | "failed" | "outcome_unknown";
 }
 
 export class InputAttachmentMutationError extends Error {
@@ -1244,6 +1250,28 @@ export class CoreDatabase {
     )?.session_id;
   }
 
+  sessionProviderAuthority(sessionId: string): SessionProviderAuthority | undefined {
+    const row = this.#database
+      .prepare(
+        `SELECT provider_id, account_id, state
+           FROM session_provider_bindings WHERE session_id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          provider_id: string;
+          account_id: string;
+          state: SessionProviderAuthority["state"];
+        }
+      | undefined;
+    return row === undefined
+      ? undefined
+      : {
+          providerId: row.provider_id,
+          accountId: row.account_id,
+          state: row.state,
+        };
+  }
+
   async acceptSessionPreparation(input: {
     message: SessionPreparationCommand;
     runtime: Runtime;
@@ -1403,6 +1431,15 @@ export class CoreDatabase {
         ) {
           status = "failed";
           failureCode = "PROVIDER_BINDING_MISMATCH";
+        } else if (
+          this.boundSessionId(
+            message.payload.providerId,
+            message.payload.accountId,
+            message.payload.providerSessionId,
+          ) !== undefined
+        ) {
+          status = "failed";
+          failureCode = "PROVIDER_SESSION_ALREADY_IMPORTED";
         } else {
           status = "ready";
           providerSessionId = message.payload.providerSessionId;
@@ -2106,6 +2143,7 @@ export class CoreDatabase {
     activeRejection: ServerEnvelope;
     runtimeBusyRejection?: ServerEnvelope;
     settingsConflictRejection?: ServerEnvelope;
+    sessionNotFoundRejection?: ServerEnvelope;
     attachmentRejection?: (code: string, detail: string) => ServerEnvelope;
   }): Promise<MutationResult> {
     return this.#write(() => {
@@ -2117,7 +2155,12 @@ export class CoreDatabase {
           : { kind: "conflict" };
       }
       const now = new Date().toISOString();
-      this.#ensureSession(input.message.payload.sessionId, now);
+      if (!this.hasSession(input.message.payload.sessionId)) {
+        return {
+          kind: "new",
+          result: input.sessionNotFoundRejection ?? input.activeRejection,
+        };
+      }
       const settings = this.sessionSettings(input.message.payload.sessionId);
       if (settings === undefined) throw new Error("Session settings disappeared");
       if (
@@ -2482,7 +2525,7 @@ export class CoreDatabase {
         (activity.runtimeGeneration !== undefined &&
           activity.runtimeGeneration !== source.runtimeGeneration)
       ) {
-        throw new Error("Activity Runtime identity does not match its authenticated source");
+        return undefined;
       }
       if (
         !this.#matchesRuntimeEvent(
@@ -2496,10 +2539,14 @@ export class CoreDatabase {
         return undefined;
       }
       if (activity.outputArtifact !== undefined && activity.outputArtifact !== null) {
-        this.#assertArtifact(activity.outputArtifact, {
-          sessionId: message.payload.sessionId,
-          turnId: activity.turnId,
-        });
+        if (
+          !this.#artifactMatches(activity.outputArtifact, {
+            sessionId: message.payload.sessionId,
+            turnId: activity.turnId,
+          })
+        ) {
+          return undefined;
+        }
       }
       const now = new Date().toISOString();
       this.#database
@@ -2626,7 +2673,7 @@ export class CoreDatabase {
           const content = message.payload.fileChange.inlineDiff;
           const byteLength = utf8ByteLength(content);
           if (byteLength > MAX_INLINE_DIFF_BYTES) {
-            throw new Error("Inline diff exceeds the configured threshold");
+            return undefined;
           }
           diff = {
             kind: "inline",
@@ -2635,10 +2682,14 @@ export class CoreDatabase {
             sha256: createHash("sha256").update(content).digest("hex"),
           };
         } else if (message.payload.fileChange.artifact !== null) {
-          this.#assertArtifact(message.payload.fileChange.artifact, {
-            sessionId: message.payload.sessionId,
-            turnId: fileChange.turnId,
-          });
+          if (
+            !this.#artifactMatches(message.payload.fileChange.artifact, {
+              sessionId: message.payload.sessionId,
+              turnId: fileChange.turnId,
+            })
+          ) {
+            return undefined;
+          }
           diff = {
             kind: "artifact",
             artifact: message.payload.fileChange.artifact,
@@ -3146,7 +3197,7 @@ export class CoreDatabase {
         return false;
       }
       if (chunkCount !== Math.ceil(artifact.byteLength / ARTIFACT_CHUNK_BYTES)) {
-        throw new Error("Artifact chunk count does not match its declared length");
+        return false;
       }
       const allocated = this.#database
         .prepare(
@@ -3158,7 +3209,7 @@ export class CoreDatabase {
         )
         .get(turnId, turnId) as { bytes: number };
       if (allocated.bytes + artifact.byteLength > MAX_ARTIFACT_BYTES * 4) {
-        throw new Error("Artifact quota for this Turn was exceeded");
+        return false;
       }
       this.#database
         .prepare(
@@ -3219,7 +3270,7 @@ export class CoreDatabase {
         ingest.turn_id !== turnId ||
         chunkIndex >= ingest.chunk_count
       ) {
-        throw new Error("Artifact chunk does not match an active ingest");
+        return false;
       }
       const content = decodeBase64(contentBase64);
       const expectedLength = Math.min(
@@ -3227,7 +3278,10 @@ export class CoreDatabase {
         ingest.byte_length - chunkIndex * ARTIFACT_CHUNK_BYTES,
       );
       if (content.byteLength !== expectedLength) {
-        throw new Error("Artifact chunk length does not match its declaration");
+        this.#database
+          .prepare("DELETE FROM artifact_ingests WHERE id = ?")
+          .run(artifactId);
+        return false;
       }
       this.#database
         .prepare(
@@ -3278,7 +3332,7 @@ export class CoreDatabase {
         ingest.session_id !== sessionId ||
         ingest.turn_id !== turnId
       ) {
-        throw new Error("Artifact completion does not match an active ingest");
+        return false;
       }
       const chunks = this.#database
         .prepare(
@@ -3293,12 +3347,18 @@ export class CoreDatabase {
         chunks.length !== ingest.chunk_count ||
         chunks.some((chunk, index) => chunk.chunk_index !== index)
       ) {
-        throw new Error("Artifact is missing one or more chunks");
+        this.#database
+          .prepare("DELETE FROM artifact_ingests WHERE id = ?")
+          .run(artifactId);
+        return false;
       }
       const content = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.content)));
       const sha256 = createHash("sha256").update(content).digest("hex");
       if (content.byteLength !== ingest.byte_length || sha256 !== ingest.sha256) {
-        throw new Error("Artifact integrity check failed");
+        this.#database
+          .prepare("DELETE FROM artifact_ingests WHERE id = ?")
+          .run(artifactId);
+        return false;
       }
       this.#database
         .prepare(
@@ -4029,7 +4089,7 @@ export class CoreDatabase {
     return pending.map((approval) => this.#invalidateApproval(approval, now));
   }
 
-  #assertArtifact(
+  #artifactMatches(
     reference: ArtifactReference,
     scope: { sessionId: string; turnId: string },
   ) {
@@ -4048,16 +4108,14 @@ export class CoreDatabase {
           sha256: string;
         }
       | undefined;
-    if (
+    return !(
       row === undefined ||
       row.session_id !== scope.sessionId ||
       row.turn_id !== scope.turnId ||
       row.media_type !== parsed.mediaType ||
       row.byte_length !== parsed.byteLength ||
       row.sha256 !== parsed.sha256
-    ) {
-      throw new Error("Artifact reference failed integrity or scope validation");
-    }
+    );
   }
 
   #matchesRuntimeEvent(
@@ -4213,13 +4271,13 @@ export class CoreDatabase {
     });
   }
 
-  #allocateSeq(sessionId: string, now: string) {
+  #allocateSeq(sessionId: string, _now: string) {
     const row = this.#database
       .prepare(
-        `UPDATE sessions SET last_event_seq = last_event_seq + 1, updated_at = ?
+        `UPDATE sessions SET last_event_seq = last_event_seq + 1
           WHERE id = ? RETURNING last_event_seq`,
       )
-      .get(now, sessionId) as { last_event_seq: number } | undefined;
+      .get(sessionId) as { last_event_seq: number } | undefined;
     if (row === undefined) throw new Error(`Session not found: ${sessionId}`);
     return row.last_event_seq;
   }
@@ -4679,8 +4737,7 @@ function sessionCatalogEntry(
   const archived = row.archived === 1;
   const canControl = !archived && providerControlAvailable;
   const providerBindingStatus = row.binding_state ?? "unbound";
-  const bindingAllowsControl =
-    providerBindingStatus === "unbound" || providerBindingStatus === "ready";
+  const bindingAllowsControl = providerBindingStatus === "ready";
   return {
     sessionId: row.id,
     title: sanitizeCatalogText(row.title, 160) ?? "Untitled Session",
@@ -4708,7 +4765,7 @@ function sessionCatalogEntry(
     lastEventSeq: row.last_event_seq,
     canResume:
       canControl &&
-      (providerBindingStatus === "unbound" || providerBindingStatus === "ready") &&
+      providerBindingStatus === "ready" &&
       row.provider_session_id !== null,
     canControl: canControl && bindingAllowsControl,
     pinned: row.pinned === 1,

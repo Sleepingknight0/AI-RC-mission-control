@@ -12,6 +12,10 @@ import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startCoreServer } from "../src/server.js";
+import {
+  controlledProviderFleet,
+  createControlledSession,
+} from "./controlled-session-fixture.js";
 
 interface BrowserHarness {
   socket: WebSocket;
@@ -76,7 +80,7 @@ describe("provider inventory relay", () => {
     reconnected.socket.close();
   });
 
-  it("isolates inventory timeout from Turn control", async () => {
+  it("fails Session creation closed when inventory refresh times out", async () => {
     const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
     handles.push(core);
     const connector = startConnector({
@@ -91,29 +95,160 @@ describe("provider inventory relay", () => {
     await connector.ready;
 
     const browser = await openBrowser(core.browserUrl, core.browserToken);
+    const unavailable = await waitFor(browser, "providers.snapshot");
+    expect(unavailable.payload.snapshot.source).toBe("unavailable");
+    expect(unavailable.payload.snapshot.providers).toEqual([]);
+    browser.socket.send(
+      JSON.stringify(
+        makeEnvelope("session.create", {
+          commandId: "inventory-timeout-command",
+          sessionId: "inventory-timeout-session",
+          deviceId: "timeout-device",
+          title: "Must not be created",
+          providerId: "codex",
+          accountId: "blue",
+          projectPath: process.cwd(),
+          model: null,
+          reasoningLevel: null,
+        }),
+      ),
+    );
+    const rejected = await waitFor(browser, "command.rejected");
+    expect(rejected.payload.error.code).toBe("PROVIDER_CAPABILITY_UNAVAILABLE");
+    browser.socket.close();
+  });
+
+  it("revokes stale control authority after logout until a fresh probe succeeds", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    let controllable = true;
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider: new MockProvider(),
+      providerName: "mock",
+      providerInventory: (revision) => {
+        const current = controlledProviderFleet(revision);
+        if (controllable) return current;
+        return {
+          ...current,
+          snapshotId: `logged-out-${revision}`,
+          degraded: true,
+          notice: "Authentication probe failed",
+          providers: current.providers.map((provider) => ({
+            ...provider,
+            authentication: "unknown" as const,
+            adapterSupport: "inventory_only" as const,
+            notice: "Authentication must be refreshed",
+            capabilities: provider.capabilities.map((capability) => ({
+              ...capability,
+              state: "unknown" as const,
+              reason: "Authentication probe failed",
+            })),
+            accounts: provider.accounts.map((account) => ({
+              ...account,
+              authentication: "unknown" as const,
+              control: "inventory_only" as const,
+            })),
+          })),
+        };
+      },
+    });
+    handles.push(connector);
+    await connector.ready;
+    const browser = await openBrowser(core.browserUrl, core.browserToken);
+    await createControlledSession(browser, "logout-session");
     browser.socket.send(
       JSON.stringify(
         makeEnvelope("session.subscribe", {
-          sessionId: "inventory-timeout-session",
+          sessionId: "logout-session",
           afterSeq: 0,
         }),
       ),
     );
-    await waitFor(browser, "session.snapshot");
-    browser.socket.send(
-      JSON.stringify(
-        makeEnvelope("turn.submit", {
-          commandId: "inventory-timeout-command",
-          sessionId: "inventory-timeout-session",
-          prompt: "inventory must not block this Turn",
-        }),
+    await waitUntil(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          message.payload.snapshot.controlAuthority.canControl,
       ),
     );
 
-    await waitFor(browser, "turn.completed");
-    const unavailable = await waitFor(browser, "providers.snapshot");
-    expect(unavailable.payload.snapshot.source).toBe("unavailable");
-    expect(unavailable.payload.snapshot.providers).toEqual([]);
+    controllable = false;
+    browser.socket.send(JSON.stringify(makeEnvelope("providers.refresh", {})));
+    await waitUntil(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "providers.snapshot" &&
+          message.payload.snapshot.snapshotId.startsWith("logged-out-"),
+      ),
+    );
+    await waitUntil(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          !message.payload.snapshot.controlAuthority.canControl,
+      ),
+    );
+    for (const [type, commandId, sessionId, extra] of [
+      ["session.create", "create-after-logout", "create-logged-out", {
+        deviceId: "logout-device",
+        title: "Rejected create",
+        providerId: "test-provider",
+        accountId: "default",
+        projectPath: process.cwd(),
+        model: null,
+        reasoningLevel: null,
+      }],
+      ["session.resume", "resume-after-logout", "resume-logged-out", {
+        deviceId: "logout-device",
+        providerId: "test-provider",
+        accountId: "default",
+        providerSessionId: "native-logged-out",
+      }],
+    ] as const) {
+      browser.socket.send(
+        JSON.stringify(makeEnvelope(type, { commandId, sessionId, ...extra })),
+      );
+      await waitUntil(() =>
+        browser.messages.some(
+          (message) =>
+            message.type === "command.rejected" &&
+            message.payload.commandId === commandId &&
+            message.payload.error.code === "PROVIDER_CAPABILITY_UNAVAILABLE",
+        ),
+      );
+    }
+
+    browser.socket.send(
+      JSON.stringify(
+        makeEnvelope("turn.submit", {
+          commandId: "turn-after-logout",
+          sessionId: "logout-session",
+          prompt: "must be rejected while stale",
+        }),
+      ),
+    );
+    await waitUntil(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "command.rejected" &&
+          message.payload.commandId === "turn-after-logout" &&
+          message.payload.error.code === "PROVIDER_CAPABILITY_UNAVAILABLE",
+      ),
+    );
+
+    const recoveryStart = browser.messages.length;
+    controllable = true;
+    browser.socket.send(JSON.stringify(makeEnvelope("providers.refresh", {})));
+    await waitUntil(() =>
+      browser.messages.slice(recoveryStart).some(
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          message.payload.snapshot.controlAuthority.canControl &&
+          message.payload.snapshot.settingsRevision === 0,
+      ),
+    );
     browser.socket.close();
   });
 

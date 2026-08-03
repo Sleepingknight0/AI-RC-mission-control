@@ -28,6 +28,11 @@ describe("Session settings", () => {
     await database.ensureSession("settings-session");
     const initial = database.sessionSettings("settings-session");
     if (initial === undefined) throw new Error("Expected initial settings");
+    expect(initial.settings).toMatchObject({
+      sandboxPolicy: "read_only",
+      networkPolicy: "denied",
+      projectPath: null,
+    });
     const first = settingsCommand("settings-session", "settings-a", 0, {
       ...initial.settings,
       branch: "main",

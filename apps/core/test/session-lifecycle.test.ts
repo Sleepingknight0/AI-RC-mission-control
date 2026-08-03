@@ -42,6 +42,22 @@ class LostPrepareProvider extends CountingProvider {
   }
 }
 
+class RacingPrepareProvider extends CountingProvider {
+  #release: (() => void) | undefined;
+  readonly #gate = new Promise<void>((resolve) => {
+    this.#release = resolve;
+  });
+
+  override async prepareSession(
+    ...args: Parameters<MockProvider["prepareSession"]>
+  ) {
+    this.preparations += 1;
+    if (this.preparations === 2) this.#release?.();
+    await this.#gate;
+    return MockProvider.prototype.prepareSession.apply(this, args);
+  }
+}
+
 describe("Session create and resume", () => {
   it("durably prepares, binds, deduplicates, and imports verified native Sessions", async () => {
     const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
@@ -61,6 +77,55 @@ describe("Session create and resume", () => {
     const browser = await openBrowser(core.browserUrl, core.browserToken);
     await waitFor(browser, (message) => message.type === "providers.snapshot");
     await waitFor(browser, (message) => message.type === "sessions.native.snapshot");
+
+    browser.socket.send(
+      JSON.stringify(
+        makeEnvelope("turn.submit", {
+          commandId: "unknown-turn",
+          sessionId: "never-created",
+          prompt: "must not create a Session",
+        }),
+      ),
+    );
+    const unknown = await waitFor(
+      browser,
+      (message) =>
+        message.type === "command.rejected" &&
+        message.payload.commandId === "unknown-turn",
+    );
+    if (unknown.type !== "command.rejected") throw new Error("rejection");
+    expect(unknown.payload.error.code).toBe("SESSION_NOT_FOUND");
+
+    for (const [commandId, providerId, accountId, model, code] of [
+      ["invalid-provider", "missing", "blue", null, "PROVIDER_CAPABILITY_UNAVAILABLE"],
+      ["inventory-provider", "grok", "grok-default", null, "PROVIDER_CAPABILITY_UNAVAILABLE"],
+      ["invalid-account", "codex", "missing", null, "PROVIDER_CAPABILITY_UNAVAILABLE"],
+      ["invalid-model", "codex", "blue", "not-advertised", "PROVIDER_MODEL_UNAVAILABLE"],
+    ] as const) {
+      browser.socket.send(
+        JSON.stringify(
+          makeEnvelope("session.create", {
+            commandId,
+            sessionId: `session-${commandId}`,
+            deviceId: "device-one",
+            title: commandId,
+            providerId,
+            accountId,
+            projectPath: process.cwd(),
+            model,
+            reasoningLevel: null,
+          }),
+        ),
+      );
+      const rejected = await waitFor(
+        browser,
+        (message) =>
+          message.type === "command.rejected" &&
+          message.payload.commandId === commandId,
+      );
+      if (rejected.type !== "command.rejected") throw new Error("rejection");
+      expect(rejected.payload.error.code).toBe(code);
+    }
 
     const create = makeEnvelope("session.create", {
       commandId: "create-command",
@@ -92,6 +157,60 @@ describe("Session create and resume", () => {
       status: "ready",
       providerSessionId: "mock-thread-created-session",
     });
+
+    browser.socket.send(
+      JSON.stringify(
+        makeEnvelope("session.subscribe", {
+          sessionId: "created-session",
+          afterSeq: 0,
+        }),
+      ),
+    );
+    const capabilities = await waitFor(
+      browser,
+      (message) => message.type === "session.capabilities.snapshot",
+    );
+    if (capabilities.type !== "session.capabilities.snapshot") {
+      throw new Error("capabilities");
+    }
+    expect(capabilities.payload.snapshot).toMatchObject({
+      sessionId: "created-session",
+      freshness: "live",
+      provider: { providerId: "codex", state: "supported" },
+      account: { accountId: "blue", state: "supported" },
+      model: { modelId: null, state: "supported" },
+      controlAuthority: { canControl: true, bindingStatus: "ready" },
+      executionModes: [
+        { mode: "ask", state: "supported" },
+        { mode: "plan", state: "supported" },
+        { mode: "auto", state: "supported" },
+      ],
+      attachments: [
+        { kind: "text", state: "supported" },
+        { kind: "image", state: "unknown" },
+      ],
+      fullAutoLease: { state: "unsupported" },
+    });
+
+    browser.socket.send(
+      JSON.stringify(
+        makeEnvelope("turn.submit", {
+          commandId: "created-turn",
+          sessionId: "created-session",
+          prompt: "validated first Turn",
+          settingsRevision: 0,
+        }),
+      ),
+    );
+    await waitFor(
+      browser,
+      (message) =>
+        message.type === "sessions.snapshot" &&
+        message.payload.sessions.some(
+          (session) =>
+            session.sessionId === "created-session" && session.state === "completed",
+        ),
+    );
 
     browser.socket.send(JSON.stringify(create));
     await waitUntil(
@@ -224,6 +343,72 @@ describe("Session create and resume", () => {
     expect(provider.preparations).toBe(1);
     browser.socket.close();
   });
+
+  it("settles a concurrent import collision without stranding either command", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    const provider = new RacingPrepareProvider();
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider,
+      providerName: "mock",
+      providerInventory: (revision) => fleet(revision),
+      providerNativeSessionIdentity: { providerId: "codex", accountId: "blue" },
+      providerNativeSessions: (revision) => nativeSessions(revision),
+    });
+    handles.push(connector);
+    await connector.ready;
+    const browser = await openBrowser(core.browserUrl, core.browserToken);
+    await waitFor(browser, (message) => message.type === "providers.snapshot");
+    await waitFor(browser, (message) => message.type === "sessions.native.snapshot");
+
+    for (const suffix of ["a", "b"] as const) {
+      browser.socket.send(
+        JSON.stringify(
+          makeEnvelope("session.resume", {
+            commandId: `race-resume-${suffix}`,
+            sessionId: `race-session-${suffix}`,
+            deviceId: "device-one",
+            providerId: "codex",
+            accountId: "blue",
+            providerSessionId: "native-thread",
+          }),
+        ),
+      );
+    }
+    await waitUntil(
+      () =>
+        browser.messages.filter(
+          (message) =>
+            message.type === "session.provider.status" &&
+            message.payload.commandId.startsWith("race-resume-"),
+        ).length === 2,
+    );
+    const outcomes = browser.messages
+      .filter(
+        (message): message is Extract<
+          ServerEnvelope,
+          { type: "session.provider.status" }
+        > =>
+          message.type === "session.provider.status" &&
+          message.payload.commandId.startsWith("race-resume-"),
+      )
+      .map((message) => ({
+        status: message.payload.status,
+        failureCode: message.payload.failureCode,
+      }));
+    expect(outcomes).toEqual(
+      expect.arrayContaining([
+        { status: "ready", failureCode: null },
+        {
+          status: "failed",
+          failureCode: "PROVIDER_SESSION_ALREADY_IMPORTED",
+        },
+      ]),
+    );
+    browser.socket.close();
+  });
 });
 
 function fleet(revision: number): ProviderFleetSnapshot {
@@ -250,7 +435,16 @@ function fleet(revision: number): ProviderFleetSnapshot {
         freshness: "live",
         observedAt,
         notice: null,
-        capabilities: ["remote_control", "list_sessions", "create_session", "resume_session"].map(
+        capabilities: [
+          "remote_control",
+          "list_sessions",
+          "create_session",
+          "resume_session",
+          "text_input",
+          "execution_modes",
+          "approval_policies",
+          "sandbox_policies",
+        ].map(
           (key) => ({
             key: key as ProviderCapabilityKey,
             state: "supported" as const,
@@ -274,6 +468,36 @@ function fleet(revision: number): ProviderFleetSnapshot {
         models: [],
         modelsState: "available",
         usageState: "not_supported",
+        usageMeters: [],
+      },
+      {
+        providerId: "grok",
+        displayName: "Grok",
+        enabled: true,
+        installation: "installed",
+        authentication: "unknown",
+        compatibility: "unknown",
+        adapterSupport: "inventory_only",
+        version: null,
+        freshness: "local",
+        observedAt,
+        notice: "Inventory only",
+        capabilities: [],
+        accounts: [
+          {
+            accountId: "grok-default",
+            displayName: "Default",
+            isDefault: true,
+            authentication: "unknown",
+            control: "inventory_only",
+            observedAt,
+            notice: null,
+          },
+        ],
+        accountCount: 1,
+        models: [],
+        modelsState: "unavailable",
+        usageState: "unavailable",
         usageMeters: [],
       },
     ],
@@ -366,7 +590,9 @@ async function waitFor(
     if (found !== undefined) return found;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error("Timed out waiting for Session lifecycle message");
+  throw new Error(
+    `Timed out waiting for Session lifecycle message: ${JSON.stringify(browser.messages.slice(-12))}`,
+  );
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 3_000) {

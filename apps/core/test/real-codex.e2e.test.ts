@@ -48,6 +48,36 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     handles.push(connector);
     await connector.ready;
     const browser = await openBrowser(core.browserUrl, core.browserToken);
+    const providers = await waitFor(browser, "providers.snapshot");
+    const codex = providers.payload.snapshot.providers.find(
+      (providerRecord) => providerRecord.providerId === "codex",
+    );
+    const account = codex?.accounts.find(
+      (candidate) =>
+        candidate.authentication === "authenticated" &&
+        candidate.control === "remote_control",
+    );
+    if (account === undefined) throw new Error("No controllable Codex account");
+    send(
+      browser,
+      makeEnvelope("session.create", {
+        commandId: "real-codex-session-create",
+        sessionId: "real-codex-session",
+        deviceId: "real-codex-device",
+        title: "Real Codex final gate",
+        providerId: "codex",
+        accountId: account.accountId,
+        projectPath: resolve("../../spikes/fixture-project"),
+        model: null,
+        reasoningLevel: null,
+      }),
+    );
+    const prepared = await waitFor(
+      browser,
+      "session.provider.status",
+      (message) => message.payload.commandId === "real-codex-session-create",
+    );
+    expect(prepared.payload.status).toBe("ready");
 
     send(
       browser,

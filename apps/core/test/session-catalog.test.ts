@@ -4,9 +4,11 @@ import { join } from "node:path";
 
 import {
   ClientEnvelopeSchema,
+  ConnectorEnvelopeSchema,
   ServerEnvelopeSchema,
   makeEnvelope,
   type ClientEnvelope,
+  type Runtime,
   type ServerEnvelope,
 } from "@aicl/protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -91,6 +93,7 @@ describe("Session Catalog V2", () => {
 
   it("tracks unread state per device and derives the first human title from a prompt", async () => {
     const database = openDatabase();
+    await database.ensureSession("turn-title-session");
     const turn = ClientEnvelopeSchema.parse(
       makeEnvelope("turn.submit", {
         commandId: "turn-title-command",
@@ -156,10 +159,51 @@ describe("Session Catalog V2", () => {
     for (let index = 0; index < 260; index += 1) {
       await database.ensureSession(`bulk-${String(index).padStart(4, "0")}`);
     }
+    const runtime = { runtimeId: "runtime-paging", generation: 1, status: "ready" as const };
+    const activeTurn = ClientEnvelopeSchema.parse(
+      makeEnvelope("turn.submit", {
+        commandId: "paging-active-turn",
+        sessionId: "bulk-0259",
+        prompt: "keep the catalog active",
+      }),
+    );
+    if (activeTurn.type !== "turn.submit") throw new Error("Expected Turn");
+    await database.acceptTurn({
+      message: activeTurn,
+      turnId: "turn-paging",
+      runtime,
+      connectorId: "connector-paging",
+      bootId: "boot-paging",
+      activeRejection: reject(activeTurn)("TURN_ALREADY_ACTIVE", "active"),
+    });
     const first = catalog(database, {}, "device-a", 100);
     expect(first.sessions).toHaveLength(100);
     expect(first.total).toBe(260);
     expect(first.nextCursor).not.toBeNull();
+    const activity = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.activity.started", {
+        sessionId: "bulk-0259",
+        activity: {
+          activityId: "activity-paging",
+          turnId: "turn-paging",
+          kind: "command",
+          title: "pnpm test",
+          cwd: null,
+          status: "running",
+          revision: 0,
+          exitCode: null,
+          durationMs: null,
+          outputPreview: "",
+        },
+      }),
+    );
+    if (activity.type !== "connector.activity.started") throw new Error("activity");
+    await database.recordActivity(activity, {
+      connectorId: "connector-paging",
+      sourceEventId: "source-paging-activity",
+      runtimeId: runtime.runtimeId,
+      runtimeGeneration: runtime.generation,
+    });
     const second = database.sessionCatalog(
       catalogQuery({}, "device-a", 100, first.nextCursor),
       () => true,
@@ -187,13 +231,95 @@ describe("Session Catalog V2", () => {
     ).toEqual({ ok: false, code: "SESSION_CATALOG_CURSOR_STALE" });
   });
 
-  it("bounds and orders a 1,000-Session catalog within the performance budget", async () => {
+  it("bounds and orders a realistic 1,000-Session catalog within the performance budget", async () => {
     const database = openDatabase();
+    for (let index = 0; index < 1_000; index += 1) {
+      const sessionId = `scale-${String(index).padStart(4, "0")}`;
+      await database.ensureSession(sessionId);
+      if (index % 10 !== 0) continue;
+      const runtime: Runtime = {
+        runtimeId: `runtime-${sessionId}`,
+        generation: 1,
+        status: "ready",
+      };
+      const turnId = `turn-${sessionId}`;
+      const command = ClientEnvelopeSchema.parse(
+        makeEnvelope("turn.submit", {
+          commandId: `command-${sessionId}`,
+          sessionId,
+          prompt: `historical prompt ${index}`,
+        }),
+      );
+      if (command.type !== "turn.submit") throw new Error("turn.submit");
+      await database.acceptTurn({
+        message: command,
+        turnId,
+        runtime,
+        connectorId: "connector-scale",
+        bootId: "boot-scale",
+        activeRejection: ServerEnvelopeSchema.parse(
+          makeEnvelope("command.rejected", {
+            commandId: command.payload.commandId,
+            sessionId,
+            error: {
+              code: "TURN_ALREADY_ACTIVE",
+              message: "active",
+              retryable: false,
+            },
+          }),
+        ),
+      });
+      await database.markDispatched(command.payload.commandId);
+      const source = {
+        connectorId: "connector-scale",
+        sourceEventId: `source-${sessionId}`,
+        runtimeId: runtime.runtimeId,
+        runtimeGeneration: runtime.generation,
+      };
+      if (index % 100 === 0) {
+        const requested = ConnectorEnvelopeSchema.parse(
+          makeEnvelope("connector.approval.requested", {
+            sessionId,
+            approval: {
+              approvalId: `approval-${sessionId}`,
+              sessionId,
+              runtimeId: runtime.runtimeId,
+              runtimeGeneration: runtime.generation,
+              turnId,
+              actionType: "command",
+              state: "pending",
+              revision: 0,
+              expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              payload: {
+                summary: "bounded performance fixture",
+                command: "pnpm check",
+                cwd: process.cwd(),
+                reason: "performance fixture",
+                activityId: null,
+                fileChangeId: null,
+              },
+              resolvedAt: null,
+              resolvedByDeviceId: null,
+            },
+            providerCorrelationId: `correlation-${sessionId}`,
+          }),
+        );
+        if (requested.type !== "connector.approval.requested") {
+          throw new Error("approval");
+        }
+        await database.requestApproval(requested, source);
+      } else {
+        const completed = ConnectorEnvelopeSchema.parse(
+          makeEnvelope("connector.turn.completed", { sessionId, turnId }),
+        );
+        if (completed.type !== "connector.turn.completed") {
+          throw new Error("completed");
+        }
+        await database.finishTurn(completed, source);
+      }
+    }
     const heapBefore = process.memoryUsage().heapUsed;
     const startedAt = performance.now();
-    for (let index = 0; index < 1_000; index += 1) {
-      await database.ensureSession(`scale-${String(index).padStart(4, "0")}`);
-    }
     const first = catalog(database, {}, "scale-device", 250);
     const elapsedMs = performance.now() - startedAt;
     const heapGrowthBytes = process.memoryUsage().heapUsed - heapBefore;
@@ -202,7 +328,18 @@ describe("Session Catalog V2", () => {
     expect(first.sessions).toHaveLength(250);
     expect(first.nextCursor).not.toBeNull();
     expect(new Set(first.sessions.map((session) => session.sessionId)).size).toBe(250);
-    expect(elapsedMs).toBeLessThan(20_000);
+    const history = catalog(
+      database,
+      { search: "scale-0900" },
+      "scale-device",
+      10,
+    );
+    expect(history.sessions[0]).toMatchObject({
+      sessionId: "scale-0900",
+      turnCount: 1,
+      pendingApprovalCount: 1,
+    });
+    expect(elapsedMs).toBeLessThan(2_000);
     expect(heapGrowthBytes).toBeLessThan(256 * 1024 * 1024);
   });
 });

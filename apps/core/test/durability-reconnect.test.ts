@@ -6,6 +6,8 @@ import { startConnector } from "@aicl/connector";
 import type {
   ConnectorEmit,
   ConnectorProvider,
+  ProviderSessionPreparation,
+  SessionPrepareCommand,
   TurnStartCommand,
 } from "@aicl/connector/provider";
 import { ProviderLostError } from "@aicl/connector/provider";
@@ -23,6 +25,10 @@ import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startCoreServer } from "../src/server.js";
+import {
+  controlledProviderFleet,
+  createControlledSession,
+} from "./controlled-session-fixture.js";
 
 interface BrowserHarness {
   socket: WebSocket;
@@ -60,6 +66,7 @@ describe("durability and reconnect", () => {
       firstCore.browserToken,
       "startup-lease-session",
       0,
+      true,
     );
     send(
       firstBrowser,
@@ -124,6 +131,7 @@ describe("durability and reconnect", () => {
       firstCore.browserToken,
       "receipt-gap-session",
       0,
+      true,
     );
     send(
       browser,
@@ -188,6 +196,7 @@ describe("durability and reconnect", () => {
       providerName: "held",
       journalPath,
       reconnectDelayMs: 20,
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(connector);
     await connector.ready;
@@ -197,6 +206,7 @@ describe("durability and reconnect", () => {
       firstCore.browserToken,
       "durable-session",
       0,
+      true,
     );
     const secondTab = await openBrowser(
       firstCore.browserUrl,
@@ -321,6 +331,7 @@ describe("durability and reconnect", () => {
       provider,
       providerName: "held",
       journalPath: ":memory:",
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(connector);
     await connector.ready;
@@ -329,6 +340,7 @@ describe("durability and reconnect", () => {
       core.browserToken,
       "boundary-session",
       0,
+      true,
     );
     send(
       first,
@@ -375,6 +387,7 @@ describe("durability and reconnect", () => {
       providerName: "held",
       journalPath: join(directory, "connector.db"),
       reconnectDelayMs: 20,
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(firstConnector);
     await firstConnector.ready;
@@ -383,6 +396,7 @@ describe("durability and reconnect", () => {
       core.browserToken,
       "restart-session",
       0,
+      true,
     );
     send(
       browser,
@@ -405,6 +419,7 @@ describe("durability and reconnect", () => {
       providerName: "held",
       journalPath: join(directory, "connector.db"),
       reconnectDelayMs: 20,
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     handles.push(secondConnector);
     await secondConnector.ready;
@@ -436,6 +451,17 @@ class HeldProvider implements ConnectorProvider {
 
   onLost() {
     return () => undefined;
+  }
+
+  async prepareSession(
+    command: SessionPrepareCommand,
+  ): Promise<ProviderSessionPreparation> {
+    return {
+      providerSessionId: `held-thread-${command.payload.sessionId}`,
+      projectPath: command.payload.projectPath,
+      model: command.payload.model,
+      reasoningLevel: command.payload.reasoningLevel,
+    };
   }
 
   async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {
@@ -514,6 +540,7 @@ async function openBrowser(
   token: string,
   sessionId: string,
   afterSeq: number,
+  create = false,
 ): Promise<BrowserHarness> {
   const socket = new WebSocket(url, websocketCapability("browser", token), {
     origin: "http://127.0.0.1:5173",
@@ -527,6 +554,7 @@ async function openBrowser(
     socket.once("error", reject);
   });
   const browser = { socket, messages };
+  if (create) await createControlledSession(browser, sessionId);
   send(
     browser,
     makeEnvelope("session.subscribe", { sessionId, afterSeq }),
@@ -560,13 +588,51 @@ async function openRawConnector(
   const messages: CoreToConnectorEnvelope[] = [];
   rawConnectorMessages.set(socket, messages);
   socket.on("message", (data) => {
-    messages.push(CoreToConnectorEnvelopeSchema.parse(JSON.parse(data.toString())));
+    const message = CoreToConnectorEnvelopeSchema.parse(JSON.parse(data.toString()));
+    messages.push(message);
+    if (message.type === "connector.session.create") {
+      socket.send(
+        JSON.stringify(
+          ConnectorEnvelopeSchema.parse({
+            ...makeEnvelope("connector.session.prepared", {
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              providerId: message.payload.providerId,
+              accountId: message.payload.accountId,
+              providerSessionId: `raw-${message.payload.sessionId}`,
+              projectPath: message.payload.projectPath,
+              model: message.payload.model,
+              reasoningLevel: message.payload.reasoningLevel,
+            }),
+            connectorId: identity.connectorId,
+            bootId: identity.bootId,
+            sourceEventId: `prepared-${message.payload.commandId}`,
+            runtimeId: identity.runtime.runtimeId,
+            runtimeGeneration: identity.runtime.generation,
+          }),
+        ),
+      );
+    }
   });
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);
     socket.once("error", reject);
   });
   socket.send(JSON.stringify(makeEnvelope("connector.hello", identity)));
+  socket.send(
+    JSON.stringify(
+      ConnectorEnvelopeSchema.parse({
+        ...makeEnvelope("connector.providers.snapshot", {
+          snapshot: controlledProviderFleet(1),
+        }),
+        connectorId: identity.connectorId,
+        bootId: identity.bootId,
+        sourceEventId: `providers-${identity.bootId}`,
+        runtimeId: identity.runtime.runtimeId,
+        runtimeGeneration: identity.runtime.generation,
+      }),
+    ),
+  );
   return socket;
 }
 

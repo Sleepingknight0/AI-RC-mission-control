@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -28,10 +28,10 @@ afterEach(async () => {
 });
 
 describe("Core SQLite contract", () => {
-  it("applies schema v11 idempotently with checksummed migrations and required indexes", async () => {
+  it("applies schema v12 idempotently with checksummed migrations and required indexes", async () => {
     const path = databasePath();
     const first = open(path);
-    expect(first.schemaVersion).toBe(11);
+    expect(first.schemaVersion).toBe(12);
     expect(Object.values(first.pragma("journal_mode"))).toContain("wal");
     expect(Object.values(first.pragma("foreign_keys"))).toContain(1);
     expect(Object.values(first.pragma("busy_timeout"))).toContain(5000);
@@ -39,7 +39,7 @@ describe("Core SQLite contract", () => {
     openDatabases.splice(openDatabases.indexOf(first), 1);
 
     const second = open(path);
-    expect(second.schemaVersion).toBe(11);
+    expect(second.schemaVersion).toBe(12);
     await second.close();
     openDatabases.splice(openDatabases.indexOf(second), 1);
 
@@ -47,7 +47,7 @@ describe("Core SQLite contract", () => {
     const migrations = raw
       .prepare("SELECT checksum FROM schema_migrations ORDER BY version")
       .all() as unknown as Array<{ checksum: string | null }>;
-    expect(migrations).toHaveLength(11);
+    expect(migrations).toHaveLength(12);
     expect(migrations.every((migration) => /^[a-f0-9]{64}$/u.test(migration.checksum ?? ""))).toBe(true);
     const indexes = raw
       .prepare(
@@ -56,25 +56,38 @@ describe("Core SQLite contract", () => {
             'uq_turn_one_executing_per_session',
             'uq_turn_one_executing_per_runtime',
             'uq_session_events_connector_source',
-            'ix_tool_activities_turn_started'
+            'ix_tool_activities_turn_started',
+            'ix_turns_session_created',
+            'ix_approval_requests_session_state'
           ) ORDER BY name`,
       )
       .all() as unknown as Array<{ name: string; sql: string }>;
     expect(indexes.map((index) => index.name)).toEqual([
+      "ix_approval_requests_session_state",
       "ix_tool_activities_turn_started",
+      "ix_turns_session_created",
       "uq_session_events_connector_source",
       "uq_turn_one_executing_per_runtime",
       "uq_turn_one_executing_per_session",
     ]);
-    expect(indexes[0]?.sql).toContain("provider_started_at");
-    expect(indexes[1]?.sql).toContain("source_event_id IS NOT NULL");
-    expect(indexes[2]?.sql).toContain("runtime_id, runtime_generation");
-    expect(indexes[3]?.sql).toContain("WHERE state = 'running'");
+    expect(indexes[0]?.sql).toContain("session_id, state");
+    expect(indexes[1]?.sql).toContain("provider_started_at");
+    expect(indexes[2]?.sql).toContain("session_id, created_at DESC");
+    expect(indexes[3]?.sql).toContain("source_event_id IS NOT NULL");
+    expect(indexes[4]?.sql).toContain("runtime_id, runtime_generation");
+    expect(indexes[5]?.sql).toContain("WHERE state = 'running'");
 
     const now = new Date().toISOString();
     raw.prepare(
       "INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)",
     ).run("guard-session", now, now);
+    expect(
+      raw
+        .prepare(
+          "SELECT sandbox_policy, network_policy FROM session_settings WHERE session_id = ?",
+        )
+        .get("guard-session"),
+    ).toEqual({ sandbox_policy: "read_only", network_policy: "denied" });
     expect(() =>
       raw
         .prepare(
@@ -96,6 +109,94 @@ describe("Core SQLite contract", () => {
     raw.close();
   });
 
+  it("migrates legacy and ambiguous Session settings to fail-closed defaults", () => {
+    const raw = new DatabaseSync(":memory:");
+    raw.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT 'Untitled Session',
+        source TEXT NOT NULL DEFAULT 'aicl', pinned INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0, session_revision INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL, created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE session_settings (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id), revision INTEGER NOT NULL DEFAULT 0,
+        provider_id TEXT NOT NULL DEFAULT 'codex', account_id TEXT, model TEXT,
+        reasoning_level TEXT, execution_mode TEXT NOT NULL DEFAULT 'ask',
+        approval_policy TEXT NOT NULL DEFAULT 'review',
+        sandbox_policy TEXT NOT NULL DEFAULT 'workspace_write',
+        network_policy TEXT NOT NULL DEFAULT 'restricted', project_path TEXT,
+        branch TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE session_provider_bindings (
+        session_id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, account_id TEXT NOT NULL,
+        provider_session_id TEXT, state TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE session_catalog_state (
+        singleton INTEGER PRIMARY KEY, revision INTEGER NOT NULL
+      ) STRICT;
+      INSERT INTO session_catalog_state VALUES (1, 1);
+      CREATE TABLE turns (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE approval_requests (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TRIGGER session_settings_after_session_insert AFTER INSERT ON sessions BEGIN
+        INSERT INTO session_settings (session_id, created_at, updated_at)
+        VALUES (NEW.id, NEW.created_at, NEW.updated_at);
+      END;
+      CREATE TRIGGER session_catalog_after_insert AFTER INSERT ON sessions BEGIN
+        UPDATE session_catalog_state SET revision = revision + 1 WHERE singleton = 1;
+      END;
+      CREATE TRIGGER session_catalog_after_update AFTER UPDATE ON sessions BEGIN
+        UPDATE session_catalog_state SET revision = revision + 1 WHERE singleton = 1;
+      END;
+      CREATE TRIGGER session_catalog_after_delete AFTER DELETE ON sessions BEGIN
+        UPDATE session_catalog_state SET revision = revision + 1 WHERE singleton = 1;
+      END;
+      CREATE TRIGGER session_catalog_after_settings_update AFTER UPDATE ON session_settings BEGIN
+        UPDATE session_catalog_state SET revision = revision + 1 WHERE singleton = 1;
+      END;
+      INSERT INTO sessions (id, created_at, updated_at) VALUES
+        ('legacy', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'),
+        ('ready', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      UPDATE session_settings SET project_path = 'C:\\workspace' WHERE session_id = 'ready';
+      INSERT INTO session_provider_bindings VALUES
+        ('ready', 'codex', 'default', 'native-ready', 'ready');
+    `);
+
+    raw.exec(
+      readFileSync(
+        resolve("migrations/012_audit_fail_closed_sessions.sql"),
+        "utf8",
+      ),
+    );
+    expect(
+      raw
+        .prepare(
+          "SELECT session_id, sandbox_policy, network_policy FROM session_settings ORDER BY session_id",
+        )
+        .all(),
+    ).toEqual([
+      { session_id: "legacy", sandbox_policy: "read_only", network_policy: "denied" },
+      { session_id: "ready", sandbox_policy: "workspace_write", network_policy: "denied" },
+    ]);
+    raw.prepare(
+      "INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)",
+    ).run("new-session", "2026-01-02T00:00:00.000Z", "2026-01-02T00:00:00.000Z");
+    expect(
+      raw
+        .prepare(
+          "SELECT sandbox_policy, network_policy FROM session_settings WHERE session_id = 'new-session'",
+        )
+        .get(),
+    ).toEqual({ sandbox_policy: "read_only", network_policy: "denied" });
+    raw.close();
+  });
+
   it("serializes duplicate races and keeps revision independent from event seq", async () => {
     const database = open(databasePath());
     const message = ClientEnvelopeSchema.parse(
@@ -106,6 +207,7 @@ describe("Core SQLite contract", () => {
       }),
     );
     if (message.type !== "turn.submit") throw new Error("Expected turn.submit");
+    await database.ensureSession(message.payload.sessionId);
     const activeRejection = ServerEnvelopeSchema.parse(
       makeEnvelope("command.rejected", {
         commandId: message.payload.commandId,
@@ -187,6 +289,7 @@ describe("Core SQLite contract", () => {
       }),
     );
     if (turn.type !== "turn.submit") throw new Error("Expected turn.submit");
+    await database.ensureSession(turn.payload.sessionId);
     await database.acceptTurn({
       message: turn,
       turnId: "artifact-turn",
@@ -261,15 +364,24 @@ describe("Core SQLite contract", () => {
         wrongChunkCount,
         source("artifact-wrong-chunks-begin"),
       ),
-    ).rejects.toThrow("chunk count does not match");
+    ).resolves.toBe(false);
+    await expect(
+      database.beginArtifact(
+        wrongChunkCount,
+        source("artifact-wrong-chunks-begin"),
+      ),
+    ).resolves.toBeUndefined();
     await database.beginArtifact(begin, source("artifact-begin"));
     await database.appendArtifactChunk(chunk, source("artifact-chunk"));
     await expect(
       database.completeArtifact(complete, source("artifact-complete")),
-    ).rejects.toThrow("Artifact integrity check failed");
+    ).resolves.toBe(false);
+    await expect(
+      database.completeArtifact(complete, source("artifact-complete")),
+    ).resolves.toBeUndefined();
     expect(database.artifact(artifact.artifactId)).toBeUndefined();
 
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 4; index += 1) {
       const declaration = ConnectorEnvelopeSchema.parse(
         makeEnvelope("connector.artifact.begin", {
           sessionId: "artifact-session",
@@ -308,7 +420,7 @@ describe("Core SQLite contract", () => {
     }
     await expect(
       database.beginArtifact(overQuota, source("quota-overflow")),
-    ).rejects.toThrow("Artifact quota");
+    ).resolves.toBe(false);
   });
 
   it("persists normalized terminal metadata without private cwd or forged Runtime identity", async () => {
@@ -326,6 +438,7 @@ describe("Core SQLite contract", () => {
       }),
     );
     if (turn.type !== "turn.submit") throw new Error("Expected turn.submit");
+    await database.ensureSession(turn.payload.sessionId);
     await database.acceptTurn({
       message: turn,
       turnId: "terminal-turn",
@@ -448,7 +561,10 @@ describe("Core SQLite contract", () => {
     }
     await expect(
       database.recordActivity(forged, source("terminal-activity-forged")),
-    ).rejects.toThrow("Runtime identity");
+    ).resolves.toBeUndefined();
+    await expect(
+      database.recordActivity(forged, source("terminal-activity-forged")),
+    ).resolves.toBeUndefined();
   });
 });
 

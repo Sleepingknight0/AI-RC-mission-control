@@ -3,7 +3,11 @@ import WebSocket from "ws";
 import { makeEnvelope, websocketCapability } from "@aicl/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { startCoreServer, type CoreServerHandle } from "../src/server.js";
+import {
+  startCoreServer,
+  validatedConnectorCommand,
+  type CoreServerHandle,
+} from "../src/server.js";
 
 const handles: CoreServerHandle[] = [];
 
@@ -12,6 +16,23 @@ afterEach(async () => {
 });
 
 describe("Core WebSocket trust boundaries", () => {
+  it("validates every Core-to-Connector command before socket dispatch", () => {
+    expect(() =>
+      validatedConnectorCommand(
+        makeEnvelope("connector.turn.start", {
+          sessionId: "session",
+          turnId: "turn",
+          commandId: "command",
+          prompt: "bounded",
+          providerSessionId: null,
+          runtimeId: "runtime",
+          runtimeGeneration: 1,
+          attachments: [{ kind: "invented" }],
+        }),
+      ),
+    ).toThrow();
+  });
+
   it("rejects hostile Origins and missing per-launch capabilities", async () => {
     const core = await startCoreServer({
       port: 0,
@@ -72,6 +93,27 @@ describe("Core WebSocket trust boundaries", () => {
 
     await expect(closed).resolves.toBe(1008);
   });
+
+  it("accumulates protocol violations across rate windows", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    const browser = await expectConnected(
+      core.browserUrl,
+      websocketCapability("browser", core.browserToken),
+      "http://127.0.0.1:5173",
+    );
+    const closed = new Promise<number>((resolve) => {
+      browser.once("close", (code) => resolve(code));
+    });
+
+    browser.send("{}");
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    browser.send("{}");
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    browser.send("{}");
+
+    await expect(closed).resolves.toBe(1008);
+  }, 5_000);
 
   it("terminates a client that stops answering heartbeat pings", async () => {
     const core = await startCoreServer({

@@ -43,6 +43,22 @@ describe("managed attachment WebSocket flow", () => {
     await waitFor(browser, "providers.snapshot");
     browser.socket.send(
       JSON.stringify(
+        makeEnvelope("session.create", {
+          commandId: "create-attachment-session",
+          sessionId: "attachment-session",
+          deviceId: "device-1",
+          title: "Attachment Session",
+          providerId: "codex",
+          accountId: "default",
+          projectPath: process.cwd(),
+          model: "test-model",
+          reasoningLevel: null,
+        }),
+      ),
+    );
+    await waitFor(browser, "session.provider.status");
+    browser.socket.send(
+      JSON.stringify(
         makeEnvelope("session.subscribe", { sessionId: "attachment-session", afterSeq: 0 }),
       ),
     );
@@ -197,8 +213,23 @@ function fleet(revision: number): ProviderFleetSnapshot {
         freshness: "local",
         observedAt,
         notice: null,
-        capabilities: ["text_input", "image_input", "remote_control"].map((key) => ({
-          key: key as "text_input" | "image_input" | "remote_control",
+        capabilities: [
+          "text_input",
+          "image_input",
+          "remote_control",
+          "create_session",
+          "execution_modes",
+          "approval_policies",
+          "sandbox_policies",
+        ].map((key) => ({
+          key: key as
+            | "text_input"
+            | "image_input"
+            | "remote_control"
+            | "create_session"
+            | "execution_modes"
+            | "approval_policies"
+            | "sandbox_policies",
           state: "supported" as const,
           provenance: "provider_probe" as const,
           observedAt,

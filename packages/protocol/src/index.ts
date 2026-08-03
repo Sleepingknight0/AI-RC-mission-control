@@ -551,6 +551,60 @@ export const SessionSettingsSnapshotSchema = z
   })
   .strict();
 
+const SessionCapabilitySupportSchema = z
+  .object({
+    state: ProviderCapabilityStateSchema,
+    reason: displayText(200).nullable(),
+  })
+  .strict();
+
+export const SessionCapabilitiesSnapshotSchema = z
+  .object({
+    sessionId: id,
+    settingsRevision: z.number().int().nonnegative(),
+    observedAt: timestamp,
+    freshness: ProviderFreshnessSchema,
+    provider: SessionCapabilitySupportSchema.extend({
+      providerId: providerSlug,
+    }).strict(),
+    account: SessionCapabilitySupportSchema.extend({
+      accountId: providerSlug.nullable(),
+    }).strict(),
+    model: SessionCapabilitySupportSchema.extend({
+      modelId: displayText(128).nullable(),
+    }).strict(),
+    controlAuthority: z
+      .object({
+        canControl: z.boolean(),
+        bindingStatus: SessionProviderBindingStatusSchema,
+        reason: displayText(200).nullable(),
+      })
+      .strict(),
+    executionModes: z
+      .array(
+        SessionCapabilitySupportSchema.extend({
+          mode: ExecutionModeSchema,
+        }).strict(),
+      )
+      .length(ExecutionModeSchema.options.length),
+    attachments: z
+      .array(
+        SessionCapabilitySupportSchema.extend({
+          kind: z.enum(["text", "image"]),
+        }).strict(),
+      )
+      .length(2),
+    approvalPolicies: z
+      .array(
+        SessionCapabilitySupportSchema.extend({
+          policy: ApprovalPolicySchema,
+        }).strict(),
+      )
+      .length(ApprovalPolicySchema.options.length),
+    fullAutoLease: SessionCapabilitySupportSchema,
+  })
+  .strict();
+
 export const ActivityStatusSchema = z.enum([
   "running",
   "completed",
@@ -1204,6 +1258,10 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
     z.object({ snapshot: SessionSettingsSnapshotSchema }).strict(),
   ),
   envelope(
+    "session.capabilities.snapshot",
+    z.object({ snapshot: SessionCapabilitiesSnapshotSchema }).strict(),
+  ),
+  envelope(
     "approval.lease.snapshot",
     z.object({ snapshot: ApprovalLeaseSnapshotSchema }).strict(),
   ),
@@ -1689,6 +1747,9 @@ export type SessionCatalogFilter = z.infer<typeof SessionCatalogFilterSchema>;
 export type SessionSettings = z.infer<typeof SessionSettingsSchema>;
 export type SessionSettingsSnapshot = z.infer<
   typeof SessionSettingsSnapshotSchema
+>;
+export type SessionCapabilitiesSnapshot = z.infer<
+  typeof SessionCapabilitiesSnapshotSchema
 >;
 export type ToolActivity = z.infer<typeof ToolActivitySchema>;
 export type FileChange = z.infer<typeof FileChangeSchema>;

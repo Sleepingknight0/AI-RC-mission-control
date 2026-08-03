@@ -1,5 +1,8 @@
-import { startMockConnector } from "@aicl/connector";
+import { startConnector } from "@aicl/connector";
+import { MockProvider } from "@aicl/connector/mock-provider";
 import {
+  ConnectorEnvelopeSchema,
+  CoreToConnectorEnvelopeSchema,
   ServerEnvelopeSchema,
   makeEnvelope,
   websocketCapability,
@@ -10,6 +13,10 @@ import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startCoreServer, type CoreServerHandle } from "../src/server.js";
+import {
+  controlledProviderFleet,
+  createControlledSession,
+} from "./controlled-session-fixture.js";
 
 interface BrowserHarness {
   socket: WebSocket;
@@ -65,10 +72,12 @@ describe("mock Connector to Core to browser flow", () => {
       dbPath: ":memory:",
     });
     openHandles.push(core);
-    const connector = startMockConnector({
+    const connector = startConnector({
       coreUrl: core.connectorUrl,
       connectorToken: core.connectorToken,
-      providerDelayMs: 30,
+      provider: new MockProvider(30),
+      providerName: "mock",
+      providerInventory: (revision) => controlledProviderFleet(revision),
     });
     openHandles.push(connector);
     await connector.ready;
@@ -77,6 +86,8 @@ describe("mock Connector to Core to browser flow", () => {
     send(first, makeEnvelope("sessions.list", {}));
     const emptyCatalog = await waitForMessage(first, "sessions.snapshot");
     expect(emptyCatalog.payload.sessions).toEqual([]);
+    await createControlledSession(first, WALKING_SKELETON_FIXTURE.sessionId);
+    await createControlledSession(first, "other-session");
     send(
       first,
       makeEnvelope("session.subscribe", {
@@ -225,8 +236,48 @@ describe("mock Connector to Core to browser flow", () => {
         }),
       ),
     );
+    connector.send(
+      JSON.stringify(
+        ConnectorEnvelopeSchema.parse({
+          ...makeEnvelope("connector.providers.snapshot", {
+            snapshot: controlledProviderFleet(1),
+          }),
+          connectorId: "connector-loss-test",
+          bootId: "boot-loss-test",
+          sourceEventId: "loss-provider-snapshot",
+          runtimeId: "runtime-loss-test",
+          runtimeGeneration: 7,
+        }),
+      ),
+    );
+    connector.on("message", (data) => {
+      const message = CoreToConnectorEnvelopeSchema.parse(JSON.parse(data.toString()));
+      if (message.type !== "connector.session.create") return;
+      connector.send(
+        JSON.stringify(
+          ConnectorEnvelopeSchema.parse({
+            ...makeEnvelope("connector.session.prepared", {
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              providerId: message.payload.providerId,
+              accountId: message.payload.accountId,
+              providerSessionId: `raw-${message.payload.sessionId}`,
+              projectPath: message.payload.projectPath,
+              model: message.payload.model,
+              reasoningLevel: message.payload.reasoningLevel,
+            }),
+            connectorId: "connector-loss-test",
+            bootId: "boot-loss-test",
+            sourceEventId: `prepared-${message.payload.commandId}`,
+            runtimeId: "runtime-loss-test",
+            runtimeGeneration: 7,
+          }),
+        ),
+      );
+    });
 
     const browser = await openBrowser(core.browserUrl, core.browserToken);
+    await createControlledSession(browser, "loss-session");
     send(
       browser,
       makeEnvelope("session.subscribe", { sessionId: "loss-session", afterSeq: 0 }),
