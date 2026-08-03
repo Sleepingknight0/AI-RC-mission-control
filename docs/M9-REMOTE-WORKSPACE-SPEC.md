@@ -31,7 +31,9 @@ Browser -> Core -> Connector -> provider adapter -> provider
    persists sanitized commands, relative cwd labels, timestamps, truncation,
    authenticated evidence artifacts, Runtime fencing, and opaque correlations;
    no PTY or new dispatch surface is introduced.
-6. M9.10–M9.11 prove fault, security, recovery, and performance behavior.
+6. M9.10 proves hostile-input, fault-isolation, recovery, 15-provider, and
+   1,000-Session behavior; M9.11 reruns the exact-head repository, production,
+   maintenance, and real-provider gates and hands the stable contract to Grok.
 
 ## Explicit non-goals
 

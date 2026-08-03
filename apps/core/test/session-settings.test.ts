@@ -105,6 +105,7 @@ describe("Session settings", () => {
 
     const busy = settingsCommand("turn-settings-session", "settings-during-turn", 1, {
       ...updated.payload.settings,
+      approvalPolicy: "workspace_auto",
       branch: "blocked",
     });
     const busyResult = await database.mutateSessionSettings(

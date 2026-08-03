@@ -1812,3 +1812,42 @@ frozen Web diff                              -> no changes
 
 M9.10 consolidates the hostile-input, recovery, fault-isolation, catalog-scale,
 and practical performance evidence before the non-visual final gate.
+
+---
+
+### 2026-08-03 13:52 — Codex — M9.10 security, recovery, fault, and performance
+
+**Outcome**
+
+- Consolidated hostile-Origin/ticket, Connector identity, provider inventory,
+  Session revision, Runtime, approval lease, attachment, restart, no-replay,
+  redaction, and bounded-log evidence in one M9 gate record.
+- Added a 15-provider accepted case plus rejection above the 64-provider hard
+  ceiling; no provider/model/account/usage value is invented.
+- Added a 1,000-Session SQLite catalog regression with deterministic 250-row
+  pagination, a 20-second budget, and a 256 MiB heap-growth ceiling. The
+  combined targeted run completed it in 650 ms.
+- Made the active-Turn settings race explicitly attempt an approval-policy
+  downgrade and proved Core returns `SESSION_BUSY`.
+- Added an explicit cross-Session managed-attachment Turn rejection while
+  retaining idempotent identical chunks and changed-duplicate rejection.
+- Frozen Web sources, the Grok worktree, evidence directories, and the preserved
+  stash remain untouched.
+
+**Verification**
+
+```text
+protocol M9 security/scale suites       -> 18 passed
+Connector inventory/input/Codex suites -> 22 passed
+Core auth/fault/recovery/M9 suites      -> 39 passed
+Host bounded/redacted logging suite     -> 3 passed
+targeted total                          -> 82 passed
+full repository/production gate        -> 172 passed, 1 real test skipped
+git diff --check / frozen Web diff      -> passed / no changes
+```
+
+**Next**
+
+M9.11 runs the exact-head frozen install, repeated migration, build, complete
+repository/production gate, opt-in real Codex acceptance, and writes the final
+non-visual backend/Grok integration handoff.

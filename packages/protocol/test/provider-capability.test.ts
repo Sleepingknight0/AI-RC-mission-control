@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_PROVIDER_ACCOUNTS,
+  MAX_PROVIDER_INVENTORY,
   MAX_PROVIDER_MODELS,
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
@@ -130,6 +131,54 @@ describe("provider capability protocol", () => {
           ...provider.models[0],
           modelId: `model-${index}`,
         })),
+      }),
+    ).toThrow();
+  });
+
+  it("supports a 15-provider fleet and rejects oversized inventories", () => {
+    const providers = Array.from({ length: 15 }, (_, index) => ({
+      ...provider,
+      providerId: `provider-${index}`,
+      displayName: `Provider ${index}`,
+      adapterSupport: "inventory_only" as const,
+      capabilities: [
+        {
+          key: "inventory" as const,
+          state: "supported" as const,
+          provenance: "terminal_registry" as const,
+          observedAt,
+          reason: null,
+        },
+      ],
+      accounts: [],
+      accountCount: 0,
+      models: [],
+      modelsState: "unavailable" as const,
+    }));
+    const snapshot = {
+      snapshotId: "fleet-scale",
+      revision: 1,
+      source: "terminal_registry" as const,
+      observedAt,
+      staleAt: "2026-08-03T03:45:00.000Z",
+      freshness: "live" as const,
+      degraded: false,
+      providers,
+      notice: null,
+    };
+
+    expect(ProviderFleetSnapshotSchema.parse(snapshot).providers).toHaveLength(15);
+    expect(() =>
+      ProviderFleetSnapshotSchema.parse({
+        ...snapshot,
+        providers: Array.from(
+          { length: MAX_PROVIDER_INVENTORY + 1 },
+          (_, index) => ({
+            ...providers[0],
+            providerId: `oversized-${index}`,
+            displayName: `Oversized ${index}`,
+          }),
+        ),
       }),
     ).toThrow();
   });

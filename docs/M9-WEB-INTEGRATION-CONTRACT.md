@@ -178,6 +178,20 @@ No activity envelope grants PTY, shell dispatch, or filesystem-read authority.
 
 Every M9 resource supports `loading`, `ready`, `stale`, `unavailable`, and `error` where applicable. One malformed provider/native Session is represented as a bounded notice without removing healthy siblings. Reconnect replaces snapshots by revision; it does not merge by title or retry mutations automatically.
 
+Operational bounds are part of the contract: at most 64 providers, 32 exposed
+accounts per provider, 128 models per provider, 500 native Sessions per
+provider/account snapshot, 250 AICL Sessions per catalog page, 256 visible
+attachments per Session/device, and eight attachments per Turn. A rejected
+oversized snapshot or page must render the last authoritative state plus a
+bounded error; it must not clear healthy state or synthesize empty telemetry.
+Inventory refresh and native discovery are independent of Turn control. Web
+must leave Session controls usable when either resource is stale or unavailable
+and disable only the controls whose live capability evidence is required.
+
 ## Frozen-Web integration checklist
 
 After the freeze is removed, Grok/Codex integration must add reducer coverage for all new snapshots/commands, preserve unknown-envelope tolerance, wire real controls without hardcoded provider/model lists, keep per-Session drafts, and run Web typecheck/tests/build plus responsive/accessibility acceptance. No visual file changes are required for the non-visual backend checkpoints.
+
+The integration target is the isolated Grok checkpoint. It must consume these
+authoritative envelopes without hardcoded provider, account, model, policy, or
+attachment data.

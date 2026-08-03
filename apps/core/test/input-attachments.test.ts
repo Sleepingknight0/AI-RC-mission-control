@@ -145,6 +145,32 @@ describe("Core managed input attachments", () => {
         expect.objectContaining({ attachmentId: expiringId, status: "expired" }),
       ]),
     );
+
+    const scopedBegin = beginCommand("begin-scoped", content);
+    const scoped = await database.beginInputAttachment(
+      scopedBegin,
+      reject(scopedBegin),
+    );
+    const scopedId = acceptedAttachmentId(scoped);
+    await database.appendInputAttachmentChunk(chunkCommand(scopedId, content));
+    const scopedComplete = completeCommand("complete-scoped", scopedId);
+    await database.completeInputAttachment(scopedComplete, reject(scopedComplete));
+    await database.ensureSession("session-2");
+    const crossSessionTurn = turnCommand(
+      "turn-cross-session",
+      [scopedId],
+      "session-2",
+    );
+    const crossSessionResult = await database.acceptTurn({
+      message: crossSessionTurn,
+      turnId: "turn-cross-session",
+      runtime: { runtimeId: "runtime-cross", generation: 1, status: "ready" },
+      connectorId: "connector-cross",
+      bootId: "boot-cross",
+      activeRejection: rejection(crossSessionTurn, "TURN_ALREADY_ACTIVE"),
+      attachmentRejection: reject(crossSessionTurn),
+    });
+    expect(errorCode(crossSessionResult)).toBe("ATTACHMENT_SCOPE_MISMATCH");
   });
 });
 
@@ -209,11 +235,15 @@ function completeCommand(commandId: string, attachmentId: string) {
   return message;
 }
 
-function turnCommand(commandId: string, attachmentIds: string[]) {
+function turnCommand(
+  commandId: string,
+  attachmentIds: string[],
+  sessionId = "session-1",
+) {
   const message = ClientEnvelopeSchema.parse(
     makeEnvelope("turn.submit", {
       commandId,
-      sessionId: "session-1",
+      sessionId,
       deviceId: "device-1",
       prompt: "Use the attachment",
       settingsRevision: 0,

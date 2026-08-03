@@ -18,7 +18,7 @@
 - [x] M9.7 server policy enforcement and scoped Full Auto leases
 - [x] M9.8 managed attachment lifecycle and Codex translation
 - [x] M9.9 bounded terminal/activity contract
-- [ ] M9.10 security, recovery, fault, and performance gate
+- [x] M9.10 security, recovery, fault, and performance gate
 - [ ] M9.11 non-visual final gate and Grok handoff
 
 ## Checkpoint rule

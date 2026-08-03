@@ -186,6 +186,25 @@ describe("Session Catalog V2", () => {
       ),
     ).toEqual({ ok: false, code: "SESSION_CATALOG_CURSOR_STALE" });
   });
+
+  it("bounds and orders a 1,000-Session catalog within the performance budget", async () => {
+    const database = openDatabase();
+    const heapBefore = process.memoryUsage().heapUsed;
+    const startedAt = performance.now();
+    for (let index = 0; index < 1_000; index += 1) {
+      await database.ensureSession(`scale-${String(index).padStart(4, "0")}`);
+    }
+    const first = catalog(database, {}, "scale-device", 250);
+    const elapsedMs = performance.now() - startedAt;
+    const heapGrowthBytes = process.memoryUsage().heapUsed - heapBefore;
+
+    expect(first).toMatchObject({ total: 1_000 });
+    expect(first.sessions).toHaveLength(250);
+    expect(first.nextCursor).not.toBeNull();
+    expect(new Set(first.sessions.map((session) => session.sessionId)).size).toBe(250);
+    expect(elapsedMs).toBeLessThan(20_000);
+    expect(heapGrowthBytes).toBeLessThan(256 * 1024 * 1024);
+  });
 });
 
 function openDatabase() {

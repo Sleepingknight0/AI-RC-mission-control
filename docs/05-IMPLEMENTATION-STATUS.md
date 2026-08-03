@@ -60,18 +60,17 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M9.7 approval policies and scoped Full Auto leases
 - [x] M9.8 managed attachment lifecycle and security
 - [x] M9.9 normalized terminal/activity metadata
-- [ ] M9.10 security, recovery, fault, and performance gate
+- [x] M9.10 security, recovery, fault, and performance gate
 - [ ] M9.11 non-visual final gate and Grok integration handoff
 
 ## Current milestone
 
-**M9.10 security, recovery, fault, and performance gate.** M9.9 adds Core
-schema 11, sanitized commands, project-relative cwd labels, provider timing,
-bounded stdout/stderr evidence, authenticated large-output artifacts, immutable
-Runtime identity, opaque activity correlation, and durable sequence metadata.
-Codex truthfully reports stderr unavailable because app-server currently exposes
-aggregated output. The Grok visual checkpoint remains isolated and frozen. M8.5
-and Google/Cloudflare identity remain deferred outside M9.
+**M9.11 non-visual final gate and Grok integration handoff.** M9.10 now covers
+hostile browser/Connector inputs, tickets, provider faults and bounds, Session
+CAS and catalog scale, approval downgrade/lease races, attachment scope and
+integrity, restart/no-replay recovery, redaction, bounded logs, 15 providers,
+and 1,000 Sessions. The Grok visual checkpoint remains isolated and frozen.
+M8.5 and Google/Cloudflare identity remain deferred outside M9.
 
 ## Last verified demo
 
