@@ -11,6 +11,7 @@ import { httpOrigin, loadAiclConfig } from "@aicl/config";
 import { redactSensitiveText } from "@aicl/protocol";
 
 import { BoundedLogLineWriter, RotatingJsonLog } from "./logging.js";
+import { assertTcpPortAvailable } from "./port-availability.js";
 import {
   PRODUCTION_STATE_VERSION,
   productionRuntimePaths,
@@ -101,6 +102,12 @@ async function main(): Promise<void> {
 
   try {
     supervisorLog.write("info", "host.starting", "Starting compiled production services");
+    await assertTcpPortAvailable(config.core.host, config.core.port, "Core");
+    await assertTcpPortAvailable(
+      "127.0.0.1",
+      config.connector.healthPort,
+      "Connector",
+    );
     core = startChild(coreEntry, childEnvironment, coreLog);
     watchUnexpectedExit("Core", core, requestStop);
     const coreUrl = httpOrigin(config.core.host, config.core.port);

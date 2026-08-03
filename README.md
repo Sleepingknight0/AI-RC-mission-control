@@ -138,10 +138,12 @@ Task ใช้ interactive logon และ limited privilege เท่านั�
 `pnpm backup` และ `pnpm restore` มี safety gate และจะหยุดด้วย exit code 2 จนกว่า
 M8.6 จะเพิ่ม verified SQLite backup/restore; ห้ามแทนที่ด้วยการ copy ไฟล์ WAL ตรง ๆ
 
-M8.5 มี private deployment automation แล้ว แต่ยังไม่ถือว่าเสร็จจนกว่าเครื่อง host
-จะติดตั้ง/ล็อกอิน Tailscale เปิด HTTPS certificates ใน tailnet และผ่าน probe จาก
-อุปกรณ์ตัวที่สองจริง ระบบจะไม่เรียก Funnel และ Core/Connector ยัง bind เฉพาะ
-`127.0.0.1`
+M8.5 มี private deployment automation แล้ว แต่ operator เลื่อน second-device
+acceptance ไว้เมื่อ 2026-08-03 โดยไม่ถือว่าผ่าน เส้นทาง Tailscale ด้านล่างยังคง
+ใช้งานได้แบบ tailnet-only ปัจจุบัน ส่วนแผน Google Login + Cloudflare ยังไม่ได้
+เลือกว่าใช้ Cloudflare Access เป็น Google IdP boundary หรือให้ AICL ทำ Google
+OAuth เอง และยังไม่มี implementation ระบบจะไม่เรียก Funnel และ Core/Connector
+ยัง bind เฉพาะ `127.0.0.1`
 
 หลังติดตั้ง Tailscale และหยุดทั้ง `pnpm dev`/production stack ให้ตั้งค่าและเริ่มใหม่:
 
@@ -170,6 +172,11 @@ http://127.0.0.1:<core-port>` ถ้า tailnet ยังไม่เปิด H
 probe ตรวจ production HTML, Core/Connector health, short-lived runtime ticket และ
 authenticated WSS โดยไม่บันทึก ticket ระยะ M8.6 ยังต้องเพิ่ม verified
 backup/restore และ clean-install gate
+
+ถ้า Serve/Origin ขึ้น configured แต่ HTTPS ตอบ TLS internal error ให้รอการออก
+certificate สักครู่แล้วลองใหม่ อย่า loop `tailscale cert` ซ้ำ เพราะอาจชน CA rate
+limit หากยังพบ Tailscale control-plane HTTP 500 ตอนสร้าง ACME DNS challenge ให้
+ปิด/เปิด tailnet HTTPS ใหม่หนึ่งครั้งหรือติดต่อ Tailscale Support
 
 Core และ Connector ใช้ SQLite คนละไฟล์ โดยค่าเริ่มต้นอยู่ใต้
 `%LOCALAPPDATA%\AICL Mission Control\data` ตามลำดับ คำสั่ง

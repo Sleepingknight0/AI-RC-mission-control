@@ -32,8 +32,15 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M8.2 bounded runtime browser authentication implemented
 - [x] M8.3 typed persistent LocalAppData configuration implemented
 - [x] M8.4 compiled production lifecycle and Windows startup task implemented
-- [ ] M8.5 private Tailscale Serve deployment implemented and device-tested
 - [ ] M8.6 backup, restore, migration, and clean-install gate completed
+
+## Deferred operational work
+
+- M8.5 private Tailscale Serve second-device acceptance — **deferred by the
+  operator on 2026-08-03; not completed**
+- Planned remote-access redesign — Google identity plus Cloudflare; the choice
+  between Cloudflare Access with Google as IdP and application-owned Google
+  OAuth behind Cloudflare Tunnel remains unresolved and unimplemented
 
 ## Optional post-Prototype phases
 
@@ -43,13 +50,13 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**M8.5 — Private Tailscale Serve deployment and second-device test (blocked at
-external validation).** Exact-Origin deployment automation, diagnostics, and a
-second-device HTTPS/ticket/WSS probe are implemented and pass local/fake-CLI
-tests. The target host has no discoverable Tailscale CLI/service, so no real
-Serve configuration or second-device evidence exists. Keep M8.5 unchecked and
-do not start M8.6. Prototype 0 remains complete; external AI reviews remain
-optional.
+**M8.6 — Backup, restore, migration, and clean-install gate.** The operator
+explicitly deferred M8.5 second-device acceptance without declaring it passed.
+The implemented Tailscale Serve path remains tailnet-only and configured, but
+is no longer a blocking milestone. Google identity plus Cloudflare is planned
+as a separate remote-access redesign; its authentication boundary is not yet
+decided and must not be mixed into M8.6. Prototype 0 remains complete; external
+AI reviews remain optional.
 
 ## Last verified demo
 
@@ -74,4 +81,4 @@ optional.
 - M8.2 runtime browser auth: `POST /runtime-config` issues a 30-second, exact-Origin, one-time WebSocket ticket from a bounded in-memory registry that stores only ticket digests. Production Core disables the legacy browser token; Connector authentication remains separate. Expiry, replay, hostile-Origin, request-body, capacity, and Core-restart tests pass. Playwright loaded and reloaded the same-origin production build with two fresh bootstrap requests, an online UI, zero console errors/warnings, and no localStorage secret. `pnpm check` passed 77 automated tests; the opt-in real-provider test remained skipped.
 - M8.3 persistent config: Core and Connector share strict schema version 1 under `%LOCALAPPDATA%\AICL Mission Control\config.json`, created atomically without credentials or capabilities. It supplies loopback Core/Connector settings, exact browser origins, provider profile/CODEX_HOME, canonical project allowlist/default project, and separate data/log/backup paths; validated environment overrides remain in memory and the active same-origin URL is derived after them. Junction escape, invalid/unknown/versioned input, port/database separation, repeated/concurrent startup, bracketed IPv6 loopback, and configured child-environment tests pass. A two-process mock smoke proved concurrent config creation, Core/Connector connection, same-origin Web/runtime bootstrap, two SQLite files, non-persistence of overrides/capabilities, and cleanup. `pnpm check` passed 92 automated tests; the opt-in real-provider test remained skipped.
 - M8.4 production lifecycle: `pnpm build` creates self-contained Core, Connector, Host, and Doctor JavaScript bundles plus the Web build without runtime TypeScript or source maps. A Host supervisor starts Core before Connector, keeps the Connector capability out of state/logs, provides bounded redacted JSON logs, and shuts down Connector/provider then Core through IPC with verified process-tree fallback. Root start/stop/status/doctor commands and an interactive-user limited-privilege Scheduled Task are present; backup/restore commands deliberately fail closed until M8.6. An isolated Windows production smoke passed start, both health gates, same-origin HTML, status, clean stop, PID cleanup, and state cleanup. `pnpm check` passed 96 automated tests plus the compiled lifecycle smoke; the opt-in real-provider test remained skipped.
-- M8.5 deployment readiness: `pnpm remote:configure` derives an online device's exact HTTPS ts.net Origin, verifies a private `tailscale serve --bg --yes http://127.0.0.1:<core-port>` mapping, and persists the Origin only while AICL is stopped; no Funnel path exists. Doctor and `pnpm remote:status` distinguish app, Connector, Tailscale, Serve, Origin, Codex, and database state. The second-device probe refuses the host device, exercises HTTPS/runtime-ticket/WSS, and omits the ticket from evidence. `pnpm check` passed 100 automated tests plus compiled lifecycle and fake-CLI Serve smokes after one independently reproduced Windows temp-lock cleanup retry. Real deployment remains blocked: Tailscale is not installed/on PATH and no second-device evidence was recorded.
+- M8.5 deployment readiness (deferred, not completed): `pnpm remote:configure` derives an online device's exact HTTPS ts.net Origin, verifies a private `tailscale serve --bg --yes http://127.0.0.1:<core-port>` mapping, and persists the Origin only while AICL is stopped; no Funnel path exists. Doctor and `pnpm remote:status` distinguish app, Connector, Tailscale, Serve, Origin, Codex, and database state. Doctor also discovers the standard Windows Program Files install when the CLI is absent from PATH. A real collision exposed that production could briefly borrow health from an existing dev service; the Host now rejects occupied Core/Connector ports before spawning children. After confirming no active Turn, seven stale AICL dev launcher roots and their descendants were stopped. Compiled production then remained ready with stable supervisor/Core/Connector PIDs through 3/15/30-second checkpoints. Certificate issuance recovered: `/health` succeeds through the ts.net HTTPS endpoint, and a Playwright preflight on the host loaded production HTML, obtained a runtime ticket, opened authenticated WSS, reported Core/Connector ready, emitted no console warnings/errors, and stored no localStorage secret. `pnpm check` passed 102 automated tests plus compiled lifecycle and fake-CLI Serve smokes. No real second-device evidence was captured before the operator deferred this gate.

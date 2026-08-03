@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   diagnoseTailscale,
   isExactTailscaleOrigin,
+  selectTailscaleExecutable,
   serveStatusContainsTarget,
   tailscaleOriginFromStatus,
   type TailscaleCommandRunner,
@@ -96,5 +97,23 @@ describe("Tailscale diagnostics", () => {
     ).toBe("fail");
     expect(serveStatusContainsTarget("not-json", "http://127.0.0.1:8787")).toBe(false);
     expect(() => tailscaleOriginFromStatus("{}")).toThrow("not online");
+  });
+
+  it("discovers the standard Windows install when Tailscale is not on PATH", () => {
+    const installed = "C:\\Program Files\\Tailscale\\tailscale.exe";
+    expect(
+      selectTailscaleExecutable(
+        { ProgramFiles: "C:\\Program Files" },
+        "win32",
+        (candidate) => candidate === installed,
+      ),
+    ).toBe(installed);
+    expect(
+      selectTailscaleExecutable(
+        { AICL_TAILSCALE_PATH: "D:\\Tools\\tailscale.exe" },
+        "win32",
+        () => false,
+      ),
+    ).toBe("D:\\Tools\\tailscale.exe");
   });
 });

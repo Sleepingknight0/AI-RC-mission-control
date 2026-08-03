@@ -142,7 +142,10 @@ Production runs source-map-free JavaScript bundles under one lightweight Host
 supervisor; neither Vite nor `tsx watch` participates. The Host creates the
 per-launch Connector capability in memory, starts Core before Connector, waits
 for both health gates, and records only non-secret PID/endpoint state beneath
-LocalAppData. Stop requests are local files; the Host sends authenticated-parent
+LocalAppData. Before spawning either service it exclusively probes both
+configured ports and fails closed if another process owns one; a health response
+from an unrelated dev process is never production readiness. Stop requests are
+local files; the Host sends authenticated-parent
 IPC to close Connector (including its provider tree) before Core, then uses a
 bounded verified process-tree kill only after graceful timeout.
 
@@ -168,3 +171,10 @@ independently. Remote completion additionally requires a probe executed from a
 different online tailnet device that completes HTTPS, runtime-ticket, and WSS
 authentication without persisting the ticket. Automation alone is not evidence
 that mobile or second-device access works.
+
+Operator update (2026-08-03): the M8.5 second-device gate is deferred without a
+completion claim. AD-019 remains the record for the implemented Tailscale path,
+not the selected future remote-access baseline. The operator plans Google
+identity plus Cloudflare, but no replacement decision exists until the team
+chooses whether Google identity terminates at Cloudflare Access or inside AICL.
+That choice requires a separate security-boundary decision before implementation.

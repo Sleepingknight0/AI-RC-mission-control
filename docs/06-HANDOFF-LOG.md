@@ -1253,3 +1253,118 @@ Remain on **M8.5**. Install/sign in Tailscale on the host and another device,
 enable tailnet HTTPS, stop the local stack, run `pnpm remote:configure`, restart
 with `pnpm start`, then execute `Test-TailscaleRemote.ps1` from the second device.
 Only after that evidence passes should M8.5 be checked and M8.6 begin.
+
+---
+
+### 2026-08-03 07:19 — Codex — M8.5 real Serve configuration (TLS blocked)
+
+**Scope**
+
+Continue only the M8.5 external gate after the operator installed Tailscale and
+enabled tailnet HTTPS. Configure real private Serve, verify production and
+remote diagnostics, repair any directly observed M8.5 defect, and stop before
+M8.6 or an unsupported completion claim.
+
+**Actions and files changed**
+
+- Verified Tailscale 1.98.10 online with MagicDNS and an allowed certificate
+  domain; stopped the repository-owned dev tree only after proving there were no
+  active Turns.
+- Configured private Serve for `https://bluewhalex.tailc79f02.ts.net` to
+  `http://127.0.0.1:8787` and persisted that exact Origin. Funnel was not
+  invoked.
+- Repaired Host Doctor discovery of the standard Windows Program Files Tailscale
+  install when the installer does not add the CLI to PATH; added a regression
+  test.
+- Reproduced a production false-ready race while an externally started dev
+  stack owned the same ports. Added exclusive Core/Connector port preflight and
+  a regression test; production now refuses the collision before child spawn.
+- Updated implementation status, execution plan, readiness evidence, README,
+  and this handoff without recording the ACME challenge or private key material.
+
+**Verification**
+
+```text
+Tailscale status                               -> 1.98.10; online; no health warning
+tailscale serve status                        -> tailnet-only / -> 127.0.0.1:8787
+pnpm remote:status                            -> app/Connector/Tailscale/Serve/Origin configured
+pnpm run doctor                               -> ready; all 14 checks pass
+pnpm --filter @aicl/host check                -> 10 passed; typecheck/lint pass
+pnpm check                                    -> 102 passed; lifecycle + Serve smoke pass
+production while dev owns default ports       -> fails closed before child spawn
+local service on default ports                -> external dev stack; production stopped
+DNS + TCP 443                                 -> pass
+HTTPS from Schannel and Node                  -> fail before HTTP with TLS internal error
+ticket-safe tailscale cert probe to NUL       -> control-plane HTTP 500 creating ACME DNS record
+one later bounded HTTPS retry                 -> timeout before HTTP response
+```
+
+The known approval-race cleanup emitted post-close Connector journal errors to
+stderr while the suite passed; this pre-existing noise was not changed during
+M8.5.
+
+**Security/recovery evidence**
+
+- Core and Connector still listen only on loopback; Serve is explicitly
+  tailnet-only and points only to the configured Core port.
+- The exact remote Origin is loaded after a controlled production restart.
+- Doctor no longer depends on global PATH for the standard signed Windows
+  installation.
+- Production readiness cannot be borrowed from an unrelated dev service on the
+  configured endpoints. The external dev process was left running.
+- The certificate probe wrote both outputs to Windows `NUL`; no certificate,
+  private key, ticket, ACME token, or second-device evidence file was created.
+
+**Blocked evidence / next action**
+
+M8.5 remains unchecked. Tailscale's control plane failed to create its ACME DNS
+challenge even though local status and Serve configuration are healthy; the
+public status page did not show an active Certificates incident. Allow
+propagation time and retry one HTTPS request. If the redacted SetDNS HTTP 500
+persists, disable/re-enable tailnet HTTPS once or contact Tailscale Support with
+an explicitly authorized bug report. After HTTPS succeeds, run the supplied
+probe from a second tailnet device. Do not start M8.6 before that proof.
+
+---
+
+### 2026-08-03 07:40 — Codex — M8.5 HTTPS recovery and production stabilization
+
+**Outcome**
+
+- Certificate issuance recovered without another `tailscale cert` call;
+  `https://bluewhalex.tailc79f02.ts.net/health` returns Core ready.
+- A host-side Playwright preflight loaded the production shell through Serve,
+  completed runtime bootstrap and authenticated WSS, reported Core online and
+  Connector ready, emitted zero console warnings/errors, and stored no secret
+  in localStorage. This deliberately does not count as second-device proof.
+- Production was force-stopped once when multiple stale AICL dev launchers
+  started again. The Core database had no active Turn. Seven exact
+  `pnpm run dev --filter @aicl/{core,connector,web}` roots and their descendants
+  were stopped; no unrelated process was targeted.
+- Compiled production restarted with stable supervisor/Core/Connector PIDs at
+  3-, 15-, and 30-second checkpoints. Remote HTTPS health remained ready.
+- Tailscale can ping the online Android peer `POCO C65`; the peer still must
+  open the application and supply real second-device evidence.
+
+**Remaining gate**
+
+Keep M8.5 unchecked and do not start M8.6. Open
+`https://bluewhalex.tailc79f02.ts.net` on `POCO C65` and verify Core online plus
+Connector ready. Prefer the supplied PowerShell probe on a second Windows
+tailnet device when available; do not fabricate its JSON evidence on the host.
+
+---
+
+### 2026-08-03 — Operator — Defer M8.5 and plan remote-access replacement
+
+- The operator explicitly deferred the M8.5 second-device gate. It remains
+  incomplete and no evidence file was fabricated.
+- M8.6 backup/restore/migration/clean-install is now the next milestone.
+- Future remote access is planned around Google identity and Cloudflare. The
+  security boundary is deliberately unresolved: Cloudflare Access with Google
+  as IdP versus application-owned Google OAuth behind Cloudflare Tunnel.
+- Do not implement that redesign inside M8.6. Record a separate architecture
+  decision after the identity/session/logout/admin-access requirements are
+  resolved.
+- Existing Tailscale Serve configuration and compiled production were left
+  running; disabling or removing them requires a separate operator request.

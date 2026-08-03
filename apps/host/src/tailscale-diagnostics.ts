@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 export interface TailscaleCheck {
   name: string;
@@ -153,7 +155,7 @@ function isTailscaleDnsName(candidate: string): boolean {
 }
 
 function runTailscaleCommand(args: readonly string[]): TailscaleCommandResult {
-  const executable = process.env.AICL_TAILSCALE_PATH?.trim() || "tailscale";
+  const executable = selectTailscaleExecutable();
   const result = spawnSync(executable, args, {
     encoding: "utf8",
     shell: false,
@@ -167,4 +169,21 @@ function runTailscaleCommand(args: readonly string[]): TailscaleCommandResult {
     exitCode: result.status,
     stdout: result.stdout ?? "",
   };
+}
+
+export function selectTailscaleExecutable(
+  env: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+  fileExists: (path: string) => boolean = existsSync,
+): string {
+  const configured = env.AICL_TAILSCALE_PATH?.trim();
+  if (configured) return configured;
+  if (platform === "win32") {
+    const programFiles = env.ProgramFiles?.trim();
+    if (programFiles) {
+      const installed = join(programFiles, "Tailscale", "tailscale.exe");
+      if (fileExists(installed)) return installed;
+    }
+  }
+  return "tailscale";
 }

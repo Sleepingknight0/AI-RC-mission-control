@@ -8,9 +8,11 @@ M3 (durability/reconnect), M4 (approval/activity/diff safety), M5
 self-audits, M7.1 accepted-finding remediation, and the M7.2 final gate are
 complete on the target Windows host. Prototype 0 is complete. M8 now turns that
 baseline into a loopback-only Windows daily-use host; M8.1 through M8.4 are
-complete. M8.5 automation is implemented, but real Serve deployment and the
-second-device gate are blocked until Tailscale is installed and online on the
-target host. M8.5 remains the current single milestone.
+complete. M8.5 automation and real private Serve configuration are implemented,
+but the operator deferred its second-device acceptance without marking it
+complete. M8.6 is now the current single milestone. Google identity plus
+Cloudflare is planned as separate, unresolved remote-access work and is not
+part of M8.6.
 
 ## Scope
 
@@ -31,8 +33,8 @@ target host. M8.5 remains the current single milestone.
 - M8.2 runtime browser authentication — **done**
 - M8.3 persistent LocalAppData configuration — **done**
 - M8.4 compiled lifecycle and Windows startup task — **done**
-- M8.5 private Tailscale Serve deployment — **current; external validation blocked**
-- M8.6 backup/restore and clean-install gate — pending
+- M8.5 private Tailscale Serve second-device acceptance — **deferred; not complete**
+- M8.6 backup/restore and clean-install gate — **current**
 
 ## Non-goals
 
@@ -40,7 +42,8 @@ target host. M8.5 remains the current single milestone.
 - Optional external visual/audit passes before Prototype 0 is complete
 - Claude provider integration, multi-user, cloud control plane
 - M9 project/profile/session product operations, PWA, installer, and updater
-- Tailscale Funnel or any public Internet exposure
+- New Cloudflare/Google authentication implementation or unauthenticated public
+  Internet exposure during M8.6
 
 ## Current repository state
 
@@ -144,8 +147,11 @@ target host. M8.5 remains the current single milestone.
 - [x] Add exact-origin private Serve configuration and status automation (M8.5)
 - [x] Add separated Doctor diagnostics and fake-CLI regression coverage (M8.5)
 - [x] Add a ticket-safe probe that must run on a second tailnet device (M8.5)
-- [ ] Install/sign in Tailscale, enable tailnet HTTPS, and configure real Serve (M8.5)
-- [ ] Record successful evidence from a real second tailnet device (M8.5)
+- [x] Install/sign in Tailscale, enable tailnet HTTPS, and configure real Serve (M8.5)
+- [x] Fail production start closed when dev or another process owns its ports (M8.5)
+- [x] Obtain a valid Serve certificate after the Tailscale ACME SetDNS failure clears (M8.5)
+- Deferred by operator: record successful evidence from a real second tailnet
+  device (M8.5; not completed)
 
 ## M7.1 completed verification
 
@@ -372,11 +378,22 @@ authentication. M8.3 adds strict secret-free LocalAppData configuration. M8.4
 adds source-map-free compiled bundles, a Host supervisor, root lifecycle/doctor
 commands, bounded redacted logs, and an interactive-user Scheduled Task. M8.5
 now has exact-origin Serve automation, separated diagnostics, and a second-device
-probe. `pnpm check` passes 100 tests plus strict typecheck, lint, Web/Node
+probe. Production startup also probes exclusive ownership of the configured Core
+and Connector ports so it cannot borrow readiness from a dev stack. `pnpm check`
+passes 102 tests plus strict typecheck, lint, Web/Node
 production builds, Windows process-tree coverage, compiled lifecycle smoke, and
-fake-CLI Serve smoke. The target reports Tailscale missing, so real Serve and
-second-device validation remain unchecked. Backup/restore remain fail-closed;
-do not begin M8.6 until the M8.5 external gate is proven.
+fake-CLI Serve smoke. Real Tailscale 1.98.10, Serve, exact Origin, and Doctor are
+configured and green. After the Core database showed no active Turn, seven
+stale AICL dev launcher roots and their descendants were stopped. Compiled
+production now owns both loopback ports and retained stable
+supervisor/Core/Connector PIDs through 3/15/30-second checkpoints. Certificate issuance
+recovered: remote `/health` passes and a host-side Playwright preflight confirms
+production HTML, runtime bootstrap, authenticated WSS, zero console warnings or
+errors, and no localStorage secret. The preflight is not second-device evidence.
+The second-device gate remains unproven but is operator-deferred. M8.6 may now
+proceed. Backup/restore remain fail-closed until M8.6 implements and verifies
+them. Do not introduce Google identity or Cloudflare ingress during M8.6; first
+resolve whether identity terminates at Cloudflare Access or inside AICL.
 
 Prototype 0 remains complete. Grok visual refinement, Claude independent audit,
 and Codex integration of reproducible feedback remain optional P1–P3 work and

@@ -156,6 +156,9 @@ This may be completed in a later milestone, but the protocol must not make it im
 
 - `pnpm build` emits Web/Core/Connector/Host JavaScript without source maps or
   runtime `.ts` imports.
+- Production start fails before spawning children when another process already
+  owns the configured Core or Connector port; readiness cannot be borrowed from
+  an unrelated development service on the same endpoint.
 - Host starts Core before Connector and reports ready only after reconciliation.
 - `pnpm stop` closes Connector/provider before Core and leaves no owned PID or
   production-state file.
@@ -188,6 +191,8 @@ This may be completed in a later milestone, but the protocol must not make it im
   WSS `/ws` all pass through the ts.net origin.
 - The one-time browser ticket is kept in memory and omitted from evidence.
 - M8.5 remains incomplete until this proof is recorded from a real second device.
+- The operator deferred this proof on 2026-08-03. Deferral permits M8.6 to
+  proceed but is not a pass and must not be cited as remote-device evidence.
 
 ## UX
 
