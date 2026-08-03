@@ -117,6 +117,18 @@ lines.on("line", (line) => {
     }
     case "turn/start": {
       const text = String(message.params.input.at(-1).text);
+      if (
+        text === "attachments" &&
+        (!message.params.input.some(
+          (item) => item.type === "text" && item.text.includes("aicl-input-attachment"),
+        ) ||
+          !message.params.input.some(
+            (item) => item.type === "localImage" && item.path.endsWith("input.png"),
+          ))
+      ) {
+        send({ id: message.id, error: { code: -32602, message: "missing attachments" } });
+        return;
+      }
       const turnId = `fake-turn-${message.params.clientUserMessageId}`;
       active = { threadId: message.params.threadId, turnId, text, timer: undefined };
       if (text === "timeout-start") return;

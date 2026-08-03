@@ -6,12 +6,15 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import {
   ARTIFACT_CHUNK_BYTES,
+  INPUT_ATTACHMENT_CHUNK_BYTES,
+  MAX_INPUT_ATTACHMENTS_PER_TURN,
   MAX_ARTIFACT_BYTES,
   MAX_INLINE_DIFF_BYTES,
   ApprovalSchema,
   ApprovalLeaseSchema,
   ApprovalLeaseSnapshotSchema,
   ArtifactReferenceSchema,
+  InputAttachmentSchema,
   FileChangeSchema,
   SessionSettingsSchema,
   SessionSettingsSnapshotSchema,
@@ -23,6 +26,7 @@ import {
   type ApprovalLease,
   type ApprovalLeaseSnapshot,
   type ArtifactReference,
+  type InputAttachment,
   type ClientEnvelope,
   type ConnectorEnvelope,
   type FileChange,
@@ -38,7 +42,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 9;
+export const CORE_SCHEMA_VERSION = 10;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -55,6 +59,7 @@ type MutationResult =
         revision: number;
         settings: SessionSettings;
       };
+      turnAttachments?: StoredTurnAttachment[];
     };
 
 type MutatingClientEnvelope = Extract<
@@ -73,7 +78,10 @@ type MutatingClientEnvelope = Extract<
       | "session.settings.update"
       | "approval.lease.create"
       | "approval.lease.revoke"
-      | "approval.emergency_stop";
+      | "approval.emergency_stop"
+      | "attachment.upload.begin"
+      | "attachment.upload.complete"
+      | "attachment.delete";
   }
 >;
 
@@ -348,6 +356,38 @@ interface ArtifactRow {
   content: Uint8Array;
 }
 
+interface InputAttachmentRow {
+  attachment_id: string;
+  session_id: string;
+  owner_device_id: string;
+  name: string;
+  kind: InputAttachment["kind"];
+  media_type: InputAttachment["mediaType"];
+  byte_length: number;
+  sha256: string;
+  chunk_count: number;
+  state: InputAttachment["status"];
+  content: Uint8Array | null;
+  referenced_turn_id: string | null;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface StoredTurnAttachment {
+  attachment: InputAttachment;
+  content: Buffer;
+}
+
+export class InputAttachmentMutationError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "InputAttachmentMutationError";
+  }
+}
+
 export class CoreDatabase {
   readonly #database: DatabaseSync;
   #writerTail: Promise<void> = Promise.resolve();
@@ -408,6 +448,23 @@ export class CoreDatabase {
            FROM turns WHERE session_id = ? ORDER BY created_at, id`,
       )
       .all(sessionId) as unknown as TurnRow[];
+    const turnAttachmentRows = this.#database
+      .prepare(
+        `SELECT tia.turn_id, tia.attachment_id
+           FROM turn_input_attachments tia
+           JOIN turns t ON t.id = tia.turn_id
+          WHERE t.session_id = ? ORDER BY tia.turn_id, tia.ordinal`,
+      )
+      .all(sessionId) as unknown as Array<{
+      turn_id: string;
+      attachment_id: string;
+    }>;
+    const attachmentIdsByTurn = new Map<string, string[]>();
+    for (const row of turnAttachmentRows) {
+      const list = attachmentIdsByTurn.get(row.turn_id) ?? [];
+      list.push(row.attachment_id);
+      attachmentIdsByTurn.set(row.turn_id, list);
+    }
     const messages = this.#database
       .prepare(
         `SELECT id, turn_id, content, completed, display_seq
@@ -453,6 +510,7 @@ export class CoreDatabase {
         failureCode: turn.failure_code,
         providerTurnId: turn.provider_turn_id,
         eventSeq: turn.display_seq ?? 0,
+        attachmentIds: attachmentIdsByTurn.get(turn.id) ?? [],
         ...(turn.settings_revision === null || turn.settings_snapshot_json === null
           ? {}
           : {
@@ -1640,6 +1698,388 @@ export class CoreDatabase {
       : { kind: "conflict" };
   }
 
+  inputAttachments(sessionId: string, deviceId: string) {
+    return (this.#database
+      .prepare(
+        `SELECT attachment_id, session_id, owner_device_id, name, kind,
+                media_type, byte_length, sha256, chunk_count, state, content,
+                referenced_turn_id, created_at, expires_at
+           FROM input_attachments
+          WHERE session_id = ? AND owner_device_id = ? AND state <> 'deleted'
+          ORDER BY created_at, attachment_id LIMIT 256`,
+      )
+      .all(sessionId, deviceId) as unknown as InputAttachmentRow[]).map(
+      inputAttachmentFromRow,
+    );
+  }
+
+  inputAttachmentsById(sessionId: string, attachmentIds: readonly string[]) {
+    if (attachmentIds.length === 0) return [];
+    const placeholders = attachmentIds.map(() => "?").join(", ");
+    const rows = this.#database
+      .prepare(
+        `SELECT attachment_id, session_id, owner_device_id, name, kind,
+                media_type, byte_length, sha256, chunk_count, state, content,
+                referenced_turn_id, created_at, expires_at
+           FROM input_attachments
+          WHERE session_id = ? AND attachment_id IN (${placeholders})`,
+      )
+      .all(sessionId, ...attachmentIds) as unknown as InputAttachmentRow[];
+    const byId = new Map(rows.map((row) => [row.attachment_id, row]));
+    return attachmentIds.flatMap((attachmentId) => {
+      const row = byId.get(attachmentId);
+      return row === undefined ? [] : [inputAttachmentFromRow(row)];
+    });
+  }
+
+  async beginInputAttachment(
+    message: Extract<ClientEnvelope, { type: "attachment.upload.begin" }>,
+    rejection: (code: string, detail: string) => ServerEnvelope,
+    now = new Date(),
+  ): Promise<MutationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const nowIso = now.toISOString();
+      if (!this.hasSession(message.payload.sessionId)) {
+        const result = rejection("SESSION_NOT_FOUND", "Attachment Session does not exist.");
+        this.#insertCommand(message, payloadHash, "rejected", result, nowIso);
+        return { kind: "new", result };
+      }
+      if (
+        message.payload.chunkCount !==
+        Math.ceil(message.payload.byteLength / INPUT_ATTACHMENT_CHUNK_BYTES)
+      ) {
+        const result = rejection(
+          "ATTACHMENT_CHUNK_COUNT_INVALID",
+          "Attachment chunk count does not match the declared length.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, nowIso);
+        return { kind: "new", result };
+      }
+      const active = this.#database
+        .prepare(
+          `SELECT COALESCE(SUM(byte_length), 0) AS bytes
+             FROM input_attachments
+            WHERE session_id = ? AND state IN ('uploading', 'ready')
+              AND expires_at > ?`,
+        )
+        .get(message.payload.sessionId, nowIso) as { bytes: number };
+      if (active.bytes + message.payload.byteLength > 32 * 1024 * 1024) {
+        const result = rejection(
+          "ATTACHMENT_SESSION_QUOTA_EXCEEDED",
+          "Active attachment allocation exceeds the per-Session limit.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, nowIso);
+        return { kind: "new", result };
+      }
+      const attachmentId = `attachment-${crypto.randomUUID()}`;
+      const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString();
+      const attachment = InputAttachmentSchema.parse({
+        attachmentId,
+        sessionId: message.payload.sessionId,
+        ownerDeviceId: message.payload.deviceId,
+        name: message.payload.name,
+        kind: message.payload.kind,
+        mediaType: message.payload.mediaType,
+        byteLength: message.payload.byteLength,
+        sha256: message.payload.sha256,
+        status: "uploading",
+        previewAvailable: false,
+        createdAt: nowIso,
+        expiresAt,
+        referencedTurnId: null,
+      });
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("attachment.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            attachment,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, nowIso);
+      this.#database
+        .prepare(
+          `INSERT INTO input_attachments (
+             attachment_id, session_id, owner_device_id, begin_command_id,
+             name, kind, media_type, byte_length, sha256, chunk_count, state,
+             content, referenced_turn_id, created_at, updated_at, expires_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading', NULL, NULL, ?, ?, ?)`,
+        )
+        .run(
+          attachmentId,
+          message.payload.sessionId,
+          message.payload.deviceId,
+          message.payload.commandId,
+          message.payload.name,
+          message.payload.kind,
+          message.payload.mediaType,
+          message.payload.byteLength,
+          message.payload.sha256,
+          message.payload.chunkCount,
+          nowIso,
+          nowIso,
+          expiresAt,
+        );
+      return { kind: "new", result };
+    });
+  }
+
+  async appendInputAttachmentChunk(
+    message: Extract<ClientEnvelope, { type: "attachment.upload.chunk" }>,
+    now = new Date(),
+  ) {
+    return this.#write(() => {
+      const row = this.#inputAttachmentOptional(message.payload.attachmentId);
+      if (
+        row === undefined ||
+        row.session_id !== message.payload.sessionId ||
+        row.owner_device_id !== message.payload.deviceId
+      ) {
+        throw new InputAttachmentMutationError(
+          "ATTACHMENT_SCOPE_MISMATCH",
+          "Attachment upload does not belong to this Session and device.",
+        );
+      }
+      if (row.state !== "uploading" || row.expires_at <= now.toISOString()) {
+        throw new InputAttachmentMutationError(
+          "ATTACHMENT_NOT_UPLOADABLE",
+          "Attachment is no longer accepting chunks.",
+        );
+      }
+      if (message.payload.chunkIndex >= row.chunk_count) {
+        throw new InputAttachmentMutationError(
+          "ATTACHMENT_CHUNK_INDEX_INVALID",
+          "Attachment chunk index is outside the declared range.",
+        );
+      }
+      const content = decodeBase64(message.payload.contentBase64);
+      const expectedLength = Math.min(
+        INPUT_ATTACHMENT_CHUNK_BYTES,
+        row.byte_length - message.payload.chunkIndex * INPUT_ATTACHMENT_CHUNK_BYTES,
+      );
+      if (content.byteLength !== expectedLength) {
+        throw new InputAttachmentMutationError(
+          "ATTACHMENT_CHUNK_LENGTH_INVALID",
+          "Attachment chunk length does not match its declared position.",
+        );
+      }
+      const chunkSha256 = createHash("sha256").update(content).digest("hex");
+      const prior = this.#database
+        .prepare(
+          `SELECT content, sha256 FROM input_attachment_chunks
+            WHERE attachment_id = ? AND chunk_index = ?`,
+        )
+        .get(row.attachment_id, message.payload.chunkIndex) as
+        | { content: Uint8Array; sha256: string }
+        | undefined;
+      if (prior !== undefined) {
+        if (
+          prior.sha256 !== chunkSha256 ||
+          !Buffer.from(prior.content).equals(content)
+        ) {
+          throw new InputAttachmentMutationError(
+            "ATTACHMENT_CHUNK_CONFLICT",
+            "A changed duplicate attachment chunk was rejected.",
+          );
+        }
+      } else {
+        this.#database
+          .prepare(
+            `INSERT INTO input_attachment_chunks (
+               attachment_id, chunk_index, content, sha256
+             ) VALUES (?, ?, ?, ?)`,
+          )
+          .run(row.attachment_id, message.payload.chunkIndex, content, chunkSha256);
+        this.#database
+          .prepare("UPDATE input_attachments SET updated_at = ? WHERE attachment_id = ?")
+          .run(now.toISOString(), row.attachment_id);
+      }
+      const count = this.#database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM input_attachment_chunks WHERE attachment_id = ?",
+        )
+        .get(row.attachment_id) as { count: number };
+      return { receivedChunks: count.count, chunkCount: row.chunk_count };
+    });
+  }
+
+  async completeInputAttachment(
+    message: Extract<ClientEnvelope, { type: "attachment.upload.complete" }>,
+    rejection: (code: string, detail: string) => ServerEnvelope,
+    now = new Date(),
+  ): Promise<MutationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const nowIso = now.toISOString();
+      const row = this.#inputAttachmentOptional(message.payload.attachmentId);
+      const reject = (code: string, detail: string) => {
+        const result = rejection(code, detail);
+        this.#insertCommand(message, payloadHash, "rejected", result, nowIso);
+        return { kind: "new" as const, result };
+      };
+      if (
+        row === undefined ||
+        row.session_id !== message.payload.sessionId ||
+        row.owner_device_id !== message.payload.deviceId
+      ) {
+        return reject(
+          "ATTACHMENT_SCOPE_MISMATCH",
+          "Attachment completion does not belong to this Session and device.",
+        );
+      }
+      if (row.state !== "uploading" || row.expires_at <= nowIso) {
+        return reject("ATTACHMENT_NOT_UPLOADABLE", "Attachment is not uploadable.");
+      }
+      const chunks = this.#database
+        .prepare(
+          `SELECT chunk_index, content FROM input_attachment_chunks
+            WHERE attachment_id = ? ORDER BY chunk_index`,
+        )
+        .all(row.attachment_id) as unknown as Array<{
+        chunk_index: number;
+        content: Uint8Array;
+      }>;
+      if (
+        chunks.length !== row.chunk_count ||
+        chunks.some((chunk, index) => chunk.chunk_index !== index)
+      ) {
+        return reject(
+          "ATTACHMENT_INCOMPLETE",
+          "Attachment is missing one or more chunks.",
+        );
+      }
+      const content = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.content)));
+      const sha256 = createHash("sha256").update(content).digest("hex");
+      const contentError = validateInputAttachmentContent(row, content, sha256);
+      if (contentError !== undefined) {
+        this.#database
+          .prepare(
+            `UPDATE input_attachments SET state = 'rejected', content = NULL,
+               updated_at = ? WHERE attachment_id = ? AND state = 'uploading'`,
+          )
+          .run(nowIso, row.attachment_id);
+        this.#database
+          .prepare("DELETE FROM input_attachment_chunks WHERE attachment_id = ?")
+          .run(row.attachment_id);
+        return reject(contentError.code, contentError.message);
+      }
+      this.#database
+        .prepare(
+          `UPDATE input_attachments SET state = 'ready', content = ?, updated_at = ?
+            WHERE attachment_id = ? AND state = 'uploading'`,
+        )
+        .run(content, nowIso, row.attachment_id);
+      this.#database
+        .prepare("DELETE FROM input_attachment_chunks WHERE attachment_id = ?")
+        .run(row.attachment_id);
+      const attachment = inputAttachmentFromRow(this.#inputAttachment(row.attachment_id));
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("attachment.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            attachment,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, nowIso);
+      return { kind: "new", result };
+    });
+  }
+
+  async deleteInputAttachment(
+    message: Extract<ClientEnvelope, { type: "attachment.delete" }>,
+    rejection: (code: string, detail: string) => ServerEnvelope,
+    now = new Date(),
+  ): Promise<MutationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const nowIso = now.toISOString();
+      const row = this.#inputAttachmentOptional(message.payload.attachmentId);
+      if (
+        row === undefined ||
+        row.session_id !== message.payload.sessionId ||
+        row.owner_device_id !== message.payload.deviceId ||
+        row.state === "referenced"
+      ) {
+        const result = rejection(
+          "ATTACHMENT_DELETE_REJECTED",
+          "Attachment cannot be deleted from this Session and device.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, nowIso);
+        return { kind: "new", result };
+      }
+      this.#database
+        .prepare(
+          `UPDATE input_attachments SET state = 'deleted', content = NULL,
+             updated_at = ? WHERE attachment_id = ?`,
+        )
+        .run(nowIso, row.attachment_id);
+      this.#database
+        .prepare("DELETE FROM input_attachment_chunks WHERE attachment_id = ?")
+        .run(row.attachment_id);
+      const attachment = inputAttachmentFromRow(this.#inputAttachment(row.attachment_id));
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("attachment.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            attachment,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, nowIso);
+      return { kind: "new", result };
+    });
+  }
+
+  async sweepInputAttachments(now = new Date()) {
+    return this.#write(() => {
+      const nowIso = now.toISOString();
+      const rows = this.#database
+        .prepare(
+          `SELECT attachment_id, session_id, owner_device_id, name, kind,
+                  media_type, byte_length, sha256, chunk_count, state, content,
+                  referenced_turn_id, created_at, expires_at
+             FROM input_attachments
+            WHERE state IN ('uploading', 'ready') AND expires_at <= ?`,
+        )
+        .all(nowIso) as unknown as InputAttachmentRow[];
+      for (const row of rows) {
+        this.#database
+          .prepare(
+            `UPDATE input_attachments SET state = 'expired', content = NULL,
+               updated_at = ? WHERE attachment_id = ?`,
+          )
+          .run(nowIso, row.attachment_id);
+        this.#database
+          .prepare("DELETE FROM input_attachment_chunks WHERE attachment_id = ?")
+          .run(row.attachment_id);
+      }
+      return rows.map((row) => row.attachment_id);
+    });
+  }
+
   async acceptTurn(input: {
     message: Extract<ClientEnvelope, { type: "turn.submit" }>;
     turnId: string;
@@ -1649,6 +2089,7 @@ export class CoreDatabase {
     activeRejection: ServerEnvelope;
     runtimeBusyRejection?: ServerEnvelope;
     settingsConflictRejection?: ServerEnvelope;
+    attachmentRejection?: (code: string, detail: string) => ServerEnvelope;
   }): Promise<MutationResult> {
     return this.#write(() => {
       const payloadHash = commandHash(input.message);
@@ -1709,6 +2150,54 @@ export class CoreDatabase {
         return { kind: "new", result: rejection };
       }
 
+      const requestedAttachmentIds = input.message.payload.attachmentIds ?? [];
+      let turnAttachments: StoredTurnAttachment[] = [];
+      if (requestedAttachmentIds.length > 0) {
+        const rejectAttachment = (code: string, detail: string) => {
+          const result = input.attachmentRejection?.(code, detail) ?? input.activeRejection;
+          this.#insertCommand(input.message, payloadHash, "rejected", result, now);
+          return { kind: "new" as const, result };
+        };
+        if (input.message.payload.deviceId === undefined) {
+          return rejectAttachment(
+            "ATTACHMENT_DEVICE_REQUIRED",
+            "A device identity is required when submitting attachments.",
+          );
+        }
+        if (requestedAttachmentIds.length > MAX_INPUT_ATTACHMENTS_PER_TURN) {
+          return rejectAttachment(
+            "ATTACHMENT_COUNT_EXCEEDED",
+            "Turn attachment count exceeds the supported limit.",
+          );
+        }
+        const rows = requestedAttachmentIds.map((attachmentId) =>
+          this.#inputAttachmentOptional(attachmentId),
+        );
+        if (
+          rows.some(
+            (row) =>
+              row === undefined ||
+              row.session_id !== input.message.payload.sessionId ||
+              row.owner_device_id !== input.message.payload.deviceId,
+          )
+        ) {
+          return rejectAttachment(
+            "ATTACHMENT_SCOPE_MISMATCH",
+            "One or more attachments do not belong to this Session and device.",
+          );
+        }
+        if (rows.some((row) => row?.state !== "ready" || row.expires_at <= now)) {
+          return rejectAttachment(
+            "ATTACHMENT_NOT_READY",
+            "One or more attachments are incomplete, expired, or already used.",
+          );
+        }
+        turnAttachments = (rows as InputAttachmentRow[]).map((row) => ({
+          attachment: inputAttachmentFromRow(row),
+          content: Buffer.from(row.content!),
+        }));
+      }
+
       this.#attachRuntime(
         input.message.payload.sessionId,
         input.runtime,
@@ -1748,6 +2237,25 @@ export class CoreDatabase {
           JSON.stringify(settings.settings),
           input.message.payload.deviceId ?? null,
         );
+      for (const [ordinal, attachment] of turnAttachments.entries()) {
+        this.#database
+          .prepare(
+            `UPDATE input_attachments SET state = 'referenced', referenced_turn_id = ?,
+               updated_at = ? WHERE attachment_id = ? AND state = 'ready'`,
+          )
+          .run(input.turnId, now, attachment.attachment.attachmentId);
+        this.#database
+          .prepare(
+            `INSERT INTO turn_input_attachments (turn_id, attachment_id, ordinal)
+             VALUES (?, ?, ?)`,
+          )
+          .run(input.turnId, attachment.attachment.attachmentId, ordinal);
+        attachment.attachment = {
+          ...attachment.attachment,
+          status: "referenced",
+          referencedTurnId: input.turnId,
+        };
+      }
       const durableEvent = this.#appendVisibleEvent({
         sessionId: input.message.payload.sessionId,
         origin: "core",
@@ -1769,6 +2277,7 @@ export class CoreDatabase {
         result: accepted,
         durableEvent,
         turnSettings: { revision: settings.revision, settings: settings.settings },
+        turnAttachments,
       };
     });
   }
@@ -3246,6 +3755,23 @@ export class CoreDatabase {
       .get(commandId) as CommandRow | undefined;
   }
 
+  #inputAttachmentOptional(attachmentId: string) {
+    return this.#database
+      .prepare(
+        `SELECT attachment_id, session_id, owner_device_id, name, kind,
+                media_type, byte_length, sha256, chunk_count, state, content,
+                referenced_turn_id, created_at, expires_at
+           FROM input_attachments WHERE attachment_id = ?`,
+      )
+      .get(attachmentId) as InputAttachmentRow | undefined;
+  }
+
+  #inputAttachment(attachmentId: string) {
+    const row = this.#inputAttachmentOptional(attachmentId);
+    if (row === undefined) throw new Error(`Input attachment not found: ${attachmentId}`);
+    return row;
+  }
+
   #activity(activityId: string) {
     const row = this.#database
       .prepare(
@@ -3874,6 +4400,94 @@ interface RuntimeTurnRow {
   runtime_id: string;
   generation: number;
   client_command_id: string;
+}
+
+function inputAttachmentFromRow(row: InputAttachmentRow): InputAttachment {
+  return InputAttachmentSchema.parse({
+    attachmentId: row.attachment_id,
+    sessionId: row.session_id,
+    ownerDeviceId: row.owner_device_id,
+    name: row.name,
+    kind: row.kind,
+    mediaType: row.media_type,
+    byteLength: row.byte_length,
+    sha256: row.sha256,
+    status: row.state,
+    previewAvailable:
+      row.state === "ready" && (row.kind === "text" || row.kind === "image"),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    referencedTurnId: row.referenced_turn_id,
+  });
+}
+
+function validateInputAttachmentContent(
+  row: InputAttachmentRow,
+  content: Buffer,
+  sha256: string,
+): { code: string; message: string } | undefined {
+  if (content.byteLength !== row.byte_length || sha256 !== row.sha256) {
+    return {
+      code: "ATTACHMENT_INTEGRITY_MISMATCH",
+      message: "Attachment length or SHA-256 does not match its declaration.",
+    };
+  }
+  if (row.kind === "text") {
+    if (!new Set(["text/plain", "text/markdown"]).has(row.media_type)) {
+      return {
+        code: "ATTACHMENT_MEDIA_MISMATCH",
+        message: "Text attachment media type does not match its kind.",
+      };
+    }
+    if (content.byteLength > 1024 * 1024 || content.includes(0)) {
+      return {
+        code: "ATTACHMENT_TEXT_INVALID",
+        message: "Text attachments must be at most 1 MiB and contain no NUL bytes.",
+      };
+    }
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(content);
+    } catch {
+      return {
+        code: "ATTACHMENT_TEXT_INVALID",
+        message: "Text attachment is not valid UTF-8.",
+      };
+    }
+    return undefined;
+  }
+  if (row.kind === "image") {
+    if (!imageMagicMatches(row.media_type, content)) {
+      return {
+        code: "ATTACHMENT_MEDIA_MISMATCH",
+        message: "Image magic bytes do not match the declared media type.",
+      };
+    }
+    return undefined;
+  }
+  return {
+    code: "ATTACHMENT_KIND_UNSUPPORTED",
+    message: "This attachment kind is stored but not supported by the Codex adapter.",
+  };
+}
+
+function imageMagicMatches(mediaType: string, content: Buffer) {
+  if (mediaType === "image/png") {
+    return content.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"));
+  }
+  if (mediaType === "image/jpeg") {
+    return content.length >= 3 && content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff;
+  }
+  if (mediaType === "image/gif") {
+    const signature = content.subarray(0, 6).toString("ascii");
+    return signature === "GIF87a" || signature === "GIF89a";
+  }
+  if (mediaType === "image/webp") {
+    return (
+      content.subarray(0, 4).toString("ascii") === "RIFF" &&
+      content.subarray(8, 12).toString("ascii") === "WEBP"
+    );
+  }
+  return false;
 }
 
 function activityFromRow(row: ActivityRow) {

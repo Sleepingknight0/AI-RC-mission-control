@@ -22,6 +22,7 @@ import {
 import WebSocket from "ws";
 
 import { ConnectorJournal } from "./journal.js";
+import { InputAttachmentMaterializer } from "./input-attachments.js";
 import { MockProvider } from "./mock-provider.js";
 import { ProviderLostError, type ConnectorProvider } from "./provider.js";
 
@@ -77,6 +78,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       ? {}
       : { runtimeGeneration: options.runtimeGeneration }),
   });
+  const inputAttachments = new InputAttachmentMaterializer();
   let stopped = false;
   let providerLost = false;
   let runtimeStatus: "ready" | "busy" | "lost" = "ready";
@@ -362,6 +364,23 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       await refreshNativeSessions();
       return;
     }
+    if (
+      command.type === "connector.attachment.begin" ||
+      command.type === "connector.attachment.chunk" ||
+      command.type === "connector.attachment.complete"
+    ) {
+      if (
+        command.payload.runtimeId !== journal.runtimeId ||
+        command.payload.runtimeGeneration !== journal.runtimeGeneration
+      ) {
+        return;
+      }
+      if (command.type === "connector.attachment.begin") inputAttachments.begin(command);
+      else if (command.type === "connector.attachment.chunk") {
+        inputAttachments.append(command);
+      } else inputAttachments.complete(command);
+      return;
+    }
     const decision = journal.recordCommand(command);
     if (decision === "same") return;
     if (decision === "conflict") {
@@ -469,6 +488,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     }
 
     if (command.type === "connector.turn.start" && providerLost) {
+      inputAttachments.releaseTurn(command.payload.turnId);
       journal.markCommand(command.payload.commandId, "outcome_unknown");
       emit(
         makeEnvelope("connector.turn.outcome_unknown", {
@@ -555,7 +575,12 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
 
     emitRuntime("busy");
     try {
-      await options.provider.startTurn(command, emit);
+      const prepared = inputAttachments.prepareForTurn(
+        command.payload.sessionId,
+        command.payload.turnId,
+        command.payload.attachments ?? [],
+      );
+      await options.provider.startTurn(command, emit, prepared);
       journal.markCommand(command.payload.commandId, "completed");
       if (!providerLost) emitRuntime("ready");
     } catch (error) {
@@ -574,6 +599,8 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         }),
       );
       emitRuntime("ready");
+    } finally {
+      inputAttachments.releaseTurn(command.payload.turnId);
     }
   };
 
@@ -671,6 +698,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         socket?.close();
         await options.provider.close();
         await Promise.allSettled([...inFlightCommands]);
+        inputAttachments.close();
         if (healthServer !== undefined) {
           await new Promise<void>((resolve, reject) => {
             healthServer?.close((error) => (error ? reject(error) : resolve()));

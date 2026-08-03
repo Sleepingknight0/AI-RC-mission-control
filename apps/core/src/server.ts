@@ -16,6 +16,7 @@ import {
   ConnectorEnvelopeSchema,
   BrowserRuntimeConfigSchema,
   MAX_OUTPUT_BATCH_BYTES,
+  INPUT_ATTACHMENT_CHUNK_BYTES,
   MAX_WEBSOCKET_MESSAGE_BYTES,
   ProviderFleetSnapshotSchema,
   ProviderNativeSessionSnapshotSchema,
@@ -28,6 +29,7 @@ import {
   type ClientEnvelope,
   type Approval,
   type ConnectorEnvelope,
+  type InputAttachment,
   type ProtocolError,
   type ProviderFleetSnapshot,
   type ProviderNativeSessionSnapshot,
@@ -39,7 +41,11 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 
 import { classifyApprovalPolicy } from "./approval-policy.js";
-import { CoreDatabase, type ConnectorSource } from "./store.js";
+import {
+  CoreDatabase,
+  InputAttachmentMutationError,
+  type ConnectorSource,
+} from "./store.js";
 import { BrowserTicketRegistry } from "./browser-tickets.js";
 import { isReservedHttpPath, serveWebRequest } from "./static-host.js";
 
@@ -444,7 +450,10 @@ export async function startCoreServer(
           | "session.settings.update"
           | "approval.lease.create"
           | "approval.lease.revoke"
-          | "approval.emergency_stop";
+          | "approval.emergency_stop"
+          | "attachment.upload.begin"
+          | "attachment.upload.complete"
+          | "attachment.delete";
       }
     >,
   ) => {
@@ -1152,6 +1161,88 @@ export async function startCoreServer(
         );
         return;
       }
+      case "attachments.list": {
+        send(
+          socket,
+          makeEnvelope("attachments.snapshot", {
+            sessionId: message.payload.sessionId,
+            attachments: store.inputAttachments(
+              message.payload.sessionId,
+              message.payload.deviceId,
+            ),
+          }),
+        );
+        return;
+      }
+      case "attachment.upload.begin": {
+        const result = await store.beginInputAttachment(
+          message,
+          (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        );
+        if (result.kind === "conflict") sendConflict(socket, message);
+        else send(socket, result.result);
+        return;
+      }
+      case "attachment.upload.chunk": {
+        try {
+          const progress = await store.appendInputAttachmentChunk(message);
+          send(
+            socket,
+            makeEnvelope("attachment.upload.progress", {
+              sessionId: message.payload.sessionId,
+              attachmentId: message.payload.attachmentId,
+              ...progress,
+            }),
+          );
+        } catch (error) {
+          if (!(error instanceof InputAttachmentMutationError)) throw error;
+          send(
+            socket,
+            makeEnvelope("protocol.error", {
+              error: protocolError(error.code, error.message, {
+                sessionId: message.payload.sessionId,
+              }),
+            }),
+          );
+        }
+        return;
+      }
+      case "attachment.upload.complete": {
+        const result = await store.completeInputAttachment(
+          message,
+          (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        );
+        if (result.kind === "conflict") sendConflict(socket, message);
+        else send(socket, result.result);
+        return;
+      }
+      case "attachment.delete": {
+        const result = await store.deleteInputAttachment(
+          message,
+          (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        );
+        if (result.kind === "conflict") sendConflict(socket, message);
+        else send(socket, result.result);
+        return;
+      }
       case "turn.submit": {
         const prior = store.priorCommand(message);
         if (prior?.kind === "same") {
@@ -1185,6 +1276,32 @@ export async function startCoreServer(
           return;
         }
         const turnId = `turn-${crypto.randomUUID()}`;
+        const attachmentIds = message.payload.attachmentIds ?? [];
+        const candidateAttachments = store.inputAttachmentsById(
+          message.payload.sessionId,
+          attachmentIds,
+        );
+        if (
+          candidateAttachments.length === attachmentIds.length &&
+          !supportsTurnAttachments(
+            candidateAttachments,
+            store.sessionSettings(message.payload.sessionId)?.settings,
+            providerFleetSnapshot,
+          )
+        ) {
+          const unsupported = await store.recordRejectedCommand(
+            message,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "ATTACHMENT_CAPABILITY_UNAVAILABLE",
+              message: "Selected provider/model does not support these attachments.",
+            }),
+          );
+          if (unsupported.kind === "conflict") sendConflict(socket, message);
+          else send(socket, unsupported.result);
+          return;
+        }
         const result = await store.acceptTurn({
           message,
           turnId,
@@ -1209,6 +1326,13 @@ export async function startCoreServer(
             code: "SESSION_SETTINGS_CONFLICT",
             message: "Turn settings changed; refresh before submitting.",
           }),
+          attachmentRejection: (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
         });
         if (result.kind === "conflict") {
           sendConflict(socket, message);
@@ -1218,6 +1342,62 @@ export async function startCoreServer(
         if (result.kind !== "new" || result.result.type !== "command.accepted") return;
         if (result.durableEvent !== undefined) broadcastDurable(result.durableEvent);
         await store.markDispatched(message.payload.commandId);
+        const connectorAttachments = (result.turnAttachments ?? []).map(
+          ({ attachment, content }) => {
+            const transferId = `transfer-${crypto.randomUUID()}`;
+            const transfer = {
+              attachmentId: attachment.attachmentId,
+              transferId,
+              name: attachment.name,
+              kind: attachment.kind as "text" | "image",
+              mediaType: attachment.mediaType,
+              byteLength: attachment.byteLength,
+              sha256: attachment.sha256,
+            };
+            const chunkCount = Math.ceil(
+              content.byteLength / INPUT_ATTACHMENT_CHUNK_BYTES,
+            );
+            sendConnector(
+              connection.socket,
+              makeEnvelope("connector.attachment.begin", {
+                sessionId: message.payload.sessionId,
+                turnId,
+                transfer,
+                chunkCount,
+                runtimeId: connection.runtime.runtimeId,
+                runtimeGeneration: connection.runtime.generation,
+              }),
+            );
+            for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+              const start = chunkIndex * INPUT_ATTACHMENT_CHUNK_BYTES;
+              sendConnector(
+                connection.socket,
+                makeEnvelope("connector.attachment.chunk", {
+                  sessionId: message.payload.sessionId,
+                  turnId,
+                  transferId,
+                  chunkIndex,
+                  contentBase64: content
+                    .subarray(start, start + INPUT_ATTACHMENT_CHUNK_BYTES)
+                    .toString("base64"),
+                  runtimeId: connection.runtime.runtimeId,
+                  runtimeGeneration: connection.runtime.generation,
+                }),
+              );
+            }
+            sendConnector(
+              connection.socket,
+              makeEnvelope("connector.attachment.complete", {
+                sessionId: message.payload.sessionId,
+                turnId,
+                transferId,
+                runtimeId: connection.runtime.runtimeId,
+                runtimeGeneration: connection.runtime.generation,
+              }),
+            );
+            return transfer;
+          },
+        );
         sendConnector(
           connection.socket,
           makeEnvelope("connector.turn.start", {
@@ -1230,6 +1410,7 @@ export async function startCoreServer(
             runtimeGeneration: connection.runtime.generation,
             settingsRevision: result.turnSettings?.revision,
             effectiveSettings: result.turnSettings?.settings,
+            attachments: connectorAttachments,
           }),
         );
         return;
@@ -1784,6 +1965,7 @@ export async function startCoreServer(
   }
 
   const sweepApprovals = async () => {
+    await store.sweepInputAttachments();
     const leaseSnapshots = await store.sweepApprovalLeases();
     for (const snapshot of leaseSnapshots) {
       publishLeaseSnapshot(snapshot.sessionId, snapshot);
@@ -1938,6 +2120,42 @@ export async function startCoreServer(
       await store.close();
     },
   };
+}
+
+function supportsTurnAttachments(
+  attachments: readonly InputAttachment[],
+  settings: SessionSettings | undefined,
+  fleet: ProviderFleetSnapshot | undefined,
+) {
+  if (attachments.length === 0) return true;
+  if (settings === undefined) return false;
+  const provider = fleet?.providers.find(
+    (candidate) => candidate.providerId === settings.providerId,
+  );
+  if (
+    provider === undefined ||
+    provider.adapterSupport !== "remote_control" ||
+    !["live", "local"].includes(provider.freshness)
+  ) {
+    return false;
+  }
+  const hasCapability = (key: "text_input" | "image_input") =>
+    provider.capabilities.some(
+      (capability) => capability.key === key && capability.state === "supported",
+    );
+  const selectedModel =
+    provider.models.find((model) => model.modelId === settings.model) ??
+    provider.models.find((model) => model.isDefault);
+  return attachments.every((attachment) => {
+    if (attachment.kind === "text") return hasCapability("text_input");
+    if (attachment.kind === "image") {
+      return (
+        hasCapability("image_input") &&
+        selectedModel?.inputModalities.includes("image") === true
+      );
+    }
+    return false;
+  });
 }
 
 function hasCapability(header: string | undefined, expected: string) {

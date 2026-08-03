@@ -12,6 +12,12 @@ export const MAX_ARTIFACT_CHUNKS = Math.ceil(
   MAX_ARTIFACT_BYTES / ARTIFACT_CHUNK_BYTES,
 );
 export const MAX_COMPLETED_MESSAGE_BYTES = 512 * 1024;
+export const INPUT_ATTACHMENT_CHUNK_BYTES = 128 * 1024;
+export const MAX_INPUT_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+export const MAX_INPUT_ATTACHMENTS_PER_TURN = 8;
+export const MAX_INPUT_ATTACHMENT_CHUNKS = Math.ceil(
+  MAX_INPUT_ATTACHMENT_BYTES / INPUT_ATTACHMENT_CHUNK_BYTES,
+);
 export const SAFE_ARTIFACT_MEDIA_TYPES = [
   "text/plain",
   "text/plain; charset=utf-8",
@@ -61,6 +67,14 @@ const base64Chunk = z
   .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u)
   .refine((value) => decodedBase64Length(value) <= ARTIFACT_CHUNK_BYTES, {
     message: `Decoded artifact chunk exceeds ${ARTIFACT_CHUNK_BYTES} bytes`,
+  });
+const inputAttachmentChunk = z
+  .string()
+  .min(4)
+  .max(Math.ceil(INPUT_ATTACHMENT_CHUNK_BYTES / 3) * 4)
+  .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u)
+  .refine((value) => decodedBase64Length(value) <= INPUT_ATTACHMENT_CHUNK_BYTES, {
+    message: `Decoded input attachment chunk exceeds ${INPUT_ATTACHMENT_CHUNK_BYTES} bytes`,
   });
 
 const envelope = <T extends string, S extends z.ZodTypeAny>(
@@ -569,6 +583,58 @@ export const ArtifactReferenceSchema = z.object({
   expiresAt: timestamp.optional(),
 });
 
+export const InputAttachmentKindSchema = z.enum(["text", "image", "document", "archive"]);
+export const InputAttachmentMediaTypeSchema = z.enum([
+  "text/plain",
+  "text/markdown",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "application/zip",
+]);
+export const InputAttachmentStatusSchema = z.enum([
+  "uploading",
+  "ready",
+  "referenced",
+  "rejected",
+  "expired",
+  "deleted",
+]);
+export const InputAttachmentSchema = z
+  .object({
+    attachmentId: id,
+    sessionId: id,
+    ownerDeviceId: id,
+    name: displayText(255).refine(
+      (value) => !/[\\/]/u.test(value) && value !== "." && value !== "..",
+      { message: "attachment name must not contain a path" },
+    ),
+    kind: InputAttachmentKindSchema,
+    mediaType: InputAttachmentMediaTypeSchema,
+    byteLength: z.number().int().positive().max(MAX_INPUT_ATTACHMENT_BYTES),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    status: InputAttachmentStatusSchema,
+    previewAvailable: z.boolean(),
+    createdAt: timestamp,
+    expiresAt: timestamp,
+    referencedTurnId: id.nullable(),
+  })
+  .strict();
+
+export const ConnectorInputAttachmentReferenceSchema = z
+  .object({
+    attachmentId: id,
+    transferId: id,
+    name: displayText(255),
+    kind: z.enum(["text", "image"]),
+    mediaType: InputAttachmentMediaTypeSchema,
+    byteLength: z.number().int().positive().max(MAX_INPUT_ATTACHMENT_BYTES),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
+
 export const DiffReferenceSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("inline"),
@@ -673,6 +739,7 @@ export const TurnSchema = z.object({
   eventSeq: z.number().int().nonnegative().optional(),
   settingsRevision: z.number().int().nonnegative().optional(),
   effectiveSettings: SessionSettingsSchema.optional(),
+  attachmentIds: z.array(id).max(MAX_INPUT_ATTACHMENTS_PER_TURN).optional(),
 });
 
 export const AssistantMessageSchema = z.object({
@@ -952,6 +1019,67 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
         prompt: z.string().trim().min(1).max(20_000),
         deviceId: id.optional(),
         settingsRevision: z.number().int().nonnegative().optional(),
+        attachmentIds: z
+          .array(id)
+          .max(MAX_INPUT_ATTACHMENTS_PER_TURN)
+          .refine((values) => new Set(values).size === values.length, {
+            message: "attachment IDs must be unique",
+          })
+          .optional(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "attachments.list",
+    z.object({ sessionId: id, deviceId: id }).strict(),
+  ),
+  envelope(
+    "attachment.upload.begin",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        name: InputAttachmentSchema.shape.name,
+        kind: InputAttachmentKindSchema,
+        mediaType: InputAttachmentMediaTypeSchema,
+        byteLength: z.number().int().positive().max(MAX_INPUT_ATTACHMENT_BYTES),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+        chunkCount: z.number().int().positive().max(MAX_INPUT_ATTACHMENT_CHUNKS),
+      })
+      .strict(),
+  ),
+  envelope(
+    "attachment.upload.chunk",
+    z
+      .object({
+        sessionId: id,
+        deviceId: id,
+        attachmentId: id,
+        chunkIndex: z.number().int().nonnegative().max(MAX_INPUT_ATTACHMENT_CHUNKS - 1),
+        contentBase64: inputAttachmentChunk,
+      })
+      .strict(),
+  ),
+  envelope(
+    "attachment.upload.complete",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        attachmentId: id,
+      })
+      .strict(),
+  ),
+  envelope(
+    "attachment.delete",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        attachmentId: id,
       })
       .strict(),
   ),
@@ -1048,6 +1176,36 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
   envelope(
     "approval.lease.snapshot",
     z.object({ snapshot: ApprovalLeaseSnapshotSchema }).strict(),
+  ),
+  envelope(
+    "attachments.snapshot",
+    z
+      .object({
+        sessionId: id,
+        attachments: z.array(InputAttachmentSchema).max(256),
+      })
+      .strict(),
+  ),
+  envelope(
+    "attachment.command.accepted",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        attachment: InputAttachmentSchema,
+      })
+      .strict(),
+  ),
+  envelope(
+    "attachment.upload.progress",
+    z
+      .object({
+        sessionId: id,
+        attachmentId: id,
+        receivedChunks: z.number().int().nonnegative(),
+        chunkCount: z.number().int().positive().max(MAX_INPUT_ATTACHMENT_CHUNKS),
+      })
+      .strict(),
   ),
   envelope(
     "providers.snapshot",
@@ -1214,6 +1372,49 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
         runtimeGeneration: z.number().int().positive(),
         settingsRevision: z.number().int().nonnegative().optional(),
         effectiveSettings: SessionSettingsSchema.optional(),
+        attachments: z
+          .array(ConnectorInputAttachmentReferenceSchema)
+          .max(MAX_INPUT_ATTACHMENTS_PER_TURN)
+          .optional(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "connector.attachment.begin",
+    z
+      .object({
+        sessionId: id,
+        turnId: id,
+        transfer: ConnectorInputAttachmentReferenceSchema,
+        chunkCount: z.number().int().positive().max(MAX_INPUT_ATTACHMENT_CHUNKS),
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "connector.attachment.chunk",
+    z
+      .object({
+        sessionId: id,
+        turnId: id,
+        transferId: id,
+        chunkIndex: z.number().int().nonnegative().max(MAX_INPUT_ATTACHMENT_CHUNKS - 1),
+        contentBase64: inputAttachmentChunk,
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "connector.attachment.complete",
+    z
+      .object({
+        sessionId: id,
+        turnId: id,
+        transferId: id,
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
       })
       .strict(),
   ),
@@ -1465,6 +1666,10 @@ export type Approval = z.infer<typeof ApprovalSchema>;
 export type ApprovalLease = z.infer<typeof ApprovalLeaseSchema>;
 export type ApprovalLeaseSnapshot = z.infer<typeof ApprovalLeaseSnapshotSchema>;
 export type ArtifactReference = z.infer<typeof ArtifactReferenceSchema>;
+export type InputAttachment = z.infer<typeof InputAttachmentSchema>;
+export type ConnectorInputAttachmentReference = z.infer<
+  typeof ConnectorInputAttachmentReferenceSchema
+>;
 export type SessionSnapshot = z.infer<typeof SessionSnapshotSchema>;
 export type ClientEnvelope = z.infer<typeof ClientEnvelopeSchema>;
 export type ServerEnvelope = z.infer<typeof ServerEnvelopeSchema>;

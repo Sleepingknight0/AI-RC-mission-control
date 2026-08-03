@@ -79,7 +79,7 @@ try {
         throw "Clean production status was not running: $statusJson"
     }
     $health = Invoke-RestMethod -Uri ($status.url + '/health') -TimeoutSec 5
-    if ($health.databaseSchemaVersion -ne 9 -or -not $health.connectorConnected) {
+    if ($health.databaseSchemaVersion -ne 10 -or -not $health.connectorConnected) {
         throw 'Clean production install did not initialize the expected schemas.'
     }
     $page = Invoke-WebRequest -Uri ($status.url + '/') `
@@ -103,7 +103,7 @@ try {
     $migrationJson = & (Join-Path $cleanScripts 'Migrate-Aicl.ps1') `
         -ConfigPath $configPath
     $migration = (($migrationJson -join [Environment]::NewLine) | ConvertFrom-Json)
-    if ($migration.migrated -or $migration.coreSchemaVersion -ne 9 -or
+    if ($migration.migrated -or $migration.coreSchemaVersion -ne 10 -or
         $migration.connectorSchemaVersion -ne 3) {
         throw 'Clean compiled migration was not repeat-safe at the expected schemas.'
     }

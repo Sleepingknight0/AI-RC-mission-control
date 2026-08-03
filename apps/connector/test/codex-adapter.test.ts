@@ -99,6 +99,33 @@ describe("Codex adapter normalization", () => {
     expect(binding?.payload.providerSessionId).toBe("fake-thread");
   });
 
+  it("translates verified text and local-image attachments into Codex inputs", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+    await adapter.startTurn(
+      startCommand("attachments"),
+      (event) => events.push(event),
+      [
+        {
+          attachmentId: "attachment-text",
+          name: "notes.txt",
+          kind: "text",
+          mediaType: "text/plain",
+          text: "bounded context",
+        },
+        {
+          attachmentId: "attachment-image",
+          name: "diagram.png",
+          kind: "image",
+          mediaType: "image/png",
+          path: resolve("test/input.png"),
+        },
+      ],
+    );
+
+    expect(events.at(-1)?.type).toBe("connector.turn.completed");
+  });
+
   it("revalidates and forwards the immutable model and reasoning snapshot", async () => {
     const adapter = provider();
     const events: ConnectorEnvelope[] = [];

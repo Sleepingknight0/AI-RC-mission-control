@@ -20,6 +20,7 @@ import {
   type SessionPrepareCommand,
   type TurnInterruptCommand,
   type TurnStartCommand,
+  type PreparedInputAttachment,
 } from "../provider.js";
 import { OutputBatcher } from "../output-batcher.js";
 import { canonicalProjectRoot } from "../project-root.js";
@@ -407,7 +408,11 @@ export class CodexProvider implements ConnectorProvider {
     });
   }
 
-  async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {
+  async startTurn(
+    command: TurnStartCommand,
+    emit: ConnectorEmit,
+    attachments: readonly PreparedInputAttachment[] = [],
+  ) {
     if (this.#active !== undefined || this.#preparing) {
       throw new Error("Codex provider already has an active Turn");
     }
@@ -526,16 +531,31 @@ export class CodexProvider implements ConnectorProvider {
         await rpc.request("turn/start", {
           threadId: providerSessionId,
           clientUserMessageId: command.payload.commandId,
-          input:
-            settings === undefined
-              ? [{ type: "text", text: command.payload.prompt }]
+          input: [
+            ...(settings === undefined
+              ? []
               : [
                   {
-                    type: "text",
+                    type: "text" as const,
                     text: executionModeInstruction(settings.executionMode),
                   },
-                  { type: "text", text: command.payload.prompt },
-                ],
+                ]),
+            ...attachments.map((attachment) =>
+              attachment.kind === "text"
+                ? {
+                    type: "text" as const,
+                    text:
+                      `<aicl-input-attachment name=${JSON.stringify(attachment.name)} ` +
+                      `media-type=${JSON.stringify(attachment.mediaType)}>\n` +
+                      `${attachment.text}\n</aicl-input-attachment>`,
+                  }
+                : {
+                    type: "localImage" as const,
+                    path: attachment.path,
+                  },
+            ),
+            { type: "text" as const, text: command.payload.prompt },
+          ],
           ...(effectiveProjectPath === undefined
             ? {}
             : { cwd: effectiveProjectPath }),

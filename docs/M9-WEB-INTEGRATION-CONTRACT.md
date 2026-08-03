@@ -116,7 +116,31 @@ state is authoritative and Core restart revokes active authority.
 
 ## Attachments
 
-Upload begin returns attachment ID, fixed chunk bytes/count, and expiry. Chunk acknowledgement is per index. Completion returns ready metadata (name, kind, media type, bytes, hash, preview availability). A Turn references ready IDs; reconnect never submits them. Unsupported kind, MIME mismatch, expiry, ownership mismatch, and hash failure use distinct stable errors.
+`attachment.upload.begin` carries command/Session/device, a basename-only display
+name, kind, allowlisted media type, byte length, SHA-256, and exact 128 KiB chunk
+count. `attachment.command.accepted` returns the Core-allocated opaque ID,
+`uploading` metadata, and 24-hour expiry. Each `attachment.upload.chunk` carries
+only Session/device/ID/index/canonical base64; `attachment.upload.progress`
+returns cumulative received and declared chunk counts. A changed duplicate index
+is an error; a byte-identical retry is idempotent.
+
+`attachment.upload.complete` is an idempotent command and returns the same
+accepted envelope with `ready` metadata after length/hash/UTF-8 or image-magic
+verification. `attachments.list` returns at most 256 non-deleted rows owned by
+the exact Session/device. `attachment.delete` fails for a referenced row.
+`turn.submit.attachmentIds` is optional, unique, and limited to eight; non-empty
+references require `deviceId` and the displayed settings revision. Acceptance
+atomically makes each row single-use (`referenced`) and records the IDs on the
+Turn snapshot. Browser reconnect retrieves metadata but never sends a Turn.
+
+Supported Codex inputs are UTF-8 `text/plain`/`text/markdown` and verified
+PNG/JPEG/GIF/WebP only when live provider plus selected/default model evidence
+advertises the necessary input capability. PDF/ZIP/document/archive and stale or
+unsupported provider inputs reject with `ATTACHMENT_CAPABILITY_UNAVAILABLE` or a
+more specific upload validation code. Web never receives a local path or byte
+content. It must keep drafts per Session/device, upload before send, display the
+server status/error, and never retry completion/Turn with a new command ID
+without operator action.
 
 ## Terminal activity
 

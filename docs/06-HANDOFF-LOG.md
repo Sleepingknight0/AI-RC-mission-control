@@ -1735,3 +1735,41 @@ frozen Web diff                       -> no changes
 
 M9.8 adds the managed attachment upload/chunk/verification lifecycle and
 provider capability enforcement without editing the frozen Web.
+
+---
+
+### 2026-08-03 13:20 — Codex — M9.8 managed input attachments
+
+**Outcome**
+
+- Added Core schema 10 for opaque Session/device-owned uploads, bounded chunks,
+  verified bytes, expiry, single-use Turn bindings, and command idempotence.
+- Enforced 8 MiB/file, eight/Turn, 32 MiB active/Session, canonical base64,
+  exact chunk length/count, SHA-256, UTF-8/no-NUL text, and PNG/JPEG/GIF/WebP
+  magic agreement. Cross-device, cross-Session, incomplete, expired, changed
+  duplicate, MIME-spoofed, and reused attachments fail closed.
+- Added a checksummed Core-to-Connector transfer. Connector re-verifies content,
+  materializes images below a private per-process temporary root with exclusive
+  files, translates bounded text, and deletes materialized data after settlement.
+- Codex receives `localImage` only when live provider/model evidence advertises
+  image input. Documents/archives and unsupported provider inputs remain disabled.
+- Added reconnect coverage proving metadata survives while no draft is
+  automatically submitted. Frozen Web files and Grok checkpoint remain untouched.
+
+**Verification**
+
+```text
+protocol attachment/validation tests     -> 30 passed package total
+Core attachment/database targeted tests  -> 6 passed
+Connector materializer/adapter tests      -> 14 passed targeted
+Core package                              -> 51 passed, 1 real test skipped
+Connector package                         -> 43 passed
+typecheck / lint / frozen Web diff         -> passed / no frozen changes
+full repository/production gate           -> 167 passed, lifecycle gates passed
+real Codex E2E                             -> skipped (opt-in credentials/quota gate)
+```
+
+**Next**
+
+M9.9 enriches normalized terminal/activity metadata and bounded redacted output
+without adding PTY, arbitrary shell, or raw filesystem access.

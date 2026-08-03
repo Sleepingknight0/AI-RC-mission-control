@@ -16,7 +16,7 @@
 - [x] M9.5 settings compare-and-set and effective Turn snapshots
 - [x] M9.6 ask/plan/auto semantics
 - [x] M9.7 server policy enforcement and scoped Full Auto leases
-- [ ] M9.8 managed attachment lifecycle and Codex translation
+- [x] M9.8 managed attachment lifecycle and Codex translation
 - [ ] M9.9 bounded terminal/activity contract
 - [ ] M9.10 security, recovery, fault, and performance gate
 - [ ] M9.11 non-visual final gate and Grok handoff

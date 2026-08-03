@@ -26,6 +26,21 @@ export interface ProviderSessionPreparation {
   reasoningLevel: string | null;
 }
 export type ConnectorEmit = (message: ConnectorEnvelope) => void;
+export type PreparedInputAttachment =
+  | {
+      attachmentId: string;
+      name: string;
+      kind: "text";
+      mediaType: "text/plain" | "text/markdown";
+      text: string;
+    }
+  | {
+      attachmentId: string;
+      name: string;
+      kind: "image";
+      mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+      path: string;
+    };
 
 export class ProviderLostError extends Error {
   constructor(message = "Provider process was lost") {
@@ -38,7 +53,11 @@ export interface ConnectorProvider {
   prepareSession?(
     command: SessionPrepareCommand,
   ): Promise<ProviderSessionPreparation>;
-  startTurn(command: TurnStartCommand, emit: ConnectorEmit): Promise<void>;
+  startTurn(
+    command: TurnStartCommand,
+    emit: ConnectorEmit,
+    attachments?: readonly PreparedInputAttachment[],
+  ): Promise<void>;
   interrupt(command: TurnInterruptCommand): Promise<void>;
   resolveApproval(command: ApprovalResolveCommand): Promise<void>;
   onLost(listener: () => void): () => void;
