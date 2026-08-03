@@ -415,6 +415,21 @@ export const SessionOperationalStateSchema = z.enum([
   "outcome_unknown",
 ]);
 
+export const SessionSourceSchema = z.enum([
+  "aicl",
+  "provider_native",
+  "imported",
+]);
+export const ExecutionModeSchema = z.enum(["ask", "plan", "auto"]);
+export const ApprovalPolicySchema = z.enum([
+  "review",
+  "balanced",
+  "workspace_auto",
+  "full_auto_lease",
+]);
+export const SandboxPolicySchema = z.enum(["read_only", "workspace_write"]);
+export const NetworkPolicySchema = z.enum(["denied", "restricted"]);
+
 export const ActivityStatusSchema = z.enum([
   "running",
   "completed",
@@ -548,6 +563,59 @@ export const SessionSummarySchema = z.object({
   lastEventSeq: z.number().int().nonnegative(),
 });
 
+export const SessionSummaryV2Schema = z
+  .object({
+    sessionId: id,
+    title: displayText(160),
+    providerId: providerSlug,
+    accountId: providerSlug.nullable(),
+    providerSessionId: id.nullable(),
+    source: SessionSourceSchema,
+    projectPath: z.string().max(4_096).nullable(),
+    projectName: displayText(160).nullable(),
+    branch: displayText(512).nullable(),
+    model: displayText(128).nullable(),
+    reasoningLevel: displayText(64).nullable(),
+    executionMode: ExecutionModeSchema,
+    approvalPolicy: ApprovalPolicySchema,
+    sandboxPolicy: SandboxPolicySchema,
+    networkPolicy: NetworkPolicySchema,
+    state: SessionOperationalStateSchema,
+    runtimeStatus: RuntimeStatusSchema.nullable(),
+    activeTurnId: id.nullable(),
+    pendingApprovalCount: z.number().int().nonnegative(),
+    turnCount: z.number().int().nonnegative(),
+    unreadCount: z.number().int().nonnegative(),
+    lastActivityAt: timestamp,
+    lastEventSeq: z.number().int().nonnegative(),
+    canResume: z.boolean(),
+    canControl: z.boolean(),
+    pinned: z.boolean(),
+    archived: z.boolean(),
+    revision: z.number().int().nonnegative(),
+    settingsRevision: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const SessionCatalogFilterSchema = z
+  .object({
+    search: z.string().trim().max(200).nullable(),
+    providerIds: z.array(providerSlug).max(16),
+    accountIds: z.array(providerSlug).max(32),
+    states: z.array(SessionOperationalStateSchema).max(
+      SessionOperationalStateSchema.options.length,
+    ),
+    project: z.string().trim().max(4_096).nullable(),
+    archived: z.enum(["exclude", "include", "only"]),
+    pinned: z.boolean().nullable(),
+  })
+  .strict()
+  .superRefine((filters, context) => {
+    addDuplicateIssue(filters.providerIds, "provider filter", context);
+    addDuplicateIssue(filters.accountIds, "account filter", context);
+    addDuplicateIssue(filters.states, "state filter", context);
+  });
+
 export const SessionSnapshotSchema = z.object({
   sessionId: id,
   revision: z.number().int().nonnegative(),
@@ -577,7 +645,66 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
     }),
   ),
   envelope("sessions.list", z.object({}).strict()),
+  envelope(
+    "sessions.catalog.list",
+    z
+      .object({
+        requestId: id,
+        deviceId: id,
+        pageSize: z.number().int().min(1).max(250),
+        cursor: z.string().max(1_024).nullable(),
+        filters: SessionCatalogFilterSchema,
+      })
+      .strict(),
+  ),
   envelope("providers.refresh", z.object({}).strict()),
+  envelope(
+    "session.rename",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        expectedRevision: z.number().int().nonnegative(),
+        title: displayText(160),
+      })
+      .strict(),
+  ),
+  envelope(
+    "session.pin",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        expectedRevision: z.number().int().nonnegative(),
+        pinned: z.boolean(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "session.archive",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        expectedRevision: z.number().int().nonnegative(),
+        archived: z.boolean(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "session.read.mark",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        upToEventSeq: z.number().int().nonnegative(),
+      })
+      .strict(),
+  ),
   envelope(
     "turn.submit",
     z.object({
@@ -631,6 +758,29 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
   envelope(
     "sessions.snapshot",
     z.object({ sessions: z.array(SessionSummarySchema) }),
+  ),
+  envelope(
+    "sessions.catalog.snapshot",
+    z
+      .object({
+        requestId: id,
+        catalogRevision: z.number().int().positive(),
+        generatedAt: timestamp,
+        sessions: z.array(SessionSummaryV2Schema).max(250),
+        nextCursor: z.string().max(1_024).nullable(),
+        total: z.number().int().nonnegative(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "session.command.accepted",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        revision: z.number().int().nonnegative(),
+      })
+      .strict(),
   ),
   envelope(
     "providers.snapshot",
@@ -949,6 +1099,8 @@ export type Turn = z.infer<typeof TurnSchema>;
 export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
 export type Runtime = z.infer<typeof RuntimeSchema>;
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
+export type SessionSummaryV2 = z.infer<typeof SessionSummaryV2Schema>;
+export type SessionCatalogFilter = z.infer<typeof SessionCatalogFilterSchema>;
 export type ToolActivity = z.infer<typeof ToolActivitySchema>;
 export type FileChange = z.infer<typeof FileChangeSchema>;
 export type Approval = z.infer<typeof ApprovalSchema>;

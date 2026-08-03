@@ -20,7 +20,26 @@ A discovered entry includes provider/account/native IDs, title/preview, project 
 - `session.rename`, `session.pin`, and `session.archive` use expected Session revision.
 - `sessions.catalog.list` supports bounded cursor pagination, search, provider/account/state/project filters, archived selection, and deterministic `lastActivityAt DESC, sessionId ASC` ordering.
 
-The first page defaults to 100 and the hard page size is 250. Search is literal case-insensitive text over normalized title, provider/account labels, project label, branch, and IDs. Device-relative unread state uses a separate read cursor and is not stored as a global Session property.
+Web should request 100 rows for its first page; Core enforces an explicit page
+size with a hard maximum of 250. Search is literal case-insensitive text over
+normalized title, provider/account labels, project label, branch, and IDs.
+Device-relative unread state uses a separate read cursor and is not stored as a
+global Session property.
+
+## Implemented M9.3 behavior
+
+`sessions.catalog.list` carries a request ID, device ID, explicit page size,
+opaque cursor, and strict filters. Core orders by `lastActivityAt DESC,
+sessionId ASC`. A cursor embeds the current catalog revision and is rejected as
+stale after any Session mutation rather than returning a page with omissions or
+duplicates. The current response contains AICL/imported rows only; native rows
+arrive from M9.4 discovery and remain separately identified.
+
+`session.rename`, `session.pin`, and `session.archive` use Session metadata CAS.
+They return `session.command.accepted` or a stable rejection; archive fails while
+a Turn runs. `session.read.mark` advances a monotonic per-device cursor no
+further than the durable event sequence. Metadata/read actions are idempotent
+and append bounded audit rows. Existing M8 `sessions.snapshot` remains valid.
 
 ## Codex discovery
 

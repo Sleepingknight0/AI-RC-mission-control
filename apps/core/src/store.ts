@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
@@ -23,12 +23,14 @@ import {
   type Runtime,
   type ServerEnvelope,
   type SessionSnapshot,
+  type SessionCatalogFilter,
   type SessionSummary,
+  type SessionSummaryV2,
   type ToolActivity,
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 5;
+export const CORE_SCHEMA_VERSION = 6;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -45,7 +47,21 @@ type MutationResult =
 
 type MutatingClientEnvelope = Extract<
   ClientEnvelope,
-  { type: "turn.submit" | "turn.interrupt" | "approval.resolve" }
+  {
+    type:
+      | "turn.submit"
+      | "turn.interrupt"
+      | "approval.resolve"
+      | "session.rename"
+      | "session.pin"
+      | "session.archive"
+      | "session.read.mark";
+  }
+>;
+
+type SessionMetadataCommand = Extract<
+  ClientEnvelope,
+  { type: "session.rename" | "session.pin" | "session.archive" }
 >;
 
 export type ApprovalResolutionResult =
@@ -97,6 +113,66 @@ interface SessionSummaryRow {
   cwd: string | null;
   turn_count: number;
 }
+
+interface SessionCatalogRow {
+  id: string;
+  title: string;
+  source: "aicl" | "imported";
+  provider_session_id: string | null;
+  session_revision: number;
+  pinned: number;
+  archived: number;
+  updated_at: string;
+  last_event_seq: number;
+  provider_id: string;
+  account_id: string | null;
+  model: string | null;
+  reasoning_level: string | null;
+  execution_mode: SessionSummaryV2["executionMode"];
+  approval_policy: SessionSummaryV2["approvalPolicy"];
+  sandbox_policy: SessionSummaryV2["sandboxPolicy"];
+  network_policy: SessionSummaryV2["networkPolicy"];
+  project_path: string | null;
+  branch: string | null;
+  settings_revision: number;
+  active_turn_id: string | null;
+  last_turn_state: Turn["status"] | null;
+  pending_approval_count: number;
+  runtime_state: Runtime["status"] | null;
+  turn_count: number;
+  unread_count: number;
+  operational_state: SessionSummaryV2["state"];
+}
+
+interface SessionCatalogCursor {
+  version: 1;
+  catalogRevision: number;
+  lastActivityAt: string;
+  sessionId: string;
+}
+
+export interface SessionCatalogQuery {
+  requestId: string;
+  deviceId: string;
+  pageSize: number;
+  cursor: string | null;
+  filters: SessionCatalogFilter;
+}
+
+export type SessionCatalogResult =
+  | {
+      ok: true;
+      requestId: string;
+      catalogRevision: number;
+      generatedAt: string;
+      sessions: SessionSummaryV2[];
+      nextCursor: string | null;
+      total: number;
+    }
+  | {
+      ok: false;
+      code: "SESSION_CATALOG_CURSOR_INVALID" | "SESSION_CATALOG_CURSOR_STALE";
+    };
 
 interface TurnRow {
   id: string;
@@ -337,6 +413,312 @@ export class CoreDatabase {
     }));
   }
 
+  hasSession(sessionId: string) {
+    return this.#database
+      .prepare("SELECT 1 AS present FROM sessions WHERE id = ?")
+      .get(sessionId) !== undefined;
+  }
+
+  sessionCatalog(
+    query: SessionCatalogQuery,
+    canControlProvider: (providerId: string, accountId: string | null) => boolean,
+  ): SessionCatalogResult {
+    const catalogRevision = this.#catalogRevision();
+    const cursor = decodeCatalogCursor(query.cursor);
+    if (query.cursor !== null && cursor === null) {
+      return { ok: false, code: "SESSION_CATALOG_CURSOR_INVALID" };
+    }
+    if (cursor !== null && cursor.catalogRevision !== catalogRevision) {
+      return { ok: false, code: "SESSION_CATALOG_CURSOR_STALE" };
+    }
+
+    const filterClauses: string[] = [];
+    const filterValues: SQLInputValue[] = [];
+    const filters = query.filters;
+    if (filters.archived === "exclude") filterClauses.push("catalog.archived = 0");
+    if (filters.archived === "only") filterClauses.push("catalog.archived = 1");
+    if (filters.pinned !== null) {
+      filterClauses.push("catalog.pinned = ?");
+      filterValues.push(filters.pinned ? 1 : 0);
+    }
+    addInFilter(filterClauses, filterValues, "catalog.provider_id", filters.providerIds);
+    addInFilter(filterClauses, filterValues, "catalog.account_id", filters.accountIds);
+    addInFilter(filterClauses, filterValues, "catalog.operational_state", filters.states);
+    if (filters.project !== null && filters.project.length > 0) {
+      filterClauses.push(
+        "LOWER(COALESCE(catalog.project_path, '')) LIKE ? ESCAPE '\\'",
+      );
+      filterValues.push(`%${escapeLike(filters.project.toLowerCase())}%`);
+    }
+    if (filters.search !== null && filters.search.length > 0) {
+      const search = `%${escapeLike(filters.search.toLowerCase())}%`;
+      filterClauses.push(
+        `(LOWER(catalog.title) LIKE ? ESCAPE '\\'
+          OR LOWER(catalog.id) LIKE ? ESCAPE '\\'
+          OR LOWER(catalog.provider_id) LIKE ? ESCAPE '\\'
+          OR LOWER(COALESCE(catalog.account_id, '')) LIKE ? ESCAPE '\\'
+          OR LOWER(COALESCE(catalog.provider_session_id, '')) LIKE ? ESCAPE '\\'
+          OR LOWER(COALESCE(catalog.project_path, '')) LIKE ? ESCAPE '\\'
+          OR LOWER(COALESCE(catalog.branch, '')) LIKE ? ESCAPE '\\')`,
+      );
+      filterValues.push(search, search, search, search, search, search, search);
+    }
+    const filterSql = filterClauses.length === 0
+      ? ""
+      : `WHERE ${filterClauses.join(" AND ")}`;
+    const catalogSql = `WITH catalog AS (
+      SELECT s.id, s.title, s.source, s.provider_session_id,
+             s.session_revision, s.pinned, s.archived, s.updated_at,
+             s.last_event_seq, settings.provider_id, settings.account_id,
+             settings.model, settings.reasoning_level, settings.execution_mode,
+             settings.approval_policy, settings.sandbox_policy,
+             settings.network_policy, settings.project_path, settings.branch,
+             settings.revision AS settings_revision,
+             (SELECT t.id FROM turns t
+               WHERE t.session_id = s.id AND t.state = 'running'
+               ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS active_turn_id,
+             (SELECT t.state FROM turns t
+               WHERE t.session_id = s.id
+               ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS last_turn_state,
+             (SELECT COUNT(*) FROM approval_requests a
+               WHERE a.session_id = s.id AND a.state = 'pending') AS pending_approval_count,
+             (SELECT r.state FROM runtimes r
+               WHERE r.session_id = s.id
+               ORDER BY r.updated_at DESC, r.generation DESC LIMIT 1) AS runtime_state,
+             (SELECT COUNT(*) FROM turns t WHERE t.session_id = s.id) AS turn_count,
+             MAX(0, s.last_event_seq - COALESCE(read_cursor.last_read_seq, 0))
+               AS unread_count,
+             CASE
+               WHEN EXISTS (
+                 SELECT 1 FROM approval_requests a
+                  WHERE a.session_id = s.id AND a.state = 'pending'
+               ) THEN 'awaiting_approval'
+               WHEN EXISTS (
+                 SELECT 1 FROM turns t
+                  WHERE t.session_id = s.id AND t.state = 'running'
+               ) THEN 'running'
+               ELSE COALESCE((
+                 SELECT t.state FROM turns t WHERE t.session_id = s.id
+                  ORDER BY t.created_at DESC, t.id DESC LIMIT 1
+               ), 'idle')
+             END AS operational_state
+        FROM sessions s
+        JOIN session_settings settings ON settings.session_id = s.id
+        LEFT JOIN session_read_cursors read_cursor
+          ON read_cursor.session_id = s.id AND read_cursor.device_id = ?
+    )`;
+    const count = this.#database
+      .prepare(`${catalogSql} SELECT COUNT(*) AS total FROM catalog ${filterSql}`)
+      .get(query.deviceId, ...filterValues) as { total: number };
+    const pageClauses = [...filterClauses];
+    const pageValues: SQLInputValue[] = [...filterValues];
+    if (cursor !== null) {
+      pageClauses.push(
+        "(catalog.updated_at < ? OR (catalog.updated_at = ? AND catalog.id > ?))",
+      );
+      pageValues.push(cursor.lastActivityAt, cursor.lastActivityAt, cursor.sessionId);
+    }
+    const pageSql = pageClauses.length === 0
+      ? ""
+      : `WHERE ${pageClauses.join(" AND ")}`;
+    const rows = this.#database
+      .prepare(
+        `${catalogSql}
+         SELECT * FROM catalog ${pageSql}
+         ORDER BY catalog.updated_at DESC, catalog.id ASC LIMIT ?`,
+      )
+      .all(query.deviceId, ...pageValues, query.pageSize + 1) as unknown as SessionCatalogRow[];
+    const hasMore = rows.length > query.pageSize;
+    const page = rows.slice(0, query.pageSize);
+    const sessions = page.map((row) =>
+      sessionCatalogEntry(row, canControlProvider(row.provider_id, row.account_id)),
+    );
+    const last = hasMore ? page.at(-1) : undefined;
+    return {
+      ok: true,
+      requestId: query.requestId,
+      catalogRevision,
+      generatedAt: new Date().toISOString(),
+      sessions,
+      nextCursor:
+        last === undefined
+          ? null
+          : encodeCatalogCursor({
+              version: 1,
+              catalogRevision,
+              lastActivityAt: last.updated_at,
+              sessionId: last.id,
+            }),
+      total: count.total,
+    };
+  }
+
+  async mutateSessionMetadata(
+    message: SessionMetadataCommand,
+    rejection: (code: string, detail: string) => ServerEnvelope,
+  ): Promise<MutationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const row = this.#database
+        .prepare(
+          "SELECT title, pinned, archived, session_revision FROM sessions WHERE id = ?",
+        )
+        .get(message.payload.sessionId) as
+        | { title: string; pinned: number; archived: number; session_revision: number }
+        | undefined;
+      if (row === undefined) throw new Error("Session metadata target disappeared");
+      const now = new Date().toISOString();
+      if (row.session_revision !== message.payload.expectedRevision) {
+        const result = rejection(
+          "SESSION_REVISION_CONFLICT",
+          "Session metadata changed; refresh the catalog before retrying.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return { kind: "new", result };
+      }
+      if (
+        message.type === "session.archive" &&
+        message.payload.archived &&
+        this.#database
+          .prepare("SELECT 1 FROM turns WHERE session_id = ? AND state = 'running'")
+          .get(message.payload.sessionId) !== undefined
+      ) {
+        const result = rejection(
+          "SESSION_BUSY",
+          "A Session with an active Turn cannot be archived.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return { kind: "new", result };
+      }
+
+      const mutation = sessionMetadataMutation(message, row);
+      if (mutation.changed) {
+        this.#database
+          .prepare(
+            `UPDATE sessions SET ${mutation.column} = ?,
+               session_revision = session_revision + 1, updated_at = ?
+             WHERE id = ? AND session_revision = ?`,
+          )
+          .run(
+            mutation.databaseValue,
+            now,
+            message.payload.sessionId,
+            message.payload.expectedRevision,
+          );
+        this.#database
+          .prepare(
+            `INSERT INTO session_catalog_audit (
+               audit_id, session_id, action, device_id, old_value_json,
+               new_value_json, created_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            `audit-${crypto.randomUUID()}`,
+            message.payload.sessionId,
+            mutation.action,
+            message.payload.deviceId,
+            JSON.stringify(mutation.oldValue),
+            JSON.stringify(mutation.newValue),
+            now,
+          );
+      }
+      const revision = row.session_revision + (mutation.changed ? 1 : 0);
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("session.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            revision,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, now);
+      return { kind: "new", result };
+    });
+  }
+
+  async markSessionRead(
+    message: Extract<ClientEnvelope, { type: "session.read.mark" }>,
+    rejection: (code: string, detail: string) => ServerEnvelope,
+  ): Promise<MutationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const session = this.#database
+        .prepare("SELECT last_event_seq, session_revision FROM sessions WHERE id = ?")
+        .get(message.payload.sessionId) as
+        | { last_event_seq: number; session_revision: number }
+        | undefined;
+      if (session === undefined) throw new Error("Session read target disappeared");
+      const now = new Date().toISOString();
+      if (message.payload.upToEventSeq > session.last_event_seq) {
+        const result = rejection(
+          "SESSION_READ_CURSOR_INVALID",
+          "Read cursor cannot advance beyond the durable Session sequence.",
+        );
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return { kind: "new", result };
+      }
+      const priorCursor = this.#database
+        .prepare(
+          "SELECT last_read_seq FROM session_read_cursors WHERE session_id = ? AND device_id = ?",
+        )
+        .get(message.payload.sessionId, message.payload.deviceId) as
+        | { last_read_seq: number }
+        | undefined;
+      const next = Math.max(priorCursor?.last_read_seq ?? 0, message.payload.upToEventSeq);
+      this.#database
+        .prepare(
+          `INSERT INTO session_read_cursors (
+             session_id, device_id, last_read_seq, updated_at
+           ) VALUES (?, ?, ?, ?)
+           ON CONFLICT(session_id, device_id) DO UPDATE SET
+             last_read_seq = MAX(last_read_seq, excluded.last_read_seq),
+             updated_at = excluded.updated_at`,
+        )
+        .run(message.payload.sessionId, message.payload.deviceId, next, now);
+      if (next !== (priorCursor?.last_read_seq ?? 0)) {
+        this.#database
+          .prepare(
+            `INSERT INTO session_catalog_audit (
+               audit_id, session_id, action, device_id, old_value_json,
+               new_value_json, created_at
+             ) VALUES (?, ?, 'mark_read', ?, ?, ?, ?)`,
+          )
+          .run(
+            `audit-${crypto.randomUUID()}`,
+            message.payload.sessionId,
+            message.payload.deviceId,
+            JSON.stringify({ lastReadSeq: priorCursor?.last_read_seq ?? 0 }),
+            JSON.stringify({ lastReadSeq: next }),
+            now,
+          );
+      }
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("session.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            revision: session.session_revision,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, now);
+      return { kind: "new", result };
+    });
+  }
+
   replay(sessionId: string, afterSeq: number, upperBoundSeq: number) {
     return this.#database
       .prepare(
@@ -431,6 +813,11 @@ export class CoreDatabase {
       }
       const now = new Date().toISOString();
       this.#ensureSession(input.message.payload.sessionId, now);
+      this.#titleSessionFromFirstPrompt(
+        input.message.payload.sessionId,
+        input.message.payload.prompt,
+        now,
+      );
       const active = this.#database
         .prepare(
           `SELECT id, session_id FROM turns
@@ -1786,6 +2173,26 @@ export class CoreDatabase {
       .run(sessionId, now, now);
   }
 
+  #catalogRevision() {
+    const row = this.#database
+      .prepare("SELECT revision FROM session_catalog_state WHERE singleton = 1")
+      .get() as { revision: number };
+    return row.revision;
+  }
+
+  #titleSessionFromFirstPrompt(sessionId: string, prompt: string, now: string) {
+    const title = sanitizeCatalogText(prompt.replace(/\s+/gu, " "), 160);
+    if (title === null) return;
+    this.#database
+      .prepare(
+        `UPDATE sessions SET title = ?, session_revision = session_revision + 1,
+           updated_at = ?
+         WHERE id = ? AND title = 'Untitled Session'
+           AND NOT EXISTS (SELECT 1 FROM turns WHERE session_id = ?)`,
+      )
+      .run(title, now, sessionId, sessionId);
+  }
+
   #command(commandId: string) {
     return this.#database
       .prepare("SELECT payload_hash, result_json FROM commands WHERE command_id = ?")
@@ -1948,7 +2355,7 @@ export class CoreDatabase {
         JSON.stringify(result),
         now,
         now,
-        state === "rejected" ? now : null,
+        state === "rejected" || state === "terminal" ? now : null,
       );
   }
 
@@ -2319,6 +2726,156 @@ function approvalFromRow(row: ApprovalRow) {
     resolvedAt: row.resolved_at,
     resolvedByDeviceId: row.resolved_by_device_id,
   });
+}
+
+function sessionCatalogEntry(
+  row: SessionCatalogRow,
+  providerControlAvailable: boolean,
+): SessionSummaryV2 {
+  const projectPath = sanitizeCatalogText(row.project_path, 4_096);
+  const projectName = projectPath === null
+    ? null
+    : (sanitizeCatalogText(basename(projectPath), 160) ?? "Project");
+  const providerId = normalizeCatalogSlug(row.provider_id) ?? "unknown";
+  const accountId = normalizeCatalogSlug(row.account_id);
+  const archived = row.archived === 1;
+  const canControl = !archived && providerControlAvailable;
+  return {
+    sessionId: row.id,
+    title: sanitizeCatalogText(row.title, 160) ?? "Untitled Session",
+    providerId,
+    accountId,
+    providerSessionId: row.provider_session_id,
+    source: row.source,
+    projectPath,
+    projectName,
+    branch: sanitizeCatalogText(row.branch, 512),
+    model: sanitizeCatalogText(row.model, 128),
+    reasoningLevel: sanitizeCatalogText(row.reasoning_level, 64),
+    executionMode: row.execution_mode,
+    approvalPolicy: row.approval_policy,
+    sandboxPolicy: row.sandbox_policy,
+    networkPolicy: row.network_policy,
+    state: row.operational_state,
+    runtimeStatus: row.runtime_state,
+    activeTurnId: row.active_turn_id,
+    pendingApprovalCount: row.pending_approval_count,
+    turnCount: row.turn_count,
+    unreadCount: row.unread_count,
+    lastActivityAt: row.updated_at,
+    lastEventSeq: row.last_event_seq,
+    canResume: canControl && row.provider_session_id !== null,
+    canControl,
+    pinned: row.pinned === 1,
+    archived,
+    revision: row.session_revision,
+    settingsRevision: row.settings_revision,
+  };
+}
+
+function sessionMetadataMutation(
+  message: SessionMetadataCommand,
+  row: { title: string; pinned: number; archived: number },
+) {
+  switch (message.type) {
+    case "session.rename":
+      return {
+        action: "rename" as const,
+        column: "title" as const,
+        databaseValue: message.payload.title,
+        oldValue: { title: row.title },
+        newValue: { title: message.payload.title },
+        changed: row.title !== message.payload.title,
+      };
+    case "session.pin":
+      return {
+        action: "pin" as const,
+        column: "pinned" as const,
+        databaseValue: message.payload.pinned ? 1 : 0,
+        oldValue: { pinned: row.pinned === 1 },
+        newValue: { pinned: message.payload.pinned },
+        changed: (row.pinned === 1) !== message.payload.pinned,
+      };
+    case "session.archive":
+      return {
+        action: message.payload.archived ? ("archive" as const) : ("unarchive" as const),
+        column: "archived" as const,
+        databaseValue: message.payload.archived ? 1 : 0,
+        oldValue: { archived: row.archived === 1 },
+        newValue: { archived: message.payload.archived },
+        changed: (row.archived === 1) !== message.payload.archived,
+      };
+  }
+}
+
+function addInFilter(
+  clauses: string[],
+  values: SQLInputValue[],
+  column: string,
+  selected: readonly string[],
+) {
+  if (selected.length === 0) return;
+  clauses.push(`${column} IN (${selected.map(() => "?").join(", ")})`);
+  values.push(...selected);
+}
+
+function escapeLike(value: string) {
+  return value.replace(/[\\%_]/gu, (character) => `\\${character}`);
+}
+
+function encodeCatalogCursor(cursor: SessionCatalogCursor) {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeCatalogCursor(value: string | null): SessionCatalogCursor | null {
+  if (value === null || !/^[A-Za-z0-9_-]+$/u.test(value)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Object.keys(parsed).sort().join(",") !==
+        "catalogRevision,lastActivityAt,sessionId,version"
+    ) {
+      return null;
+    }
+    const cursor = parsed as Record<string, unknown>;
+    if (
+      cursor.version !== 1 ||
+      !Number.isSafeInteger(cursor.catalogRevision) ||
+      Number(cursor.catalogRevision) <= 0 ||
+      typeof cursor.lastActivityAt !== "string" ||
+      Number.isNaN(Date.parse(cursor.lastActivityAt)) ||
+      typeof cursor.sessionId !== "string" ||
+      cursor.sessionId.length < 1 ||
+      cursor.sessionId.length > 200
+    ) {
+      return null;
+    }
+    return cursor as unknown as SessionCatalogCursor;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeCatalogText(value: string | null, maxLength: number) {
+  if (value === null) return null;
+  let clean = "";
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) continue;
+    clean += character;
+  }
+  clean = clean.trim();
+  if (clean.length === 0) return null;
+  return clean.slice(0, maxLength);
+}
+
+function normalizeCatalogSlug(value: string | null) {
+  if (value === null) return null;
+  const normalized = value.toLowerCase().replace(/[^a-z0-9._-]/gu, "-");
+  const trimmed = normalized.replace(/^-+/u, "").slice(0, 96);
+  return /^[a-z0-9]/u.test(trimmed) ? trimmed : null;
 }
 
 function runtimeFromSource(source: ConnectorSource): Runtime {

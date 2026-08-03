@@ -1532,3 +1532,40 @@ then passed unchanged; no assertion or retry behavior was weakened.
 
 M9.3 adds the backward-compatible Session Catalog V2 schema, Core migration,
 bounded query semantics, revisions, human titles, pin/archive state, and tests.
+
+---
+
+### 2026-08-03 11:23 — Codex — M9.3 Session Catalog V2
+
+**Outcome**
+
+- Added strict Catalog V2/query/mutation envelopes without changing legacy M8
+  `sessions.snapshot` or frozen Web files.
+- Core schema 6 separates Session metadata revision, settings revision, durable
+  event sequence, catalog revision, and per-device read cursors. Migration 006
+  also adds metadata/read audit rows and deterministic catalog indexes.
+- Implemented literal search; provider/account/state/project/pin/archive
+  filters; 250-row hard bounds; deterministic cursors; stale-cursor rejection;
+  rename/pin/archive CAS; active-Turn archive denial; and idempotent read marks.
+- Existing Sessions remain AICL records and receive a human first-prompt title.
+  No provider-native Session is claimed before M9.4 adapter evidence.
+- Replaced blocking synchronous test cleanup with awaited asynchronous cleanup;
+  this resolved a repeatedly reproduced Windows `EPERM` after child-process
+  exit. Three consecutive Core gates and the full gate passed.
+
+**Verification**
+
+```text
+@aicl/protocol check              -> 20 passed
+M9.3 targeted Core tests          -> 7 passed
+@aicl/core check x3               -> 35 passed each; 1 opt-in test skipped
+real pnpm migrate                 -> Core 5→6, pre-migration backup created
+second pnpm migrate               -> Core 6 / Connector 3, migrated=false
+pnpm check                        -> 133 passed; lifecycle/maintenance gates pass
+@aicl/web typecheck/build         -> pass without frozen-file edits
+```
+
+**Next**
+
+M9.4 adds bounded Codex `thread/list`, `model/list`, and account capability
+probes plus explicit Session create/resume/binding commands.

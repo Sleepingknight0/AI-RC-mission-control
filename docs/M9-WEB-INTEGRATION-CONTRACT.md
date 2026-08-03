@@ -33,7 +33,10 @@ All mutations carry stable `commandId`.
 - `attachment.upload.begin`, `.chunk`, `.complete`, `.delete`
 - extended `turn.submit` with optional `settingsRevision` and `attachmentIds`
 
-Each accepted mutation receives `command.accepted`; conflicts and capability failures receive `command.rejected` with stable code and current revision/details where safe.
+Session metadata/read mutations receive `session.command.accepted` with the new
+Session revision; conflicts and capability failures receive `command.rejected`
+with stable code and current revision/details where safe. Provider/runtime Turn
+commands retain the existing `command.accepted` shape.
 
 ## Provider payload
 
@@ -49,7 +52,12 @@ may ignore this new envelope without losing its existing Session flow.
 
 ## Session payload
 
-Catalog V2 fields are defined in `docs/M9-SESSION-CATALOG.md`. `canControl`, `canResume`, and supported actions are authoritative. Native records are never presented as imported AICL Sessions. Cursor expiry or stale catalog revision returns a fresh first page.
+Catalog V2 fields are defined in `docs/M9-SESSION-CATALOG.md`. `canControl` and
+`canResume` are authoritative and fail closed when provider inventory is absent
+or stale. Native records are never presented as imported AICL Sessions. Core
+returns `SESSION_CATALOG_CURSOR_INVALID` or `SESSION_CATALOG_CURSOR_STALE`; Web
+must discard the cursor and explicitly request a fresh first page. It must not
+retry a metadata mutation automatically.
 
 ## Settings and conflicts
 

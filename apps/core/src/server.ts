@@ -328,6 +328,33 @@ export async function startCoreServer(
     );
   };
 
+  const canControlProvider = (providerId: string, accountId: string | null) => {
+    if (
+      providerFleetSnapshot === undefined ||
+      !["live", "local"].includes(providerFleetSnapshot.freshness)
+    ) {
+      return false;
+    }
+    const provider = providerFleetSnapshot.providers.find(
+      (candidate) => candidate.providerId === providerId,
+    );
+    if (
+      provider === undefined ||
+      provider.freshness === "stale" ||
+      provider.adapterSupport !== "remote_control"
+    ) {
+      return false;
+    }
+    const accounts = provider.accounts.filter(
+      (account) =>
+        account.authentication === "authenticated" &&
+        account.control === "remote_control",
+    );
+    return accountId === null
+      ? accounts.length > 0
+      : accounts.some((account) => account.accountId === accountId);
+  };
+
   // Durable envelopes arrive here only after the writer transaction commits.
   // Ephemeral deltas deliberately bypass this hook and never create token rows.
   const broadcastDurable = (event: ServerEnvelope) => {
@@ -371,7 +398,16 @@ export async function startCoreServer(
     socket: WebSocket,
     message: Extract<
       ClientEnvelope,
-      { type: "turn.submit" | "turn.interrupt" | "approval.resolve" }
+      {
+        type:
+          | "turn.submit"
+          | "turn.interrupt"
+          | "approval.resolve"
+          | "session.rename"
+          | "session.pin"
+          | "session.archive"
+          | "session.read.mark";
+      }
     >,
   ) => {
     send(
@@ -415,6 +451,36 @@ export async function startCoreServer(
           makeEnvelope("sessions.snapshot", { sessions: store.sessionSummaries() }),
         );
         return;
+      case "sessions.catalog.list": {
+        const result = store.sessionCatalog(message.payload, canControlProvider);
+        if (!result.ok) {
+          send(
+            socket,
+            makeEnvelope("protocol.error", {
+              error: protocolError(
+                result.code,
+                result.code === "SESSION_CATALOG_CURSOR_STALE"
+                  ? "Session catalog changed; request a fresh first page."
+                  : "Session catalog cursor is invalid.",
+                { retryable: result.code === "SESSION_CATALOG_CURSOR_STALE" },
+              ),
+            }),
+          );
+          return;
+        }
+        send(
+          socket,
+          makeEnvelope("sessions.catalog.snapshot", {
+            requestId: result.requestId,
+            catalogRevision: result.catalogRevision,
+            generatedAt: result.generatedAt,
+            sessions: result.sessions,
+            nextCursor: result.nextCursor,
+            total: result.total,
+          }),
+        );
+        return;
+      }
       case "providers.refresh": {
         if (providerFleetSnapshot !== undefined) {
           send(
@@ -442,6 +508,62 @@ export async function startCoreServer(
             }),
           );
         }
+        return;
+      }
+      case "session.rename":
+      case "session.pin":
+      case "session.archive": {
+        if (!store.hasSession(message.payload.sessionId)) {
+          send(
+            socket,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "SESSION_NOT_FOUND",
+              message: "Session does not exist.",
+            }),
+          );
+          return;
+        }
+        const result = await store.mutateSessionMetadata(
+          message,
+          (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        );
+        if (result.kind === "conflict") sendConflict(socket, message);
+        else send(socket, result.result);
+        return;
+      }
+      case "session.read.mark": {
+        if (!store.hasSession(message.payload.sessionId)) {
+          send(
+            socket,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: "SESSION_NOT_FOUND",
+              message: "Session does not exist.",
+            }),
+          );
+          return;
+        }
+        const result = await store.markSessionRead(
+          message,
+          (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        );
+        if (result.kind === "conflict") sendConflict(socket, message);
+        else send(socket, result.result);
         return;
       }
       case "session.subscribe": {

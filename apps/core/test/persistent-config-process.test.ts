@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -101,7 +102,7 @@ it(
       expect(existsSync(persisted.paths.connectorDatabase)).toBe(true);
     } finally {
       await Promise.all([stopProcess(connector), stopProcess(core)]);
-      rmSync(temporaryRoot, {
+      await rm(temporaryRoot, {
         recursive: true,
         force: true,
         maxRetries: 50,

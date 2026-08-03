@@ -11,7 +11,7 @@
 - [x] M9.0 specifications, Web contract, and exact-head baseline
 - [x] M9.1 provider capability Domain/protocol model
 - [x] M9.2 Connector inventory reader, relay, Core snapshot, reconnect tests
-- [ ] M9.3 Session Catalog V2 database/protocol backend
+- [x] M9.3 Session Catalog V2 database/protocol backend
 - [ ] M9.4 Codex discovery, create, resume, model/account capability control
 - [ ] M9.5 settings compare-and-set and effective Turn snapshots
 - [ ] M9.6 ask/plan/auto semantics
