@@ -9,7 +9,8 @@
     "./compatibility": "./src/codex/compatibility.ts",
     "./journal": "./src/journal.ts",
     "./mock-provider": "./src/mock-provider.ts",
-    "./provider": "./src/provider.ts"
+    "./provider": "./src/provider.ts",
+    "./provider-inventory": "./src/provider-inventory.ts"
   },
   "scripts": {
     "codex:compatibility": "tsx src/codex/check-installed.ts",

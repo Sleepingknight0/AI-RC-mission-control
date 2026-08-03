@@ -110,7 +110,7 @@ describe("M8.6 SQLite maintenance", () => {
 
     const first = await migrateConfiguredDatabases({ ...fixture, requireStopped: false });
     expect(first).toMatchObject({
-      coreSchemaVersion: 11,
+      coreSchemaVersion: 12,
       connectorSchemaVersion: 3,
       migrated: true,
     });
@@ -121,7 +121,7 @@ describe("M8.6 SQLite maintenance", () => {
 
     const second = await migrateConfiguredDatabases({ ...fixture, requireStopped: false });
     expect(second).toEqual({
-      coreSchemaVersion: 11,
+      coreSchemaVersion: 12,
       connectorSchemaVersion: 3,
       migrated: false,
     });

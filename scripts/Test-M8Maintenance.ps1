@@ -58,8 +58,8 @@ try {
             -ConfigPath $configPath -Json
     )
     $health = Invoke-RestMethod -Uri ($firstStatus.url + '/health') -TimeoutSec 5
-    if ($health.databaseSchemaVersion -ne 11 -or -not $health.connectorConnected) {
-        throw 'Empty production startup did not reach Core schema 11 with Connector ready.'
+    if ($health.databaseSchemaVersion -ne 12 -or -not $health.connectorConnected) {
+        throw 'Empty production startup did not reach Core schema 12 with Connector ready.'
     }
 
     $backup = ConvertFrom-CommandJson -Lines @(
@@ -126,9 +126,9 @@ if (row.count !== 0) process.exitCode = 1;
         & (Join-Path $PSScriptRoot 'Migrate-Aicl.ps1') -ConfigPath $configPath
     )
     if ($firstMigration.migrated -or $secondMigration.migrated -or
-        $secondMigration.coreSchemaVersion -ne 11 -or
+        $secondMigration.coreSchemaVersion -ne 12 -or
         $secondMigration.connectorSchemaVersion -ne 3) {
-        throw 'Repeated migration was not idempotent at Core 11 / Connector 3.'
+        throw 'Repeated migration was not idempotent at Core 12 / Connector 3.'
     }
 
     Add-Content -LiteralPath (Join-Path $backup.backupPath 'aicl-core.db') `

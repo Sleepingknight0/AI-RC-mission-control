@@ -4222,7 +4222,7 @@ export class CoreDatabase {
     now: string;
   }): Extract<ServerEnvelope, { type: T }> {
     const eventId = `event-${crypto.randomUUID()}`;
-    const seq = this.#allocateSeq(input.sessionId, input.now);
+    const seq = this.#allocateSeq(input.sessionId);
     const envelope = ServerEnvelopeSchema.parse(
       makeEnvelope(input.type, input.payload({ eventId, seq })),
     ) as Extract<ServerEnvelope, { type: T }>;
@@ -4251,7 +4251,7 @@ export class CoreDatabase {
     now: string,
   ) {
     const eventId = `event-${crypto.randomUUID()}`;
-    const seq = this.#allocateSeq(sessionId, now);
+    const seq = this.#allocateSeq(sessionId);
     this.#insertEvent({
       eventId,
       sessionId,
@@ -4271,7 +4271,7 @@ export class CoreDatabase {
     });
   }
 
-  #allocateSeq(sessionId: string, _now: string) {
+  #allocateSeq(sessionId: string) {
     const row = this.#database
       .prepare(
         `UPDATE sessions SET last_event_seq = last_event_seq + 1

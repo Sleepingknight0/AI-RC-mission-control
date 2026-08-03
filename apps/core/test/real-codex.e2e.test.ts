@@ -1,9 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import { startConnector, type ConnectorHandle } from "@aicl/connector";
 import { CodexProvider } from "@aicl/connector/codex";
+import { probeInstalledCodex } from "@aicl/connector/compatibility";
+import { readProviderFleet } from "@aicl/connector/provider-inventory";
+import { loadAiclConfig } from "@aicl/config";
 import {
   ServerEnvelopeSchema,
   makeEnvelope,
@@ -35,8 +38,40 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     handles.push(core);
     const directory = temporaryDirectory();
     const journalPath = join(directory, "connector.db");
+    const projectPath = resolve("../../spikes/fixture-project");
+    const config = loadAiclConfig({ repositoryRoot: resolve("../..") }).config;
+    const compatibility = probeInstalledCodex();
+    if (!compatibility.compatible || compatibility.installedVersion === null) {
+      throw new Error("Installed Codex compatibility gate did not pass");
+    }
+    const inventoryEvidence = {
+      activeProviderId: "codex",
+      knownVersions: { codex: compatibility.installedVersion },
+      knownCompatibility: { codex: "compatible" as const },
+    };
+    const initialFleet = readProviderFleet({
+      revision: 1,
+      activeAccountId: config.provider.profile,
+      ...inventoryEvidence,
+    });
+    const inventoryAccounts =
+      initialFleet.providers.find((candidate) => candidate.providerId === "codex")
+        ?.accounts ?? [];
+    const codexHomeAccountId = basename(config.provider.codexHome);
+    const accountId = inventoryAccounts.some(
+      (candidate) => candidate.accountId === config.provider.profile,
+    )
+      ? config.provider.profile
+      : inventoryAccounts.some(
+            (candidate) => candidate.accountId === codexHomeAccountId,
+          )
+        ? codexHomeAccountId
+        : config.provider.profile;
     const provider = new CodexProvider({
-      cwd: resolve("../../spikes/fixture-project"),
+      cwd: projectPath,
+      allowedRoots: [projectPath],
+      accountId,
+      codexHome: config.provider.codexHome,
     });
     let connector: ConnectorHandle = startConnector({
       coreUrl: core.connectorUrl,
@@ -44,6 +79,15 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
       provider,
       providerName: "codex",
       journalPath,
+      providerInventory: async (revision) =>
+        provider.enrichProviderFleet(
+          readProviderFleet({
+            revision,
+            activeAccountId: accountId,
+            ...inventoryEvidence,
+          }),
+          accountId,
+        ),
     });
     handles.push(connector);
     await connector.ready;
@@ -67,7 +111,7 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
         title: "Real Codex final gate",
         providerId: "codex",
         accountId: account.accountId,
-        projectPath: resolve("../../spikes/fixture-project"),
+        projectPath,
         model: null,
         reasoningLevel: null,
       }),
@@ -185,8 +229,12 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     const firstGeneration = connector.identity.generation;
     await connector.close();
     handles.splice(handles.indexOf(connector), 1);
+    const restartMessageIndex = browser.messages.length;
     const resumedProvider = new CodexProvider({
-      cwd: resolve("../../spikes/fixture-project"),
+      cwd: projectPath,
+      allowedRoots: [projectPath],
+      accountId,
+      codexHome: config.provider.codexHome,
     });
     connector = startConnector({
       coreUrl: core.connectorUrl,
@@ -194,6 +242,15 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
       provider: resumedProvider,
       providerName: "codex",
       journalPath,
+      providerInventory: async (revision) =>
+        resumedProvider.enrichProviderFleet(
+          readProviderFleet({
+            revision,
+            activeAccountId: accountId,
+            ...inventoryEvidence,
+          }),
+          accountId,
+        ),
     });
     handles.push(connector);
     await connector.ready;
@@ -201,6 +258,15 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     await waitFor(browser, "runtime.status", (message) =>
       message.payload.runtime.generation === connector.identity.generation &&
       message.payload.runtime.status === "ready",
+    );
+    await waitFor(
+      browser,
+      "session.capabilities.snapshot",
+      (message) =>
+        message.payload.snapshot.sessionId === "real-codex-session" &&
+        message.payload.snapshot.controlAuthority.canControl,
+      90_000,
+      restartMessageIndex,
     );
 
     send(
@@ -298,10 +364,11 @@ async function waitFor<T extends ServerEnvelope["type"]>(
     message: Extract<ServerEnvelope, { type: T }>,
   ) => boolean = () => true,
   timeoutMs = 90_000,
+  afterIndex = 0,
 ): Promise<Extract<ServerEnvelope, { type: T }>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const found = browser.messages.find(
+    const found = browser.messages.slice(afterIndex).find(
       (message): message is Extract<ServerEnvelope, { type: T }> =>
         message.type === type &&
         predicate(message as Extract<ServerEnvelope, { type: T }>),
