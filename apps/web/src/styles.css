@@ -666,6 +666,7 @@ button:active:not(:disabled) { transform: translateY(0); }
   box-shadow: none;
 }
 .text-button {
+  min-width: 44px;
   min-height: 44px;
   padding: 8px 10px;
   letter-spacing: 0.08em;

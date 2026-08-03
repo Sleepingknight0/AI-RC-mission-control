@@ -438,6 +438,48 @@ describe("m9 state helpers", () => {
     expect(afterActivity.revision).toBe(5);
   });
 
+  it("requests an authoritative first Catalog page when provider binding becomes ready", () => {
+    const loaded = reduceCatalog(
+      catalogRequestStarted(initialCatalogState(), "req-binding", false),
+      makeEnvelope("sessions.catalog.snapshot", {
+        requestId: "req-binding",
+        catalogRevision: 5,
+        generatedAt: "2026-08-03T00:00:00.000Z",
+        sessions: [
+          {
+            ...seed("session-1", "New Session", false),
+            providerBindingStatus: "pending" as const,
+          },
+        ],
+        nextCursor: "cursor-next",
+        total: 2,
+      }),
+    );
+
+    const bindingReady = reduceCatalog(
+      loaded,
+      makeEnvelope("session.provider.status", {
+        commandId: "create-session-1",
+        sessionId: "session-1",
+        providerId: "codex",
+        accountId: "default",
+        providerSessionId: "provider-session-1",
+        status: "ready" as const,
+        failureCode: null,
+        runtimeId: "runtime-1",
+        runtimeGeneration: 1,
+        updatedAt: "2026-08-03T00:00:01.000Z",
+      }),
+    );
+
+    expect(bindingReady.sessions[0]).toMatchObject({
+      providerBindingStatus: "ready",
+      canControl: false,
+    });
+    expect(bindingReady.nextCursor).toBeNull();
+    expect(bindingReady.needsFreshPage).toBe(true);
+  });
+
   it("rejects late native, settings, lease, and attachment errors for another selection", () => {
     const native = makeEnvelope("sessions.native.snapshot", {
       snapshot: {

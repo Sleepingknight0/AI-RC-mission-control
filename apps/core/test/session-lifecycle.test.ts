@@ -296,6 +296,103 @@ describe("Session create and resume", () => {
     browser.socket.close();
   });
 
+  it("broadcasts matching settings and capability revisions to every subscribed browser", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider: new CountingProvider(),
+      providerName: "mock",
+      providerInventory: (revision) => fleet(revision),
+    });
+    handles.push(connector);
+    await connector.ready;
+    const first = await openBrowser(core.browserUrl, core.browserToken);
+    const second = await openBrowser(core.browserUrl, core.browserToken);
+    await waitFor(first, (message) => message.type === "providers.snapshot");
+    await waitFor(second, (message) => message.type === "providers.snapshot");
+
+    first.socket.send(
+      JSON.stringify(
+        makeEnvelope("session.create", {
+          commandId: "shared-settings-create",
+          sessionId: "shared-settings-session",
+          deviceId: "device-one",
+          title: "Shared settings",
+          providerId: "codex",
+          accountId: "blue",
+          projectPath: process.cwd(),
+          model: null,
+          reasoningLevel: null,
+        }),
+      ),
+    );
+    await waitFor(
+      first,
+      (message) =>
+        message.type === "session.provider.status" &&
+        message.payload.commandId === "shared-settings-create" &&
+        message.payload.status === "ready",
+    );
+    for (const browser of [first, second]) {
+      browser.socket.send(
+        JSON.stringify(
+          makeEnvelope("session.subscribe", {
+            sessionId: "shared-settings-session",
+            afterSeq: 0,
+          }),
+        ),
+      );
+      await waitFor(
+        browser,
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          message.payload.snapshot.settingsRevision === 0,
+      );
+    }
+
+    first.socket.send(
+      JSON.stringify(
+        makeEnvelope("session.settings.update", {
+          commandId: "shared-settings-update",
+          sessionId: "shared-settings-session",
+          deviceId: "device-one",
+          expectedRevision: 0,
+          settings: {
+            providerId: "codex",
+            accountId: "blue",
+            model: null,
+            reasoningLevel: null,
+            executionMode: "ask",
+            approvalPolicy: "balanced",
+            sandboxPolicy: "read_only",
+            networkPolicy: "denied",
+            projectPath: process.cwd(),
+            branch: null,
+          },
+        }),
+      ),
+    );
+
+    for (const browser of [first, second]) {
+      await waitFor(
+        browser,
+        (message) =>
+          message.type === "session.settings.snapshot" &&
+          message.payload.snapshot.revision === 1,
+      );
+      await waitFor(
+        browser,
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          message.payload.snapshot.settingsRevision === 1,
+      );
+    }
+    first.socket.close();
+    second.socket.close();
+  });
+
   it("settles an ambiguous provider preparation as outcome_unknown without replay", async () => {
     const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
     handles.push(core);

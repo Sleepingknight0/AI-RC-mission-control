@@ -586,6 +586,18 @@ export async function startCoreServer(
     }
   };
 
+  const publishSettingsSnapshot = (
+    sessionId: string,
+    snapshot: SessionSettingsSnapshot,
+    requester?: WebSocket,
+  ) => {
+    const envelope = makeEnvelope("session.settings.snapshot", { snapshot });
+    broadcast(sessionId, envelope);
+    if (requester !== undefined && clients.get(requester) !== sessionId) {
+      send(requester, envelope);
+    }
+  };
+
   const publishSessionCapabilities = (
     sessionId: string,
     requester?: WebSocket,
@@ -1289,11 +1301,10 @@ export async function startCoreServer(
         }
         send(socket, result.result);
         if (result.snapshot !== undefined) {
-          send(
+          publishSettingsSnapshot(
+            message.payload.sessionId,
+            result.snapshot,
             socket,
-            makeEnvelope("session.settings.snapshot", {
-              snapshot: result.snapshot,
-            }),
           );
           publishLeaseSnapshot(
             message.payload.sessionId,

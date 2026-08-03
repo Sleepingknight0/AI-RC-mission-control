@@ -1021,7 +1021,7 @@ export function CreateSessionForm({
         <input
           name="sessionId"
           required
-          pattern="[A-Za-z0-9._-]{1,100}"
+          pattern="[A-Za-z0-9._\-]{1,100}"
           placeholder="session-ops-1"
         />
       </label>

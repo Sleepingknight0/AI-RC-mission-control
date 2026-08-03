@@ -266,6 +266,11 @@ export function reduceCatalog(
   }
 
   if (message.type === "session.provider.status") {
+    const bindingChanged = current.sessions.some(
+      (session) =>
+        session.sessionId === message.payload.sessionId &&
+        session.providerBindingStatus !== message.payload.status,
+    );
     return {
       ...current,
       sessions: current.sessions.map((session) =>
@@ -280,6 +285,9 @@ export function reduceCatalog(
             }
           : session,
       ),
+      nextCursor: bindingChanged ? null : current.nextCursor,
+      pendingAppend: bindingChanged ? false : current.pendingAppend,
+      needsFreshPage: bindingChanged || current.needsFreshPage,
     };
   }
 
