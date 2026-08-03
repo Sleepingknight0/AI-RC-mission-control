@@ -7,6 +7,8 @@ import type {
   ApprovalResolveCommand,
   ConnectorEmit,
   ConnectorProvider,
+  ProviderSessionPreparation,
+  SessionPrepareCommand,
   TurnStartCommand,
 } from "@aicl/connector/provider";
 import {
@@ -15,6 +17,8 @@ import {
   makeEnvelope,
   websocketCapability,
   type Approval,
+  type ProviderCapabilityKey,
+  type ProviderFleetSnapshot,
   type ServerEnvelope,
 } from "@aicl/protocol";
 import WebSocket from "ws";
@@ -262,10 +266,120 @@ describe("approval compare-and-set", () => {
     expect(JSON.stringify(browser.messages)).not.toContain("AICL_TEST_SECRET");
     browser.socket.close();
   });
+
+  it("auto-resolves only for the device owning a matching Full Auto lease", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    const provider = new ApprovalProvider();
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider,
+      providerName: "approval-test",
+      journalPath: ":memory:",
+      providerInventory: (revision) => approvalFleet(revision),
+    });
+    handles.push(connector);
+    await connector.ready;
+    const browser = await connectBrowser(core.browserUrl, core.browserToken);
+    await waitFor(browser, "providers.snapshot");
+
+    send(browser, makeEnvelope("session.create", {
+      commandId: "full-auto-session-create",
+      sessionId: "full-auto-session",
+      deviceId: "device-one",
+      title: "Full Auto test",
+      providerId: "codex",
+      accountId: "blue",
+      projectPath: process.cwd(),
+      model: null,
+      reasoningLevel: null,
+    }));
+    await waitFor(browser, "session.provider.status");
+    send(browser, makeEnvelope("session.subscribe", {
+      sessionId: "full-auto-session",
+      afterSeq: 0,
+    }));
+    await waitFor(browser, "session.snapshot");
+
+    send(browser, makeEnvelope("session.settings.update", {
+      commandId: "enable-full-auto-policy",
+      sessionId: "full-auto-session",
+      deviceId: "device-one",
+      expectedRevision: 0,
+      settings: {
+        providerId: "codex",
+        accountId: "blue",
+        model: null,
+        reasoningLevel: null,
+        executionMode: "ask",
+        approvalPolicy: "full_auto_lease",
+        sandboxPolicy: "workspace_write",
+        networkPolicy: "denied",
+        projectPath: process.cwd(),
+        branch: null,
+      },
+    }));
+    await waitForSessionCommand(browser, "enable-full-auto-policy");
+    const runtimeStatus = browser.messages.find(
+      (message) => message.type === "runtime.status",
+    );
+    if (runtimeStatus?.type !== "runtime.status") throw new Error("runtime");
+    send(browser, makeEnvelope("approval.lease.create", {
+      commandId: "full-auto-lease-create",
+      sessionId: "full-auto-session",
+      deviceId: "device-one",
+      expectedSettingsRevision: 1,
+      expectedLeaseRevision: 0,
+      providerId: "codex",
+      accountId: "blue",
+      projectPath: process.cwd(),
+      runtimeId: runtimeStatus.payload.runtime.runtimeId,
+      runtimeGeneration: runtimeStatus.payload.runtime.generation,
+      durationMinutes: 15,
+    }));
+    await waitForSessionCommand(browser, "full-auto-lease-create");
+
+    send(browser, makeEnvelope("turn.submit", {
+      commandId: "full-auto-owner-turn",
+      sessionId: "full-auto-session",
+      prompt: "request approval",
+      deviceId: "device-one",
+      settingsRevision: 1,
+    }));
+    await waitUntil(() => provider.resolveCalls.length === 1);
+    expect(provider.resolveCalls[0]?.payload.decision).toBe("approved_once");
+    await waitFor(browser, "turn.completed");
+
+    const beforeSecond = browser.messages.length;
+    send(browser, makeEnvelope("turn.submit", {
+      commandId: "full-auto-other-device-turn",
+      sessionId: "full-auto-session",
+      prompt: "request approval",
+      deviceId: "device-two",
+      settingsRevision: 1,
+    }));
+    await waitUntil(() => browser.messages.slice(beforeSecond).some(
+      (message) => message.type === "approval.requested",
+    ));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(provider.resolveCalls).toHaveLength(1);
+
+    send(browser, makeEnvelope("approval.emergency_stop", {
+      commandId: "full-auto-emergency-stop",
+      sessionId: "full-auto-session",
+      deviceId: "device-two",
+    }));
+    await waitForSessionCommand(browser, "full-auto-emergency-stop");
+    await waitUntil(() => provider.interruptCalls === 1);
+    await waitFor(browser, "turn.interrupted");
+    browser.socket.close();
+  }, 15_000);
 });
 
 class ApprovalProvider implements ConnectorProvider {
   readonly resolveCalls: ApprovalResolveCommand[] = [];
+  interruptCalls = 0;
   readonly #lostListeners = new Set<() => void>();
   #active:
     | { command: TurnStartCommand; emit: ConnectorEmit; finish(): void }
@@ -279,6 +393,17 @@ class ApprovalProvider implements ConnectorProvider {
   onLost(listener: () => void) {
     this.#lostListeners.add(listener);
     return () => this.#lostListeners.delete(listener);
+  }
+
+  async prepareSession(
+    command: SessionPrepareCommand,
+  ): Promise<ProviderSessionPreparation> {
+    return {
+      providerSessionId: `provider-${command.payload.sessionId}`,
+      projectPath: command.payload.projectPath,
+      model: command.payload.model,
+      reasoningLevel: command.payload.reasoningLevel,
+    };
   }
 
   async startTurn(command: TurnStartCommand, emit: ConnectorEmit) {
@@ -365,7 +490,20 @@ class ApprovalProvider implements ConnectorProvider {
     active.finish();
   }
 
-  async interrupt() {}
+  async interrupt() {
+    this.interruptCalls += 1;
+    const active = this.#active;
+    if (active === undefined) throw new Error("No active provider Turn");
+    emitNormalized(
+      active.emit,
+      makeEnvelope("connector.turn.interrupted", {
+        sessionId: active.command.payload.sessionId,
+        turnId: active.command.payload.turnId,
+      }),
+    );
+    this.#active = undefined;
+    active.finish();
+  }
 
   lose() {
     const active = this.#active;
@@ -538,6 +676,16 @@ async function openBrowser(
   token: string,
   sessionId: string,
 ): Promise<BrowserHarness> {
+  const browser = await connectBrowser(url, token);
+  send(browser, makeEnvelope("session.subscribe", { sessionId, afterSeq: 0 }));
+  await waitFor(browser, "session.snapshot");
+  return browser;
+}
+
+async function connectBrowser(
+  url: string,
+  token: string,
+): Promise<BrowserHarness> {
   const socket = new WebSocket(url, websocketCapability("browser", token), {
     origin: "http://127.0.0.1:5173",
   });
@@ -549,10 +697,7 @@ async function openBrowser(
     socket.once("open", resolve);
     socket.once("error", reject);
   });
-  const browser = { socket, messages };
-  send(browser, makeEnvelope("session.subscribe", { sessionId, afterSeq: 0 }));
-  await waitFor(browser, "session.snapshot");
-  return browser;
+  return { socket, messages };
 }
 
 function send(browser: BrowserHarness, value: unknown) {
@@ -597,6 +742,22 @@ async function waitForCommand(
   )!;
 }
 
+async function waitForSessionCommand(browser: BrowserHarness, commandId: string) {
+  await waitUntil(() => browser.messages.some(
+    (message) =>
+      message.type === "session.command.accepted" &&
+      message.payload.commandId === commandId,
+  ));
+  return browser.messages.find(
+    (message): message is Extract<
+      ServerEnvelope,
+      { type: "session.command.accepted" }
+    > =>
+      message.type === "session.command.accepted" &&
+      message.payload.commandId === commandId,
+  )!;
+}
+
 async function waitUntil(predicate: () => boolean, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -614,4 +775,64 @@ function temporaryDirectory() {
   const directory = mkdtempSync(join(tmpdir(), "aicl-approval-test-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+function approvalFleet(revision: number): ProviderFleetSnapshot {
+  const observedAt = new Date().toISOString();
+  const capabilities = [
+    "remote_control",
+    "create_session",
+    "text_input",
+    "execution_modes",
+    "approval_policies",
+    "sandbox_policies",
+  ] satisfies ProviderCapabilityKey[];
+  return {
+    snapshotId: `approval-fleet-${revision}`,
+    revision,
+    source: "terminal_registry",
+    observedAt,
+    staleAt: new Date(Date.now() + 60_000).toISOString(),
+    freshness: "live",
+    degraded: false,
+    notice: null,
+    providers: [
+      {
+        providerId: "codex",
+        displayName: "Codex",
+        enabled: true,
+        installation: "installed",
+        authentication: "authenticated",
+        compatibility: "compatible",
+        adapterSupport: "remote_control",
+        version: "test",
+        freshness: "live",
+        observedAt,
+        notice: null,
+        capabilities: capabilities.map((key) => ({
+          key,
+          state: "supported",
+          provenance: "provider_probe",
+          observedAt,
+          reason: null,
+        })),
+        accounts: [
+          {
+            accountId: "blue",
+            displayName: "Blue",
+            isDefault: true,
+            authentication: "authenticated",
+            control: "remote_control",
+            observedAt,
+            notice: null,
+          },
+        ],
+        accountCount: 1,
+        models: [],
+        modelsState: "available",
+        usageState: "not_supported",
+        usageMeters: [],
+      },
+    ],
+  };
 }

@@ -38,6 +38,7 @@ import {
 } from "@aicl/protocol";
 import WebSocket, { WebSocketServer } from "ws";
 
+import { classifyApprovalPolicy } from "./approval-policy.js";
 import { CoreDatabase, type ConnectorSource } from "./store.js";
 import { BrowserTicketRegistry } from "./browser-tickets.js";
 import { isReservedHttpPath, serveWebRequest } from "./static-host.js";
@@ -116,6 +117,8 @@ export async function startCoreServer(
   const webDistPath =
     options.webDistPath ?? process.env.AICL_WEB_DIST_PATH ?? DEFAULT_WEB_DIST_PATH;
   const store = new CoreDatabase({ path: dbPath });
+  const coreBootId = `core-${crypto.randomUUID()}`;
+  await store.revokeLeasesForCoreBoot(coreBootId);
   const artifactAccessToken =
     options.artifactAccessToken ?? `artifact-token-${crypto.randomUUID()}`;
   const browserToken = options.browserToken ?? crypto.randomUUID();
@@ -318,6 +321,18 @@ export async function startCoreServer(
     }
   };
 
+  const publishLeaseSnapshot = (
+    sessionId: string,
+    snapshot: ReturnType<CoreDatabase["approvalLeaseSnapshot"]>,
+    requester?: WebSocket,
+  ) => {
+    const envelope = makeEnvelope("approval.lease.snapshot", { snapshot });
+    broadcast(sessionId, envelope);
+    if (requester !== undefined && clients.get(requester) !== sessionId) {
+      send(requester, envelope);
+    }
+  };
+
   const markProviderFleetStale = () => {
     if (providerFleetSnapshot === undefined) return;
     providerFleetSnapshot = ProviderFleetSnapshotSchema.parse({
@@ -426,7 +441,10 @@ export async function startCoreServer(
           | "session.read.mark"
           | "session.create"
           | "session.resume"
-          | "session.settings.update";
+          | "session.settings.update"
+          | "approval.lease.create"
+          | "approval.lease.revoke"
+          | "approval.emergency_stop";
       }
     >,
   ) => {
@@ -459,6 +477,117 @@ export async function startCoreServer(
     );
     if (result.kind === "conflict") sendConflict(socket, message);
     else send(socket, result.result);
+  };
+
+  const interruptActiveTurn = async (sessionId: string) => {
+    const connection = connectorConnection;
+    if (connection?.socket.readyState !== WebSocket.OPEN) return;
+    const snapshot = store.snapshot(sessionId);
+    const turn = snapshot.turns.find(
+      (candidate) => candidate.turnId === snapshot.activeTurnId,
+    );
+    if (
+      turn === undefined ||
+      snapshot.providerSessionId === null ||
+      turn.providerTurnId === null
+    ) {
+      return;
+    }
+    const commandId = `emergency-interrupt-${crypto.randomUUID()}`;
+    const message = ClientEnvelopeSchema.parse(
+      makeEnvelope("turn.interrupt", {
+        commandId,
+        sessionId,
+        turnId: turn.turnId,
+      }),
+    );
+    if (message.type !== "turn.interrupt") return;
+    const accepted = validatedServerEnvelope(
+      makeEnvelope("command.accepted", {
+        commandId,
+        sessionId,
+        turnId: turn.turnId,
+      }),
+    );
+    const result = await store.acceptInterrupt({ message, accepted });
+    if (result.kind !== "new" || result.result.type !== "command.accepted") return;
+    await store.markDispatched(commandId);
+    sendConnector(
+      connection.socket,
+      makeEnvelope("connector.turn.interrupt", {
+        commandId,
+        sessionId,
+        turnId: turn.turnId,
+        providerSessionId: snapshot.providerSessionId,
+        providerTurnId: turn.providerTurnId,
+      }),
+    );
+  };
+
+  const applyApprovalPolicy = async (
+    connection: ConnectorConnection,
+    approvalId: string,
+  ): Promise<ServerEnvelope[]> => {
+    const context = store.approvalPolicyContext(approvalId);
+    if (context === undefined) return [];
+    const lease = store.matchingApprovalLease(context, coreBootId);
+    const decision = classifyApprovalPolicy(context, lease);
+    await store.recordApprovalPolicyDecision({
+      context,
+      policy: context.settings.approvalPolicy,
+      decision: decision.decision,
+      classifier: decision.classifier,
+      ...(decision.lease === undefined ? {} : { lease: decision.lease }),
+    });
+    if (decision.decision !== "approved_once") return [];
+
+    const commandId = `policy-${context.approval.approvalId}-${context.approval.revision}`;
+    const message = ClientEnvelopeSchema.parse(
+      makeEnvelope("approval.resolve", {
+        commandId,
+        sessionId: context.approval.sessionId,
+        approvalId: context.approval.approvalId,
+        expectedRevision: context.approval.revision,
+        decision: "approved_once",
+        deviceId: decision.lease?.deviceId ?? "core-policy",
+      }),
+    );
+    if (message.type !== "approval.resolve") return [];
+    const accepted = validatedServerEnvelope(
+      makeEnvelope("command.accepted", {
+        commandId,
+        sessionId: context.approval.sessionId,
+        turnId: context.approval.turnId,
+      }),
+    );
+    const result = await store.resolveApproval({
+      message,
+      accepted,
+      runtime: connection.runtime,
+      rejection: (code, detail) =>
+        rejection({
+          commandId,
+          sessionId: context.approval.sessionId,
+          code,
+          message: detail,
+        }),
+    });
+    if (result.kind !== "new" || result.dispatch === undefined) return [];
+    await store.markDispatched(commandId);
+    sendConnector(
+      connection.socket,
+      makeEnvelope("connector.approval.resolve", {
+        commandId,
+        sessionId: context.approval.sessionId,
+        turnId: result.dispatch.approval.turnId,
+        approvalId: result.dispatch.approval.approvalId,
+        providerCorrelationId: result.dispatch.providerCorrelationId,
+        runtimeId: result.dispatch.approval.runtimeId,
+        runtimeGeneration: result.dispatch.approval.runtimeGeneration,
+        decision: result.dispatch.decision,
+      }),
+    );
+    return result.durableEvent === undefined ? [] : [result.durableEvent];
   };
 
   const handleClient = async (socket: WebSocket, message: ClientEnvelope) => {
@@ -897,6 +1026,86 @@ export async function startCoreServer(
               snapshot: result.snapshot,
             }),
           );
+          publishLeaseSnapshot(
+            message.payload.sessionId,
+            store.approvalLeaseSnapshot(message.payload.sessionId),
+            socket,
+          );
+        }
+        return;
+      }
+      case "approval.lease.create": {
+        const result = await store.createApprovalLease({
+          message,
+          coreBootId,
+          rejection: (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        publishLeaseSnapshot(
+          message.payload.sessionId,
+          result.snapshot,
+          socket,
+        );
+        return;
+      }
+      case "approval.lease.revoke": {
+        const result = await store.revokeApprovalLease({
+          message,
+          rejection: (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        publishLeaseSnapshot(
+          message.payload.sessionId,
+          result.snapshot,
+          socket,
+        );
+        return;
+      }
+      case "approval.emergency_stop": {
+        const result = await store.emergencyStop({
+          message,
+          rejection: (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        if (result.snapshot !== undefined) {
+          publishLeaseSnapshot(
+            message.payload.sessionId,
+            result.snapshot,
+            socket,
+          );
+        }
+        if (result.activeTurnId !== undefined && result.activeTurnId !== null) {
+          await interruptActiveTurn(message.payload.sessionId);
         }
         return;
       }
@@ -921,6 +1130,12 @@ export async function startCoreServer(
         if (settings !== undefined) {
           send(socket, makeEnvelope("session.settings.snapshot", { snapshot: settings }));
         }
+        send(
+          socket,
+          makeEnvelope("approval.lease.snapshot", {
+            snapshot: store.approvalLeaseSnapshot(sessionId),
+          }),
+        );
         send(
           socket,
           makeEnvelope("replay.boundary", {
@@ -1179,6 +1394,7 @@ export async function startCoreServer(
     message: ConnectorEnvelope,
   ) => {
     if (message.type === "connector.hello") {
+      const previousRuntime = lastRuntime;
       if (connectorLossTimer !== undefined) {
         clearTimeout(connectorLossTimer);
         connectorLossTimer = undefined;
@@ -1196,6 +1412,16 @@ export async function startCoreServer(
         markProviderFleetStale();
       }
       lastRuntime = message.payload.runtime;
+      if (
+        previousRuntime !== undefined &&
+        (previousRuntime.runtimeId !== message.payload.runtime.runtimeId ||
+          previousRuntime.generation !== message.payload.runtime.generation)
+      ) {
+        const revoked = await store.revokeLeasesForRuntime(previousRuntime);
+        for (const snapshot of revoked) {
+          publishLeaseSnapshot(snapshot.sessionId, snapshot);
+        }
+      }
       const recovered = await store.reconcileRuntime(
         message.payload.runtime,
         message.payload.connectorId,
@@ -1418,7 +1644,18 @@ export async function startCoreServer(
       case "connector.approval.requested":
         {
           const event = await store.requestApproval(message, source);
-          if (event !== undefined) durableEvents.push(event);
+          if (event !== undefined) {
+            durableEvents.push(event);
+            const activeConnection = connectorConnection;
+            if (activeConnection?.socket === socket) {
+              durableEvents.push(
+                ...(await applyApprovalPolicy(
+                  activeConnection,
+                  message.payload.approval.approvalId,
+                )),
+              );
+            }
+          }
         }
         break;
       case "connector.interrupt.result":
@@ -1516,11 +1753,16 @@ export async function startCoreServer(
   const scheduleConnectorLoss = (connection: ConnectorConnection) => {
     if (closing) return;
     connectorLossTimer = setTimeout(() => {
-      void store.markRuntimeLost(connection.runtime).then((events) => {
+      void (async () => {
+        const revoked = await store.revokeLeasesForRuntime(connection.runtime);
+        for (const snapshot of revoked) {
+          publishLeaseSnapshot(snapshot.sessionId, snapshot);
+        }
+        const events = await store.markRuntimeLost(connection.runtime);
         for (const event of events) broadcastDurable(event);
         lastRuntime = { ...connection.runtime, status: "lost" };
         broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
-      });
+      })();
     }, options.connectorLossGraceMs ?? 750);
   };
 
@@ -1528,15 +1770,24 @@ export async function startCoreServer(
     connectorLossTimer = setTimeout(() => {
       const runtime = lastRuntime;
       if (runtime === undefined || connectorConnection !== undefined) return;
-      void store.markRuntimeLost(runtime).then((events) => {
+      void (async () => {
+        const revoked = await store.revokeLeasesForRuntime(runtime);
+        for (const snapshot of revoked) {
+          publishLeaseSnapshot(snapshot.sessionId, snapshot);
+        }
+        const events = await store.markRuntimeLost(runtime);
         for (const event of events) broadcastDurable(event);
         lastRuntime = { ...runtime, status: "lost" };
         broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
-      });
+      })();
     }, options.connectorLossGraceMs ?? 750);
   }
 
   const sweepApprovals = async () => {
+    const leaseSnapshots = await store.sweepApprovalLeases();
+    for (const snapshot of leaseSnapshots) {
+      publishLeaseSnapshot(snapshot.sessionId, snapshot);
+    }
     const expired = await store.expireApprovals();
     for (const item of expired) {
       broadcastDurable(item.event);
@@ -1795,13 +2046,54 @@ function validateSessionSettingsSelection(
     };
   }
   if (
-    requested.approvalPolicy !== current.approvalPolicy ||
-    requested.sandboxPolicy !== current.sandboxPolicy ||
-    requested.networkPolicy !== current.networkPolicy
+    requested.approvalPolicy !== current.approvalPolicy &&
+    !provider.capabilities.some(
+      (capability) =>
+        capability.key === "approval_policies" &&
+        capability.state === "supported",
+    )
   ) {
     return {
-      code: "SESSION_POLICY_UNAVAILABLE",
-      message: "Policy changes are not enabled until Core enforcement is active.",
+      code: "APPROVAL_POLICY_UNAVAILABLE",
+      message: "The provider adapter does not support normalized approval policies.",
+    };
+  }
+  if (
+    requested.sandboxPolicy !== current.sandboxPolicy &&
+    !provider.capabilities.some(
+      (capability) =>
+        capability.key === "sandbox_policies" &&
+        capability.state === "supported",
+    )
+  ) {
+    return {
+      code: "SANDBOX_POLICY_UNAVAILABLE",
+      message: "The provider adapter does not support normalized sandbox policies.",
+    };
+  }
+  if (
+    requested.networkPolicy !== current.networkPolicy &&
+    requested.networkPolicy !== "denied" &&
+    !provider.capabilities.some(
+      (capability) =>
+        capability.key === "network_policies" &&
+        capability.state === "supported",
+    )
+  ) {
+    return {
+      code: "NETWORK_POLICY_UNAVAILABLE",
+      message: "The provider adapter has not verified the requested network policy.",
+    };
+  }
+  if (
+    ["workspace_auto", "full_auto_lease"].includes(requested.approvalPolicy) &&
+    (requested.accountId === null ||
+      requested.projectPath === null ||
+      requested.sandboxPolicy !== "workspace_write")
+  ) {
+    return {
+      code: "APPROVAL_POLICY_SCOPE_INVALID",
+      message: "Workspace policies require an account, project, and workspace sandbox.",
     };
   }
   return undefined;

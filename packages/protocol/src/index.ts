@@ -631,6 +631,36 @@ export const ApprovalSchema = z.object({
   resolvedByDeviceId: id.nullable(),
 });
 
+export const ApprovalLeaseStateSchema = z.enum(["active", "revoked", "expired"]);
+export const ApprovalLeaseSchema = z
+  .object({
+    leaseId: id,
+    sessionId: id,
+    providerId: providerSlug,
+    accountId: providerSlug,
+    projectPath: z.string().min(1).max(4_096),
+    deviceId: id,
+    runtimeId: id,
+    runtimeGeneration: z.number().int().positive(),
+    settingsRevision: z.number().int().nonnegative(),
+    state: ApprovalLeaseStateSchema,
+    revision: z.number().int().nonnegative(),
+    issuedAt: timestamp,
+    expiresAt: timestamp,
+    revokedAt: timestamp.nullable(),
+    revokeReason: displayText(96).nullable(),
+  })
+  .strict();
+
+export const ApprovalLeaseSnapshotSchema = z
+  .object({
+    sessionId: id,
+    revision: z.number().int().nonnegative(),
+    serverTime: timestamp,
+    leases: z.array(ApprovalLeaseSchema).max(32),
+  })
+  .strict();
+
 export const TurnSchema = z.object({
   turnId: id,
   commandId: id,
@@ -874,12 +904,53 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       .strict(),
   ),
   envelope(
+    "approval.lease.create",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        expectedSettingsRevision: z.number().int().nonnegative(),
+        expectedLeaseRevision: z.number().int().nonnegative(),
+        providerId: providerSlug,
+        accountId: providerSlug,
+        projectPath: z.string().min(1).max(4_096),
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+        durationMinutes: z.union([z.literal(15), z.literal(30), z.literal(60)]),
+      })
+      .strict(),
+  ),
+  envelope(
+    "approval.lease.revoke",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        leaseId: id,
+        expectedLeaseRevision: z.number().int().nonnegative(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "approval.emergency_stop",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+      })
+      .strict(),
+  ),
+  envelope(
     "turn.submit",
     z
       .object({
         commandId: id,
         sessionId: id,
         prompt: z.string().trim().min(1).max(20_000),
+        deviceId: id.optional(),
         settingsRevision: z.number().int().nonnegative().optional(),
       })
       .strict(),
@@ -973,6 +1044,10 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
   envelope(
     "session.settings.snapshot",
     z.object({ snapshot: SessionSettingsSnapshotSchema }).strict(),
+  ),
+  envelope(
+    "approval.lease.snapshot",
+    z.object({ snapshot: ApprovalLeaseSnapshotSchema }).strict(),
   ),
   envelope(
     "providers.snapshot",
@@ -1387,6 +1462,8 @@ export type SessionSettingsSnapshot = z.infer<
 export type ToolActivity = z.infer<typeof ToolActivitySchema>;
 export type FileChange = z.infer<typeof FileChangeSchema>;
 export type Approval = z.infer<typeof ApprovalSchema>;
+export type ApprovalLease = z.infer<typeof ApprovalLeaseSchema>;
+export type ApprovalLeaseSnapshot = z.infer<typeof ApprovalLeaseSnapshotSchema>;
 export type ArtifactReference = z.infer<typeof ArtifactReferenceSchema>;
 export type SessionSnapshot = z.infer<typeof SessionSnapshotSchema>;
 export type ClientEnvelope = z.infer<typeof ClientEnvelopeSchema>;

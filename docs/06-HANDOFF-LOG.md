@@ -1697,3 +1697,41 @@ frozen Web diff                        -> no changes
 
 M9.7 implements Core-enforced review/balanced/workspace-auto policies and
 scoped, expiring Full Auto leases with emergency stop.
+
+---
+
+### 2026-08-03 12:47 — Codex — M9.7 approval policies and Full Auto leases
+
+**Outcome**
+
+- Added Core schema 9 with device-bound Turn provenance, scoped 15/30/60-minute
+  leases, per-Session lease CAS, immutable scope, and durable lease/policy audit.
+- Core now classifies normalized approvals. Review and unverified Balanced
+  actions remain pending; Workspace Auto requires a bounded canonical file list;
+  Full Auto additionally requires a live provider/account/project/device/
+  settings/Runtime/Core-boot match.
+- Settings changes, Runtime loss/generation change, Core restart, expiry, manual
+  revoke, and emergency stop revoke authority. Emergency stop uses the existing
+  fenced interrupt path and never replays a prompt.
+- Codex always starts `on-request`. The adapter maps read-only/workspace-write to
+  the verified provider sandbox shape, one canonical writable root, and network
+  disabled. It never sends provider `never`.
+- Frozen Web and the isolated Grok checkpoint remain untouched.
+
+**Verification**
+
+```text
+protocol package                      -> 27 passed
+Connector package                     -> 40 passed
+Core package                          -> 48 passed, 1 opt-in real test skipped
+policy/lease targeted tests           -> 14 passed
+junction escape / hostile device      -> passed
+Full Auto auto-resolution/emergency   -> passed
+full repository/production gate       -> 158 passed, lifecycle gates passed
+frozen Web diff                       -> no changes
+```
+
+**Next**
+
+M9.8 adds the managed attachment upload/chunk/verification lifecycle and
+provider capability enforcement without editing the frozen Web.

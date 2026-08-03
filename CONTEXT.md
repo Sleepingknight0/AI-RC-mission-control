@@ -14,6 +14,9 @@
 - **Execution mode** — `ask`, `plan`, or `auto`; it controls orchestration, not authority.
 - **Approval policy** — Core-owned side-effect policy: `review`, `balanced`, `workspace_auto`, or `full_auto_lease`.
 - **Full Auto lease** — short-lived, scoped authority. It is not a permanent preference.
+- **Client-instance device ID** — browser-generated concurrency/audit identity.
+  It scopes drafts and leases but is not authentication or a cryptographic
+  device claim.
 - **Managed attachment** — Core-owned uploaded bytes referenced by opaque ID; never a browser-supplied filesystem path.
 - **Terminal activity** — bounded normalized command/tool evidence, never unrestricted PTY access.
 
@@ -25,3 +28,6 @@
 - Account, model, reasoning, sandbox, and input controls appear only when the active adapter supplies evidence.
 - Unread state is device-relative and must not become a single global Session counter.
 - Remote identity, Cloudflare, Google Login/OAuth, and the deferred M8.5 gate are outside M9.
+- Core is the sole approval authority. Codex remains `on-request`; automatic
+  one-shot resolutions require normalized evidence, and unclassified actions
+  stay pending.

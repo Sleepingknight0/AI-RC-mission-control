@@ -546,6 +546,15 @@ export class CodexProvider implements ConnectorProvider {
           settings?.reasoningLevel === undefined
             ? {}
             : { effort: settings.reasoningLevel }),
+          ...(settings === undefined
+            ? {}
+            : {
+                approvalPolicy: "on-request",
+                sandboxPolicy: codexSandboxPolicy(
+                  settings.sandboxPolicy,
+                  effectiveProjectPath,
+                ),
+              }),
         }),
       );
       active.providerTurnId = response.turn.id;
@@ -989,7 +998,9 @@ export class CodexProvider implements ConnectorProvider {
     const reason = parsed.params.reason ?? null;
     if (isCommand && parsed.params.cwd !== null && parsed.params.cwd !== undefined) {
       try {
-        canonicalProjectRoot(parsed.params.cwd, [this.#options.cwd]);
+        const projectPath =
+          active.command.payload.effectiveSettings?.projectPath ?? this.#options.cwd;
+        canonicalProjectRoot(parsed.params.cwd, [projectPath]);
       } catch {
         rpc.respond(parsed.id, { decision: "decline" });
         return true;
@@ -1193,6 +1204,22 @@ function executionModeInstruction(mode: "ask" | "plan" | "auto") {
     case "auto":
       return "[AICL execution: bounded-auto] Continue through multiple bounded steps in this Turn, but stop at approval, sandbox, network, or project boundaries.";
   }
+}
+
+function codexSandboxPolicy(
+  policy: "read_only" | "workspace_write",
+  projectPath: string | undefined,
+) {
+  if (policy === "read_only") {
+    return { type: "readOnly" as const, networkAccess: false };
+  }
+  return {
+    type: "workspaceWrite" as const,
+    networkAccess: false,
+    writableRoots: projectPath === undefined ? [] : [projectPath],
+    excludeSlashTmp: true,
+    excludeTmpdirEnvVar: true,
+  };
 }
 
 function activityTerminalStatus(status: string): ToolActivity["status"] {

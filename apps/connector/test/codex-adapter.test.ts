@@ -112,6 +112,9 @@ describe("Codex adapter normalization", () => {
       "plan-first",
     );
     expect(completed?.payload.content).toContain("fake-codex-model|high");
+    expect(completed?.payload.content).toContain(
+      "on-request|workspaceWrite|false",
+    );
   });
 
   it("normalizes an interrupt terminal state", async () => {

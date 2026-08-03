@@ -15,7 +15,7 @@
 - [x] M9.4 Codex discovery, create, resume, model/account capability control
 - [x] M9.5 settings compare-and-set and effective Turn snapshots
 - [x] M9.6 ask/plan/auto semantics
-- [ ] M9.7 server policy enforcement and scoped Full Auto leases
+- [x] M9.7 server policy enforcement and scoped Full Auto leases
 - [ ] M9.8 managed attachment lifecycle and Codex translation
 - [ ] M9.9 bounded terminal/activity contract
 - [ ] M9.10 security, recovery, fault, and performance gate

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ClientEnvelopeSchema,
   CoreToConnectorEnvelopeSchema,
+  ApprovalLeaseSnapshotSchema,
   SessionSettingsSnapshotSchema,
   TurnSchema,
   makeEnvelope,
@@ -94,6 +95,60 @@ describe("Session settings protocol", () => {
           deviceId: "device-1",
           expectedRevision: 0,
           settings: { providerId: "codex" },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("validates device- and revision-fenced Full Auto lease commands", () => {
+    const create = ClientEnvelopeSchema.parse(
+      makeEnvelope("approval.lease.create", {
+        commandId: "lease-create-1",
+        sessionId: "session-1",
+        deviceId: "device-1",
+        expectedSettingsRevision: 4,
+        expectedLeaseRevision: 0,
+        providerId: "codex",
+        accountId: "default",
+        projectPath: "C:\\Projects\\sample",
+        runtimeId: "runtime-1",
+        runtimeGeneration: 2,
+        durationMinutes: 30,
+      }),
+    );
+    const snapshot = ApprovalLeaseSnapshotSchema.parse({
+      sessionId: "session-1",
+      revision: 1,
+      serverTime: "2026-08-03T05:00:00.000Z",
+      leases: [
+        {
+          leaseId: "lease-1",
+          sessionId: "session-1",
+          providerId: "codex",
+          accountId: "default",
+          projectPath: "C:\\Projects\\sample",
+          deviceId: "device-1",
+          runtimeId: "runtime-1",
+          runtimeGeneration: 2,
+          settingsRevision: 4,
+          state: "active",
+          revision: 0,
+          issuedAt: "2026-08-03T05:00:00.000Z",
+          expiresAt: "2026-08-03T05:30:00.000Z",
+          revokedAt: null,
+          revokeReason: null,
+        },
+      ],
+    });
+
+    expect(create.type).toBe("approval.lease.create");
+    expect(snapshot.leases[0]?.deviceId).toBe("device-1");
+    expect(
+      ClientEnvelopeSchema.safeParse(
+        makeEnvelope("approval.lease.create", {
+          ...create.payload,
+          commandId: "lease-invalid-duration",
+          durationMinutes: 120,
         }),
       ).success,
     ).toBe(false);

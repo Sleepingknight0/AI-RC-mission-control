@@ -9,6 +9,8 @@ import {
   MAX_ARTIFACT_BYTES,
   MAX_INLINE_DIFF_BYTES,
   ApprovalSchema,
+  ApprovalLeaseSchema,
+  ApprovalLeaseSnapshotSchema,
   ArtifactReferenceSchema,
   FileChangeSchema,
   SessionSettingsSchema,
@@ -18,6 +20,8 @@ import {
   makeEnvelope,
   utf8ByteLength,
   type Approval,
+  type ApprovalLease,
+  type ApprovalLeaseSnapshot,
   type ArtifactReference,
   type ClientEnvelope,
   type ConnectorEnvelope,
@@ -34,7 +38,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 8;
+export const CORE_SCHEMA_VERSION = 9;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -66,7 +70,10 @@ type MutatingClientEnvelope = Extract<
       | "session.read.mark"
       | "session.create"
       | "session.resume"
-      | "session.settings.update";
+      | "session.settings.update"
+      | "approval.lease.create"
+      | "approval.lease.revoke"
+      | "approval.emergency_stop";
   }
 >;
 
@@ -234,6 +241,33 @@ interface SessionSettingsRow {
   project_path: string | null;
   branch: string | null;
   active_turn_count?: number;
+}
+
+interface ApprovalLeaseRow {
+  lease_id: string;
+  session_id: string;
+  provider_id: string;
+  account_id: string;
+  project_path: string;
+  device_id: string;
+  runtime_id: string;
+  runtime_generation: number;
+  settings_revision: number;
+  state: ApprovalLease["state"];
+  revision: number;
+  issued_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  revoke_reason: string | null;
+}
+
+export interface ApprovalPolicyContext {
+  approval: Approval;
+  providerCorrelationId: string;
+  submittingDeviceId: string | null;
+  settingsRevision: number;
+  settings: SessionSettings;
+  files: Array<{ path: string; kind: "add" | "update" | "delete" }>;
 }
 
 interface MessageRow {
@@ -623,6 +657,14 @@ export class CoreDatabase {
             JSON.stringify(requested),
             now,
           );
+        for (const lease of this.#activeApprovalLeases(message.payload.sessionId)) {
+          this.#revokeLeaseRow(
+            lease,
+            "settings_change",
+            message.payload.deviceId,
+            now,
+          );
+        }
       }
       const result = parseServer(
         JSON.stringify(
@@ -644,6 +686,332 @@ export class CoreDatabase {
           settings: requested,
         }),
       };
+    });
+  }
+
+  approvalLeaseSnapshot(sessionId: string): ApprovalLeaseSnapshot {
+    const state = this.#database
+      .prepare("SELECT revision FROM approval_lease_state WHERE session_id = ?")
+      .get(sessionId) as { revision: number } | undefined;
+    const rows = this.#database
+      .prepare(
+        `SELECT lease_id, session_id, provider_id, account_id, project_path,
+                device_id, runtime_id, runtime_generation, settings_revision,
+                state, revision, issued_at, expires_at, revoked_at, revoke_reason
+           FROM approval_leases WHERE session_id = ?
+           ORDER BY issued_at DESC, lease_id DESC LIMIT 32`,
+      )
+      .all(sessionId) as unknown as ApprovalLeaseRow[];
+    return ApprovalLeaseSnapshotSchema.parse({
+      sessionId,
+      revision: state?.revision ?? 0,
+      serverTime: new Date().toISOString(),
+      leases: rows.map(approvalLeaseFromRow),
+    });
+  }
+
+  async createApprovalLease(input: {
+    message: Extract<ClientEnvelope, { type: "approval.lease.create" }>;
+    coreBootId: string;
+    rejection: (code: string, detail: string) => ServerEnvelope;
+    now?: Date;
+  }) {
+    return this.#write(() => {
+      const { message } = input;
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? {
+              kind: "same" as const,
+              result: parseServer(prior.result_json),
+              snapshot: this.approvalLeaseSnapshot(message.payload.sessionId),
+            }
+          : { kind: "conflict" as const };
+      }
+      const now = (input.now ?? new Date()).toISOString();
+      const reject = (code: string, detail: string) => {
+        const result = input.rejection(code, detail);
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return {
+          kind: "new" as const,
+          result,
+          snapshot: this.approvalLeaseSnapshot(message.payload.sessionId),
+        };
+      };
+      const settings = this.sessionSettings(message.payload.sessionId);
+      if (settings === undefined) {
+        return reject("SESSION_NOT_FOUND", "Session does not exist.");
+      }
+      if (
+        settings.revision !== message.payload.expectedSettingsRevision ||
+        settings.settings.approvalPolicy !== "full_auto_lease"
+      ) {
+        return reject(
+          "LEASE_SETTINGS_CONFLICT",
+          "Full Auto policy and the current settings revision are required.",
+        );
+      }
+      if (
+        settings.settings.providerId !== message.payload.providerId ||
+        settings.settings.accountId !== message.payload.accountId ||
+        settings.settings.projectPath !== message.payload.projectPath
+      ) {
+        return reject("LEASE_SCOPE_MISMATCH", "Lease scope does not match Session settings.");
+      }
+      const runtime = this.#database
+        .prepare(
+          `SELECT id, generation FROM runtimes WHERE session_id = ?
+            AND id = ? AND generation = ? AND state IN ('ready', 'busy')`,
+        )
+        .get(
+          message.payload.sessionId,
+          message.payload.runtimeId,
+          message.payload.runtimeGeneration,
+        );
+      if (runtime === undefined) {
+        return reject("LEASE_RUNTIME_MISMATCH", "Lease Runtime is not current.");
+      }
+      const leaseRevision = this.#leaseStateRevision(message.payload.sessionId, now);
+      if (leaseRevision !== message.payload.expectedLeaseRevision) {
+        return reject("LEASE_REVISION_CONFLICT", "Lease state changed; refresh first.");
+      }
+      if (
+        this.#database
+          .prepare(
+            "SELECT 1 FROM approval_leases WHERE session_id = ? AND state = 'active'",
+          )
+          .get(message.payload.sessionId) !== undefined
+      ) {
+        return reject("LEASE_ALREADY_ACTIVE", "This Session already has an active lease.");
+      }
+      const nextRevision = leaseRevision + 1;
+      const leaseId = `lease-${crypto.randomUUID()}`;
+      const expiresAt = new Date(
+        Date.parse(now) + message.payload.durationMinutes * 60_000,
+      ).toISOString();
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("session.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            revision: nextRevision,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, now);
+      this.#database
+        .prepare(
+          `INSERT INTO approval_leases (
+             lease_id, session_id, create_command_id, provider_id, account_id,
+             project_path, device_id, runtime_id, runtime_generation,
+             settings_revision, core_boot_id, state, revision, issued_at, expires_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?)`,
+        )
+        .run(
+          leaseId,
+          message.payload.sessionId,
+          message.payload.commandId,
+          message.payload.providerId,
+          message.payload.accountId,
+          message.payload.projectPath,
+          message.payload.deviceId,
+          message.payload.runtimeId,
+          message.payload.runtimeGeneration,
+          message.payload.expectedSettingsRevision,
+          input.coreBootId,
+          now,
+          expiresAt,
+        );
+      this.#database
+        .prepare(
+          "UPDATE approval_lease_state SET revision = ?, updated_at = ? WHERE session_id = ?",
+        )
+        .run(nextRevision, now, message.payload.sessionId);
+      this.#insertLeaseAudit(
+        leaseId,
+        message.payload.sessionId,
+        "create",
+        message.payload.deviceId,
+        { durationMinutes: message.payload.durationMinutes },
+        now,
+      );
+      return {
+        kind: "new" as const,
+        result,
+        snapshot: this.approvalLeaseSnapshot(message.payload.sessionId),
+      };
+    });
+  }
+
+  async revokeApprovalLease(input: {
+    message: Extract<ClientEnvelope, { type: "approval.lease.revoke" }>;
+    rejection: (code: string, detail: string) => ServerEnvelope;
+    now?: Date;
+  }) {
+    return this.#write(() => {
+      const { message } = input;
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? {
+              kind: "same" as const,
+              result: parseServer(prior.result_json),
+              snapshot: this.approvalLeaseSnapshot(message.payload.sessionId),
+            }
+          : { kind: "conflict" as const };
+      }
+      const now = (input.now ?? new Date()).toISOString();
+      const row = this.#approvalLeaseOptional(message.payload.leaseId);
+      const reject = (code: string, detail: string) => {
+        const result = input.rejection(code, detail);
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return {
+          kind: "new" as const,
+          result,
+          snapshot: this.approvalLeaseSnapshot(message.payload.sessionId),
+        };
+      };
+      if (row === undefined || row.session_id !== message.payload.sessionId) {
+        return reject("LEASE_NOT_FOUND", "Lease was not found in this Session.");
+      }
+      if (row.device_id !== message.payload.deviceId) {
+        return reject("LEASE_DEVICE_MISMATCH", "Lease belongs to another device.");
+      }
+      if (
+        row.state !== "active" ||
+        row.revision !== message.payload.expectedLeaseRevision
+      ) {
+        return reject("LEASE_REVISION_CONFLICT", "Lease is no longer active at this revision.");
+      }
+      this.#revokeLeaseRow(row, "revoke", message.payload.deviceId, now);
+      const revision = this.#leaseStateRevision(message.payload.sessionId, now);
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("session.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            revision,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, now);
+      return {
+        kind: "new" as const,
+        result,
+        snapshot: this.approvalLeaseSnapshot(message.payload.sessionId),
+      };
+    });
+  }
+
+  async emergencyStop(input: {
+    message: Extract<ClientEnvelope, { type: "approval.emergency_stop" }>;
+    rejection: (code: string, detail: string) => ServerEnvelope;
+    now?: Date;
+  }) {
+    return this.#write(() => {
+      const { message } = input;
+      const payloadHash = commandHash(message);
+      const prior = this.#command(message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? {
+              kind: "same" as const,
+              result: parseServer(prior.result_json),
+              snapshot: this.approvalLeaseSnapshot(message.payload.sessionId),
+              activeTurnId: this.snapshot(message.payload.sessionId).activeTurnId,
+            }
+          : { kind: "conflict" as const };
+      }
+      const now = (input.now ?? new Date()).toISOString();
+      if (!this.hasSession(message.payload.sessionId)) {
+        const result = input.rejection("SESSION_NOT_FOUND", "Session does not exist.");
+        this.#insertCommand(message, payloadHash, "rejected", result, now);
+        return { kind: "new" as const, result };
+      }
+      const rows = this.#activeApprovalLeases(message.payload.sessionId);
+      for (const row of rows) {
+        this.#revokeLeaseRow(row, "emergency_stop", message.payload.deviceId, now);
+      }
+      const revision = this.#leaseStateRevision(message.payload.sessionId, now);
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("session.command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            revision,
+          }),
+        ),
+      );
+      this.#insertCommand(message, payloadHash, "terminal", result, now);
+      return {
+        kind: "new" as const,
+        result,
+        snapshot: this.approvalLeaseSnapshot(message.payload.sessionId),
+        activeTurnId: this.snapshot(message.payload.sessionId).activeTurnId,
+      };
+    });
+  }
+
+  async revokeLeasesForCoreBoot(coreBootId: string) {
+    return this.#write(() => {
+      const now = new Date().toISOString();
+      const rows = this.#database
+        .prepare(
+          `SELECT lease_id, session_id, provider_id, account_id, project_path,
+                  device_id, runtime_id, runtime_generation, settings_revision,
+                  state, revision, issued_at, expires_at, revoked_at, revoke_reason
+             FROM approval_leases WHERE state = 'active' AND core_boot_id <> ?`,
+        )
+        .all(coreBootId) as unknown as ApprovalLeaseRow[];
+      for (const row of rows) {
+        this.#revokeLeaseRow(row, "core_restart", "core", now);
+      }
+      return [...new Set(rows.map((row) => row.session_id))].map((sessionId) =>
+        this.approvalLeaseSnapshot(sessionId),
+      );
+    });
+  }
+
+  async revokeLeasesForRuntime(runtime: Runtime) {
+    return this.#write(() => {
+      const now = new Date().toISOString();
+      const rows = this.#database
+        .prepare(
+          `SELECT lease_id, session_id, provider_id, account_id, project_path,
+                  device_id, runtime_id, runtime_generation, settings_revision,
+                  state, revision, issued_at, expires_at, revoked_at, revoke_reason
+             FROM approval_leases WHERE state = 'active'
+               AND runtime_id = ? AND runtime_generation = ?`,
+        )
+        .all(runtime.runtimeId, runtime.generation) as unknown as ApprovalLeaseRow[];
+      for (const row of rows) {
+        this.#revokeLeaseRow(row, "runtime_change", "core", now);
+      }
+      return [...new Set(rows.map((row) => row.session_id))].map((sessionId) =>
+        this.approvalLeaseSnapshot(sessionId),
+      );
+    });
+  }
+
+  async sweepApprovalLeases(now = new Date()) {
+    return this.#write(() => {
+      const timestamp = now.toISOString();
+      const rows = this.#database
+        .prepare(
+          `SELECT lease_id, session_id, provider_id, account_id, project_path,
+                  device_id, runtime_id, runtime_generation, settings_revision,
+                  state, revision, issued_at, expires_at, revoked_at, revoke_reason
+             FROM approval_leases WHERE state = 'active' AND expires_at <= ?`,
+        )
+        .all(timestamp) as unknown as ApprovalLeaseRow[];
+      for (const row of rows) {
+        this.#revokeLeaseRow(row, "expire", "core", timestamp, "expired");
+      }
+      return [...new Set(rows.map((row) => row.session_id))].map((sessionId) =>
+        this.approvalLeaseSnapshot(sessionId),
+      );
     });
   }
 
@@ -1363,8 +1731,8 @@ export class CoreDatabase {
           `INSERT INTO turns (
              id, session_id, runtime_id, runtime_generation, client_command_id,
              state, prompt, started_at, created_at, updated_at,
-             settings_revision, settings_snapshot_json
-           ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)`,
+             settings_revision, settings_snapshot_json, submitting_device_id
+           ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.turnId,
@@ -1378,6 +1746,7 @@ export class CoreDatabase {
           now,
           settings.revision,
           JSON.stringify(settings.settings),
+          input.message.payload.deviceId ?? null,
         );
       const durableEvent = this.#appendVisibleEvent({
         sessionId: input.message.payload.sessionId,
@@ -1807,6 +2176,141 @@ export class CoreDatabase {
         }),
         now,
       });
+    });
+  }
+
+  approvalPolicyContext(approvalId: string): ApprovalPolicyContext | undefined {
+    const approvalRow = this.#approvalOptional(approvalId);
+    if (approvalRow === undefined) return undefined;
+    const turn = this.#database
+      .prepare(
+        `SELECT settings_revision, settings_snapshot_json, submitting_device_id
+           FROM turns
+          WHERE id = ? AND session_id = ?`,
+      )
+      .get(approvalRow.turn_id, approvalRow.session_id) as
+      | {
+          settings_revision: number | null;
+          settings_snapshot_json: string | null;
+          submitting_device_id: string | null;
+        }
+      | undefined;
+    if (
+      turn?.settings_revision === null ||
+      turn?.settings_revision === undefined ||
+      turn.settings_snapshot_json === null
+    ) {
+      return undefined;
+    }
+    const currentSettings = this.sessionSettings(approvalRow.session_id);
+    if (
+      currentSettings === undefined ||
+      currentSettings.revision !== turn.settings_revision
+    ) {
+      return undefined;
+    }
+    const approval = approvalFromRow(approvalRow);
+    let files: ApprovalPolicyContext["files"] = [];
+    if (approval.payload.fileChangeId !== null) {
+      const change = this.#database
+        .prepare("SELECT files_json FROM file_changes WHERE id = ? AND session_id = ?")
+        .get(approval.payload.fileChangeId, approval.sessionId) as
+        | { files_json: string }
+        | undefined;
+      if (change !== undefined) {
+        files = FileChangeSchema.shape.files.parse(JSON.parse(change.files_json));
+      }
+    }
+    return {
+      approval,
+      providerCorrelationId: approvalRow.provider_correlation_id,
+      submittingDeviceId: turn.submitting_device_id,
+      settingsRevision: turn.settings_revision,
+      settings: SessionSettingsSchema.parse(JSON.parse(turn.settings_snapshot_json)),
+      files,
+    };
+  }
+
+  matchingApprovalLease(
+    context: ApprovalPolicyContext,
+    coreBootId: string,
+    now = new Date().toISOString(),
+  ): ApprovalLease | undefined {
+    const settings = context.settings;
+    if (
+      settings.approvalPolicy !== "full_auto_lease" ||
+      settings.accountId === null ||
+      settings.projectPath === null
+    ) {
+      return undefined;
+    }
+    const row = this.#database
+      .prepare(
+        `SELECT lease_id, session_id, provider_id, account_id, project_path,
+                device_id, runtime_id, runtime_generation, settings_revision,
+                state, revision, issued_at, expires_at, revoked_at, revoke_reason
+           FROM approval_leases WHERE session_id = ? AND state = 'active'
+             AND provider_id = ? AND account_id = ? AND project_path = ?
+             AND runtime_id = ? AND runtime_generation = ?
+             AND settings_revision = ? AND core_boot_id = ? AND expires_at > ?`,
+      )
+      .get(
+        context.approval.sessionId,
+        settings.providerId,
+        settings.accountId,
+        settings.projectPath,
+        context.approval.runtimeId,
+        context.approval.runtimeGeneration,
+        context.settingsRevision,
+        coreBootId,
+        now,
+      ) as ApprovalLeaseRow | undefined;
+    return row === undefined || context.submittingDeviceId !== row.device_id
+      ? undefined
+      : approvalLeaseFromRow(row);
+  }
+
+  async recordApprovalPolicyDecision(input: {
+    context: ApprovalPolicyContext;
+    policy: SessionSettings["approvalPolicy"];
+    decision: "pending" | "approved_once";
+    classifier: string;
+    lease?: ApprovalLease;
+    now?: Date;
+  }) {
+    await this.#write(() => {
+      const now = (input.now ?? new Date()).toISOString();
+      this.#database
+        .prepare(
+          `INSERT INTO approval_policy_audit (
+             audit_id, session_id, approval_id, lease_id, policy, decision,
+             classifier, settings_revision, runtime_id, runtime_generation,
+             created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          `audit-${crypto.randomUUID()}`,
+          input.context.approval.sessionId,
+          input.context.approval.approvalId,
+          input.lease?.leaseId ?? null,
+          input.policy,
+          input.decision,
+          input.classifier,
+          input.context.settingsRevision,
+          input.context.approval.runtimeId,
+          input.context.approval.runtimeGeneration,
+          now,
+        );
+      if (input.lease !== undefined && input.decision === "approved_once") {
+        this.#insertLeaseAudit(
+          input.lease.leaseId,
+          input.lease.sessionId,
+          "use",
+          input.lease.deviceId,
+          { approvalId: input.context.approval.approvalId },
+          now,
+        );
+      }
     });
   }
 
@@ -2782,6 +3286,114 @@ export class CoreDatabase {
     return row;
   }
 
+  #leaseStateRevision(sessionId: string, now: string) {
+    this.#database
+      .prepare(
+        `INSERT INTO approval_lease_state (session_id, revision, updated_at)
+         VALUES (?, 0, ?) ON CONFLICT(session_id) DO NOTHING`,
+      )
+      .run(sessionId, now);
+    const row = this.#database
+      .prepare("SELECT revision FROM approval_lease_state WHERE session_id = ?")
+      .get(sessionId) as { revision: number };
+    return row.revision;
+  }
+
+  #approvalLeaseOptional(leaseId: string) {
+    return this.#database
+      .prepare(
+        `SELECT lease_id, session_id, provider_id, account_id, project_path,
+                device_id, runtime_id, runtime_generation, settings_revision,
+                state, revision, issued_at, expires_at, revoked_at, revoke_reason
+           FROM approval_leases WHERE lease_id = ?`,
+      )
+      .get(leaseId) as ApprovalLeaseRow | undefined;
+  }
+
+  #activeApprovalLeases(sessionId: string) {
+    return this.#database
+      .prepare(
+        `SELECT lease_id, session_id, provider_id, account_id, project_path,
+                device_id, runtime_id, runtime_generation, settings_revision,
+                state, revision, issued_at, expires_at, revoked_at, revoke_reason
+           FROM approval_leases WHERE session_id = ? AND state = 'active'
+           ORDER BY issued_at, lease_id`,
+      )
+      .all(sessionId) as unknown as ApprovalLeaseRow[];
+  }
+
+  #revokeLeaseRow(
+    row: ApprovalLeaseRow,
+    action:
+      | "revoke"
+      | "expire"
+      | "emergency_stop"
+      | "runtime_change"
+      | "settings_change"
+      | "core_restart",
+    deviceId: string,
+    now: string,
+    terminalState: "revoked" | "expired" = "revoked",
+  ) {
+    const updated = this.#database
+      .prepare(
+        `UPDATE approval_leases SET state = ?, revision = revision + 1,
+           revoked_at = ?, revoke_reason = ?
+         WHERE lease_id = ? AND state = 'active' AND revision = ?`,
+      )
+      .run(terminalState, now, action, row.lease_id, row.revision);
+    if (Number(updated.changes) !== 1) return false;
+    this.#leaseStateRevision(row.session_id, now);
+    this.#database
+      .prepare(
+        `UPDATE approval_lease_state SET revision = revision + 1, updated_at = ?
+         WHERE session_id = ?`,
+      )
+      .run(now, row.session_id);
+    this.#insertLeaseAudit(
+      row.lease_id,
+      row.session_id,
+      action,
+      deviceId,
+      { priorRevision: row.revision },
+      now,
+    );
+    return true;
+  }
+
+  #insertLeaseAudit(
+    leaseId: string,
+    sessionId: string,
+    action:
+      | "create"
+      | "use"
+      | "revoke"
+      | "expire"
+      | "emergency_stop"
+      | "runtime_change"
+      | "settings_change"
+      | "core_restart",
+    deviceId: string,
+    detail: Record<string, unknown>,
+    now: string,
+  ) {
+    this.#database
+      .prepare(
+        `INSERT INTO approval_lease_audit (
+           audit_id, lease_id, session_id, action, device_id, detail_json, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        `audit-${crypto.randomUUID()}`,
+        leaseId,
+        sessionId,
+        action,
+        deviceId,
+        JSON.stringify(detail),
+        now,
+      );
+  }
+
   #invalidateApproval(approval: ApprovalRow, now: string) {
     this.#database
       .prepare(
@@ -3308,6 +3920,26 @@ function approvalFromRow(row: ApprovalRow) {
     payload: JSON.parse(row.payload_json),
     resolvedAt: row.resolved_at,
     resolvedByDeviceId: row.resolved_by_device_id,
+  });
+}
+
+function approvalLeaseFromRow(row: ApprovalLeaseRow): ApprovalLease {
+  return ApprovalLeaseSchema.parse({
+    leaseId: row.lease_id,
+    sessionId: row.session_id,
+    providerId: row.provider_id,
+    accountId: row.account_id,
+    projectPath: row.project_path,
+    deviceId: row.device_id,
+    runtimeId: row.runtime_id,
+    runtimeGeneration: row.runtime_generation,
+    settingsRevision: row.settings_revision,
+    state: row.state,
+    revision: row.revision,
+    issuedAt: row.issued_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at,
+    revokeReason: row.revoke_reason,
   });
 }
 

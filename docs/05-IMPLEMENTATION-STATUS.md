@@ -57,7 +57,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M9.4 Codex native discovery, create, resume, and capabilities
 - [x] M9.5 revision-fenced Session settings and effective Turn snapshots
 - [x] M9.6 normalized execution-mode semantics
-- [ ] M9.7 approval policies and scoped Full Auto leases
+- [x] M9.7 approval policies and scoped Full Auto leases
 - [ ] M9.8 managed attachment lifecycle and security
 - [ ] M9.9 normalized terminal/activity metadata
 - [ ] M9.10 security, recovery, fault, and performance gate
@@ -65,12 +65,12 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**M9.7 approval policies and scoped Full Auto leases.** M9.6 now advertises
-verified execution-mode capability and translates ask/plan/auto into explicit
-Codex orchestration instructions while retaining the immutable effective Turn
-snapshot. Auto remains inside the same approval, sandbox, network, project,
-and Runtime fences and never creates or replays a prompt. Core schema remains
-8. The Grok visual checkpoint remains isolated and frozen. M8.5 and
+**M9.8 managed attachment lifecycle and security.** M9.7 adds Core schema 9,
+server-side review/balanced/workspace-auto classification, exact bounded Full
+Auto leases, device/settings/Runtime fences, durable policy audit, automatic
+expiry/revocation, and emergency interrupt. Codex always remains request-capable
+and receives a canonical read-only or workspace sandbox with network disabled.
+The Grok visual checkpoint remains isolated and frozen. M8.5 and
 Google/Cloudflare identity remain deferred outside M9.
 
 ## Last verified demo

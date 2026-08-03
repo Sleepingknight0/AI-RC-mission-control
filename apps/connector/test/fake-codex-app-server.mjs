@@ -354,7 +354,7 @@ lines.on("line", (line) => {
         setTimeout(() => {
           const answer =
             text === "report-settings"
-              ? `Real-shaped response: ${message.params.input[0].text}|${message.params.model}|${message.params.effort}`
+              ? `Real-shaped response: ${message.params.input[0].text}|${message.params.model}|${message.params.effort}|${message.params.approvalPolicy}|${message.params.sandboxPolicy?.type}|${message.params.sandboxPolicy?.networkAccess}`
               : `Real-shaped response: ${text}`;
           send({
             method: "item/agentMessage/delta",

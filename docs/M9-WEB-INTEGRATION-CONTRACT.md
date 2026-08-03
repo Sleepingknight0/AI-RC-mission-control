@@ -35,7 +35,10 @@ All mutations carry stable `commandId`.
 - `session.settings.update` with `expectedRevision`
 - `approval.lease.create`, `approval.lease.revoke`, `approval.emergency_stop`
 - `attachment.upload.begin`, `.chunk`, `.complete`, `.delete`
-- extended `turn.submit` with optional `settingsRevision` and `attachmentIds`
+- extended `turn.submit` with optional `settingsRevision`, optional `deviceId`
+  for M8 compatibility, and (after M9.8) `attachmentIds`. M9 Web must send both
+  the displayed settings revision and its stable client-instance device ID;
+  a Turn without `deviceId` cannot consume Full Auto authority.
 
 Session metadata/read mutations receive `session.command.accepted` with the new
 Session revision; conflicts and capability failures receive `command.rejected`
@@ -101,7 +104,15 @@ never grants a lease, and never causes Core to submit another prompt.
 
 ## Lease lifecycle
 
-`approval.lease.snapshot` exposes state, scopes, revision, `expiresAt`, and server time. Create accepts only 15/30/60 minutes plus current Session/settings/Runtime/device fences. Revoke and emergency stop are idempotent. The UI derives countdown from `expiresAt` but treats server state as authoritative.
+`approval.lease.snapshot` exposes the Session lease-state revision plus up to 32
+lease rows with opaque ID, scope, row revision, state, `expiresAt`, revocation
+data, and server time. `approval.lease.create` requires command/session/device,
+the current settings and lease-state revisions, exact provider/account/project,
+current Runtime ID/generation, and 15/30/60 minutes. Revoke requires the owning
+device and active lease row revision. Emergency stop revokes every active lease
+for the Session and interrupts the active Turn. Commands are idempotent; stale
+or replayed scopes reject. UI countdown is derived from `expiresAt`, but server
+state is authoritative and Core restart revokes active authority.
 
 ## Attachments
 
