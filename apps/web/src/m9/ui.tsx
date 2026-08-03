@@ -367,7 +367,6 @@ export function SessionCatalogPanel({
                 <button
                   type="button"
                   className="text-button"
-                  disabled={!session.canControl}
                   onClick={() => {
                     const next = window.prompt("Rename Session", session.title);
                     if (next !== null) onRename(session, next);
@@ -378,7 +377,6 @@ export function SessionCatalogPanel({
                 <button
                   type="button"
                   className="text-button"
-                  disabled={!session.canControl}
                   onClick={() => onPin(session)}
                 >
                   {session.pinned ? "Unpin" : "Pin"}
@@ -386,7 +384,7 @@ export function SessionCatalogPanel({
                 <button
                   type="button"
                   className="text-button"
-                  disabled={!session.canControl || session.state === "running"}
+                  disabled={session.state === "running"}
                   onClick={() => onArchive(session)}
                 >
                   {session.archived ? "Unarchive" : "Archive"}

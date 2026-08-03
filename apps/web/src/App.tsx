@@ -26,6 +26,7 @@ import {
 
 import {
   buildTimeline,
+  connectionAfterProtocolError,
   durableSeq,
   latestTurn,
   approvalForRejectedCommand,
@@ -176,22 +177,13 @@ function connectionLabel(connection: ConnectionState) {
 function StatusPill({
   value,
   label,
-  pulse = false,
 }: {
   value: string;
   label?: string;
-  pulse?: boolean;
 }) {
-  const busy =
-    pulse ||
-    value === "running" ||
-    value === "syncing" ||
-    value === "connecting" ||
-    value === "reconnecting" ||
-    value === "busy";
   return (
     <span
-      className={`status-pill state-${value}${busy ? " is-busy" : ""}`}
+      className={`status-pill state-${value}`}
       aria-label={label ?? formatState(value)}
     >
       <span className="status-mark" aria-hidden="true" />
@@ -249,7 +241,7 @@ function ActivityBlock({ activity }: { activity: ToolActivity }) {
           <small>{activity.kind.toUpperCase()}</small>
           <strong title={activity.title}>{activity.title}</strong>
         </span>
-        <StatusPill value={activity.status} pulse={running} />
+        <StatusPill value={activity.status} />
       </summary>
       <TerminalActivityDetails
         activity={{
@@ -294,7 +286,7 @@ function TimelineEntry({
           <time dateTime={item.turn.startedAt}>{formatTime(item.turn.startedAt)}</time>
         </div>
         <p className="message-copy">{item.turn.prompt}</p>
-        <StatusPill value={item.turn.status} pulse={item.turn.status === "running"} />
+        <StatusPill value={item.turn.status} />
       </article>
     );
   }
@@ -302,7 +294,7 @@ function TimelineEntry({
     const streaming = !item.completed;
     return (
       <article
-        className={`timeline-entry assistant-entry${streaming ? " is-streaming" : ""}`}
+        className="timeline-entry assistant-entry"
         aria-posinset={position}
         aria-setsize={setSize}
       >
@@ -341,7 +333,7 @@ function TimelineEntry({
     >
       <div className="entry-meta">
         <span>FILE CHANGE</span>
-        <StatusPill value={item.fileChange.status} pulse={item.fileChange.status === "running"} />
+        <StatusPill value={item.fileChange.status} />
       </div>
       <p className="path-list">
         {item.fileChange.files.map((file) => `${file.kind[0]?.toUpperCase()} ${file.path}`).join("\n")}
@@ -510,7 +502,7 @@ export function App() {
         setConnection("offline");
         setArtifactAccessToken(null);
         setNotice(
-          "Core runtime authentication unavailable. Draft retained; retrying safely.",
+          "Core startup is unavailable. Check the Core startup logs. If they report a migration or checksum mismatch, do not delete or overwrite the database; use the documented backup / verify / migrate or restore workflow. Draft retained; retrying safely.",
         );
         scheduleReconnect();
         return;
@@ -699,6 +691,13 @@ export function App() {
         if (message.type === "protocol.error") {
           const code = message.payload.error.code;
           const detail = message.payload.error.message;
+          setConnection((current) =>
+            connectionAfterProtocolError(
+              current,
+              message.payload.error,
+              selectedSessionRef.current,
+            ),
+          );
           if (isMaintenanceProtocolError(code)) {
             setMaintenanceNotice(maintenanceOperatorMessage(code, detail));
           }
@@ -914,7 +913,8 @@ export function App() {
       ),
     ).values(),
   );
-  // Catalog cursor recovery: discard cursor and request first page explicitly.
+  // Catalog cursor recovery: this read-only list request is safe to repeat after
+  // the server invalidates a cursor. No mutation or prompt is replayed.
   useEffect(() => {
     if (!catalog.needsFreshPage) return;
     const socket = socketRef.current;
@@ -1285,8 +1285,17 @@ export function App() {
         setNotice("Text attachments are limited to 1 MiB");
         continue;
       }
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const digest = await sha256Hex(bytes.buffer);
+      let bytes: Uint8Array;
+      let digest: string;
+      try {
+        const content = await file.arrayBuffer();
+        bytes = new Uint8Array(content);
+        digest = await sha256Hex(content);
+      } catch {
+        console.error("Attachment preparation failed before upload");
+        setNotice(`Unable to read or hash attachment ${name}. No upload was sent.`);
+        continue;
+      }
       const chunkCount = Math.max(1, Math.ceil(bytes.byteLength / INPUT_ATTACHMENT_CHUNK_BYTES));
       const commandId = crypto.randomUUID();
       // Reserve slot before send so simultaneous picks cannot overshoot.
@@ -1606,10 +1615,7 @@ export function App() {
                 >
                   <span className="session-strip-top">
                     <span className="provider-label">SESSION</span>
-                    <StatusPill
-                      value={session.state}
-                      pulse={session.state === "running" || session.state === "awaiting_approval"}
-                    />
+                    <StatusPill value={session.state} />
                   </span>
                   <strong title={session.sessionId}>{session.sessionId}</strong>
                   <span className="session-path" title={session.cwd ?? undefined}>
@@ -1655,10 +1661,7 @@ export function App() {
               </p>
             </div>
             <div className="console-state">
-              <StatusPill
-                value={sessionState}
-                pulse={timelineBusy || sessionState === "awaiting_approval"}
-              />
+              <StatusPill value={sessionState} />
               <span className="mono-meta">
                 RT G{runtime?.generation ?? "—"} · T+{formatElapsed(latest?.startedAt, now)}
               </span>

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   TIMELINE_VIRTUAL_ROW_HEIGHT,
   buildTimeline,
+  connectionAfterProtocolError,
   approvalForRejectedCommand,
   trackApprovalCommand,
   turnAvailability,
@@ -36,6 +37,33 @@ const snapshot: SessionSnapshot = {
 };
 
 describe("mission-control render state", () => {
+  it("ends replay lock when the selected placeholder Session does not exist", () => {
+    expect(
+      connectionAfterProtocolError(
+        "syncing",
+        {
+          code: "SESSION_NOT_FOUND",
+          message: "Session must be created before it can be selected.",
+          retryable: false,
+          sessionId: "session-demo",
+        },
+        "session-demo",
+      ),
+    ).toBe("online");
+    expect(
+      connectionAfterProtocolError(
+        "syncing",
+        {
+          code: "SESSION_NOT_FOUND",
+          message: "Another Session does not exist.",
+          retryable: false,
+          sessionId: "other-session",
+        },
+        "session-demo",
+      ),
+    ).toBe("syncing");
+  });
+
   it("coalesces deltas under a stable message identity", () => {
     const first = updateSnapshot(
       snapshot,

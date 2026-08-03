@@ -1,6 +1,7 @@
 import type {
   Approval,
   FileChange,
+  ProtocolError,
   Runtime,
   ServerEnvelope,
   SessionSnapshot,
@@ -14,6 +15,23 @@ export type ConnectionState =
   | "syncing"
   | "online"
   | "offline";
+
+/**
+ * A missing selected Session ends only the replay lock: the authenticated
+ * Core connection remains usable for global operations such as Session
+ * creation. Errors for another Session or any other failure stay fenced.
+ */
+export function connectionAfterProtocolError(
+  current: ConnectionState,
+  error: ProtocolError,
+  selectedSessionId: string,
+): ConnectionState {
+  return current === "syncing" &&
+    error.code === "SESSION_NOT_FOUND" &&
+    error.sessionId === selectedSessionId
+    ? "online"
+    : current;
+}
 
 export type TimelineItem =
   | { id: string; kind: "operator"; turn: Turn }
