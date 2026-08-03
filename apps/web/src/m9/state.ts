@@ -6,10 +6,15 @@ import type {
   ProviderNativeSessionSnapshot,
   ProviderRecord,
   ServerEnvelope,
+  SessionCapabilitiesSnapshot,
   SessionCatalogFilter,
+  SessionSettings,
   SessionSettingsSnapshot,
   SessionSummaryV2,
 } from "@aicl/protocol";
+
+type ExecutionMode = SessionSettings["executionMode"];
+type ApprovalPolicy = SessionSettings["approvalPolicy"];
 
 export type ResourceFreshness =
   | "loading"
@@ -28,6 +33,11 @@ export interface CatalogState {
   requestId: string | null;
   /** True while a cursor page request is in flight — snapshot should append. */
   pendingAppend: boolean;
+  /**
+   * Set when Core rejects a catalog cursor. App must request a fresh first page
+   * and clear this flag after the request starts.
+   */
+  needsFreshPage: boolean;
   notice: string | null;
   error: string | null;
 }
@@ -64,6 +74,19 @@ export interface AttachmentUiState {
   error: string | null;
 }
 
+/** Authoritative selected-Session capability projection from Core. */
+export interface SessionCapabilitiesUiState {
+  status: ResourceFreshness;
+  snapshot: SessionCapabilitiesSnapshot | null;
+  error: string | null;
+}
+
+export interface PendingUploadBytes {
+  bytes: Uint8Array;
+  chunkCount: number;
+  sessionId: string;
+}
+
 export function defaultCatalogFilters(): SessionCatalogFilter {
   return {
     search: null,
@@ -86,6 +109,7 @@ export function initialCatalogState(): CatalogState {
     filters: defaultCatalogFilters(),
     requestId: null,
     pendingAppend: false,
+    needsFreshPage: false,
     notice: null,
     error: null,
   };
@@ -127,6 +151,10 @@ export function initialAttachmentState(): AttachmentUiState {
   };
 }
 
+export function initialSessionCapabilitiesState(): SessionCapabilitiesUiState {
+  return { status: "loading", snapshot: null, error: null };
+}
+
 export function reduceFleet(
   current: FleetState,
   message: ServerEnvelope,
@@ -138,7 +166,20 @@ export function reduceFleet(
       error: null,
     };
   }
-  if (message.type === "command.rejected" && message.payload.error.code.startsWith("PROVIDER_")) {
+  if (
+    message.type === "command.rejected" &&
+    message.payload.error.code.startsWith("PROVIDER_")
+  ) {
+    return {
+      ...current,
+      status: current.snapshot ? "stale" : "error",
+      error: `${message.payload.error.code}: ${message.payload.error.message}`,
+    };
+  }
+  if (
+    message.type === "protocol.error" &&
+    message.payload.error.code.startsWith("PROVIDER_")
+  ) {
     return {
       ...current,
       status: current.snapshot ? "stale" : "error",
@@ -146,6 +187,13 @@ export function reduceFleet(
     };
   }
   return current;
+}
+
+function isCatalogCursorError(code: string): boolean {
+  return (
+    code === "SESSION_CATALOG_CURSOR_INVALID" ||
+    code === "SESSION_CATALOG_CURSOR_STALE"
+  );
 }
 
 export function reduceCatalog(
@@ -172,28 +220,38 @@ export function reduceCatalog(
       total: message.payload.total,
       requestId: message.payload.requestId,
       pendingAppend: false,
+      needsFreshPage: false,
+      notice: append ? current.notice : null,
       error: null,
     };
   }
-  if (
-    message.type === "command.rejected" &&
-    (message.payload.error.code.startsWith("SESSION_CATALOG_") ||
-      message.payload.error.code.startsWith("SESSION_"))
-  ) {
-    const code = message.payload.error.code;
-    if (
-      code === "SESSION_CATALOG_CURSOR_INVALID" ||
-      code === "SESSION_CATALOG_CURSOR_STALE"
-    ) {
-      return {
-        ...current,
-        nextCursor: null,
-        pendingAppend: false,
-        error: `${code}: ${message.payload.error.message}`,
-        status: current.sessions.length > 0 ? "stale" : "error",
-      };
-    }
+
+  const errorCode =
+    message.type === "protocol.error"
+      ? message.payload.error.code
+      : message.type === "command.rejected"
+        ? message.payload.error.code
+        : null;
+  const errorMessage =
+    message.type === "protocol.error"
+      ? message.payload.error.message
+      : message.type === "command.rejected"
+        ? message.payload.error.message
+        : null;
+
+  if (errorCode !== null && isCatalogCursorError(errorCode)) {
+    return {
+      ...current,
+      nextCursor: null,
+      pendingAppend: false,
+      needsFreshPage: true,
+      notice:
+        "Catalog refreshed because authority or visible catalog state changed. Requesting a fresh first page.",
+      error: `${errorCode}: ${errorMessage}`,
+      status: current.sessions.length > 0 ? "stale" : "error",
+    };
   }
+
   if (message.type === "session.command.accepted") {
     return {
       ...current,
@@ -204,6 +262,7 @@ export function reduceCatalog(
       ),
     };
   }
+
   if (message.type === "session.provider.status") {
     return {
       ...current,
@@ -213,6 +272,7 @@ export function reduceCatalog(
               ...session,
               providerBindingStatus: message.payload.status,
               providerSessionId: message.payload.providerSessionId,
+              // Never invent control from binding alone — catalog/capabilities are authoritative.
               canControl:
                 message.payload.status === "ready" ? session.canControl : false,
             }
@@ -220,6 +280,8 @@ export function reduceCatalog(
       ),
     };
   }
+
+  // Timeline / durable events must not invalidate valid catalog pagination.
   return current;
 }
 
@@ -241,8 +303,10 @@ export function catalogRequestStarted(
         : "loading",
     requestId,
     pendingAppend: append,
+    needsFreshPage: false,
     filters: filters ?? current.filters,
     error: append ? current.error : null,
+    notice: append ? current.notice : null,
   };
 }
 
@@ -299,6 +363,31 @@ export function reduceSettings(
   return current;
 }
 
+export function reduceSessionCapabilities(
+  current: SessionCapabilitiesUiState,
+  message: ServerEnvelope,
+  selectedSessionId: string,
+): SessionCapabilitiesUiState {
+  if (message.type === "session.capabilities.snapshot") {
+    if (message.payload.snapshot.sessionId !== selectedSessionId) {
+      return current;
+    }
+    const freshness = message.payload.snapshot.freshness;
+    const status: ResourceFreshness =
+      freshness === "stale" || freshness === "offline"
+        ? "stale"
+        : freshness === "unavailable"
+          ? "unavailable"
+          : "ready";
+    return {
+      status,
+      snapshot: message.payload.snapshot,
+      error: null,
+    };
+  }
+  return current;
+}
+
 export function reduceLease(
   current: LeaseUiState,
   message: ServerEnvelope,
@@ -345,7 +434,7 @@ export function reduceAttachments(
             item.attachmentId === attachment.attachmentId ? attachment : item,
           )
         : [...current.attachments, attachment],
-      error: attachment.status === "rejected" ? "Attachment rejected" : null,
+      error: attachment.status === "rejected" ? "Attachment rejected by Core" : null,
     };
   }
   if (
@@ -375,6 +464,7 @@ export function reduceAttachments(
   return current;
 }
 
+/** Fleet helpers — inventory / create only; not selected-Session control. */
 export function capabilityOf(
   provider: ProviderRecord | null | undefined,
   key: ProviderCapabilityKey,
@@ -420,15 +510,147 @@ export function controllableProviders(fleet: ProviderFleetSnapshot | null) {
     if (!provider.enabled) return false;
     if (provider.installation !== "installed") return false;
     if (provider.adapterSupport !== "remote_control") return false;
+    if (provider.freshness === "stale" || provider.freshness === "offline") {
+      return false;
+    }
     return capabilitySupported(provider, "remote_control").ok;
   });
 }
 
+export function sessionSupportRow(
+  snapshot: SessionCapabilitiesSnapshot | null | undefined,
+  kind:
+    | { type: "execution"; mode: ExecutionMode }
+    | { type: "attachment"; kind: "text" | "image" }
+    | { type: "approval"; policy: ApprovalPolicy }
+    | { type: "lease" }
+    | { type: "model" }
+    | { type: "provider" }
+    | { type: "account" }
+    | { type: "control" },
+): { ok: boolean; reason: string | null } {
+  if (!snapshot) {
+    return { ok: false, reason: "Session capability projection unavailable" };
+  }
+  if (
+    snapshot.freshness === "stale" ||
+    snapshot.freshness === "offline" ||
+    snapshot.freshness === "unavailable"
+  ) {
+    return {
+      ok: false,
+      reason:
+        snapshot.controlAuthority.reason ??
+        `Session capability evidence is ${snapshot.freshness}`,
+    };
+  }
+
+  const row =
+    kind.type === "execution"
+      ? snapshot.executionModes.find((item) => item.mode === kind.mode)
+      : kind.type === "attachment"
+        ? snapshot.attachments.find((item) => item.kind === kind.kind)
+        : kind.type === "approval"
+          ? snapshot.approvalPolicies.find((item) => item.policy === kind.policy)
+          : kind.type === "lease"
+            ? snapshot.fullAutoLease
+            : kind.type === "model"
+              ? snapshot.model
+              : kind.type === "provider"
+                ? snapshot.provider
+                : kind.type === "account"
+                  ? snapshot.account
+                  : null;
+
+  if (kind.type === "control") {
+    if (!snapshot.controlAuthority.canControl) {
+      return {
+        ok: false,
+        reason:
+          snapshot.controlAuthority.reason ??
+          `Session not controllable (${snapshot.controlAuthority.bindingStatus})`,
+      };
+    }
+    return { ok: true, reason: null };
+  }
+
+  if (!row) {
+    return { ok: false, reason: "Capability row missing from projection" };
+  }
+  if (row.state !== "supported") {
+    return {
+      ok: false,
+      reason: row.reason ?? `${kind.type} is ${row.state}`,
+    };
+  }
+  return { ok: true, reason: null };
+}
+
+/**
+ * Authoritative control decision for the selected Session.
+ * Catalog canControl and Session capability projection must both allow;
+ * never elevate from fleet-level remote_control alone.
+ */
+export function sessionCanControl(input: {
+  catalogEntry: SessionSummaryV2 | null;
+  capabilities: SessionCapabilitiesSnapshot | null;
+  fleetStale?: boolean;
+}): { ok: boolean; reason: string | null } {
+  const { catalogEntry, capabilities, fleetStale = false } = input;
+
+  if (fleetStale) {
+    return {
+      ok: false,
+      reason: "Provider inventory is stale; control authority withdrawn",
+    };
+  }
+
+  if (capabilities) {
+    const control = sessionSupportRow(capabilities, { type: "control" });
+    if (!control.ok) return control;
+  } else if (catalogEntry) {
+    if (!catalogEntry.canControl) {
+      return {
+        ok: false,
+        reason: "Catalog marks this Session as non-controllable",
+      };
+    }
+  } else {
+    return {
+      ok: false,
+      reason: "No authoritative Session control evidence",
+    };
+  }
+
+  // Catalog is computed with the same exact validator as Turn submit.
+  if (catalogEntry && !catalogEntry.canControl) {
+    return {
+      ok: false,
+      reason:
+        capabilities?.controlAuthority.reason ??
+        "Catalog marks this Session as non-controllable",
+    };
+  }
+
+  if (
+    catalogEntry &&
+    (catalogEntry.providerBindingStatus === "pending" ||
+      catalogEntry.providerBindingStatus === "failed" ||
+      catalogEntry.providerBindingStatus === "outcome_unknown" ||
+      catalogEntry.providerBindingStatus === "unbound")
+  ) {
+    return {
+      ok: false,
+      reason: `Provider binding is ${catalogEntry.providerBindingStatus}`,
+    };
+  }
+
+  return { ok: true, reason: null };
+}
+
 export function activeLease(snapshot: ApprovalLeaseSnapshot | null) {
   if (!snapshot) return null;
-  return (
-    snapshot.leases.find((lease) => lease.state === "active") ?? null
-  );
+  return snapshot.leases.find((lease) => lease.state === "active") ?? null;
 }
 
 export function leaseRemainingMs(
@@ -454,3 +676,62 @@ export function attachmentKindForMediaType(
   if (mediaType === "application/pdf") return "document";
   return "archive";
 }
+
+/**
+ * Count attachment slots consumed toward the per-Turn limit without
+ * double-counting selected-ready IDs that are already in the attachment list.
+ * In-flight begin commands (not yet accepted) also consume slots.
+ */
+export function countAttachmentSlots(
+  attachments: InputAttachment[],
+  inFlightBeginCount: number,
+): number {
+  const consuming = attachments.filter(
+    (item) => item.status === "uploading" || item.status === "ready",
+  );
+  return consuming.length + Math.max(0, inFlightBeginCount);
+}
+
+export function remainingAttachmentSlots(
+  attachments: InputAttachment[],
+  inFlightBeginCount: number,
+  maxPerTurn: number,
+): number {
+  return Math.max(0, maxPerTurn - countAttachmentSlots(attachments, inFlightBeginCount));
+}
+
+/** Extract pending upload bytes by commandId (authoritative correlation). */
+export function takePendingUploadByCommand(
+  pending: Map<string, PendingUploadBytes>,
+  commandId: string,
+  sessionId: string,
+): PendingUploadBytes | null {
+  const value = pending.get(commandId);
+  if (!value) return null;
+  if (value.sessionId !== sessionId) return null;
+  pending.delete(commandId);
+  return value;
+}
+
+/** Detect database / migration maintenance from Core protocol notices. */
+export function isMaintenanceProtocolError(code: string): boolean {
+  return (
+    code.includes("MIGRATION") ||
+    code.includes("SCHEMA") ||
+    code.includes("DATABASE") ||
+    code === "CORE_UNAVAILABLE" ||
+    code === "PROVIDER_INVENTORY_UNAVAILABLE"
+  );
+}
+
+export function maintenanceOperatorMessage(code: string, detail: string): string {
+  return [
+    "Application database requires maintenance.",
+    "Automated Session control is unavailable until maintenance completes.",
+    "Do not delete or overwrite the database.",
+    "Use the documented backup / verify / migrate or restore workflow.",
+    `Diagnostic: ${code}${detail ? ` — ${detail}` : ""}`,
+  ].join(" ");
+}
+
+export const FILTER_DEBOUNCE_MS = 250;
