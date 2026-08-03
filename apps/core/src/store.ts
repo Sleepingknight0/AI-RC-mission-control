@@ -135,6 +135,8 @@ export type ConnectorIngestRejectionCode =
   | "CONNECTOR_ACTIVITY_INVALID"
   | "CONNECTOR_FILE_CHANGE_INVALID"
   | "CONNECTOR_APPROVAL_ID_CONFLICT"
+  | "CONNECTOR_INTERRUPT_RESULT_INVALID"
+  | "CONNECTOR_TURN_TERMINAL_INVALID"
   | "CONNECTOR_ARTIFACT_DECLARATION_INVALID"
   | "CONNECTOR_ARTIFACT_CHUNK_INVALID"
   | "CONNECTOR_ARTIFACT_INTEGRITY_INVALID";
@@ -3203,6 +3205,11 @@ export class CoreDatabase {
           ["running", "interrupted"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_INTERRUPT_RESULT_INVALID",
+        );
         return undefined;
       }
       const now = new Date().toISOString();
@@ -3579,6 +3586,11 @@ export class CoreDatabase {
           ["running", "outcome_unknown"],
         )
       ) {
+        this.#rejectConnectorIngest(
+          source,
+          message.type,
+          "CONNECTOR_TURN_TERMINAL_INVALID",
+        );
         return undefined;
       }
       const now = new Date().toISOString();

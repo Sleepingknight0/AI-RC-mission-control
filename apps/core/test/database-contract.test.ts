@@ -362,6 +362,35 @@ describe("Core SQLite contract", () => {
     await expect(
       database.requestApproval(approval, source("approval-conflict")),
     ).resolves.toBeUndefined();
+    const invalidInterrupt = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.interrupt.result", {
+        commandId: "interrupt-invalid",
+        sessionId: "artifact-session",
+        turnId: "missing-turn",
+        status: "accepted",
+      }),
+    );
+    const invalidTerminal = ConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.turn.completed", {
+        sessionId: "artifact-session",
+        turnId: "missing-turn",
+      }),
+    );
+    if (
+      invalidInterrupt.type !== "connector.interrupt.result" ||
+      invalidTerminal.type !== "connector.turn.completed"
+    ) {
+      throw new Error("Expected invalid terminal envelopes");
+    }
+    await expect(
+      database.recordInterruptResult(
+        invalidInterrupt,
+        source("interrupt-invalid-source"),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      database.finishTurn(invalidTerminal, source("terminal-invalid-source")),
+    ).resolves.toBeUndefined();
     await expect(
       database.requestApproval(approval, source("approval-conflict")),
     ).resolves.toBeUndefined();
@@ -482,6 +511,14 @@ describe("Core SQLite contract", () => {
         expect.objectContaining({
           code: "CONNECTOR_ARTIFACT_INTEGRITY_INVALID",
           envelopeType: "connector.artifact.complete",
+        }),
+        expect.objectContaining({
+          code: "CONNECTOR_INTERRUPT_RESULT_INVALID",
+          envelopeType: "connector.interrupt.result",
+        }),
+        expect.objectContaining({
+          code: "CONNECTOR_TURN_TERMINAL_INVALID",
+          envelopeType: "connector.turn.completed",
         }),
       ]),
     );
