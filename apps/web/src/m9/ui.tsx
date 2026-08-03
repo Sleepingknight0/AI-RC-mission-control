@@ -2,6 +2,7 @@ import type {
   ApprovalLeaseSnapshot,
   InputAttachment,
   ProviderFleetSnapshot,
+  SessionCapabilitiesSnapshot,
   SessionCatalogFilter,
   SessionSettings,
   SessionSummaryV2,
@@ -13,11 +14,13 @@ import {
   capabilitySupported,
   controllableProviders,
   leaseRemainingMs,
+  sessionSupportRow,
   type AttachmentUiState,
   type CatalogState,
   type FleetState,
   type NativeState,
   type ResourceFreshness,
+  type SessionCapabilitiesUiState,
   type SettingsUiState,
 } from "./state.js";
 
@@ -264,9 +267,11 @@ export function SessionCatalogPanel({
         <DisabledReason reason={createDisabledReason} />
       </div>
       {catalog.error && <p className="inline-error" role="alert">{catalog.error}</p>}
+      {catalog.notice && <p className="panel-notice" role="status">{catalog.notice}</p>}
       <p className="mono-meta catalog-count">
         Showing {catalog.sessions.length} of {catalog.total}
         {catalog.pendingAppend ? " · loading page…" : ""}
+        {catalog.needsFreshPage ? " · recovering first page…" : ""}
       </p>
       <div className="catalog-list">
         {catalog.sessions.length === 0 ? (
@@ -392,6 +397,7 @@ export function SessionCatalogPanel({
 
 export function SessionControlsPanel({
   settings,
+  sessionCapabilities,
   fleet,
   lease,
   runtimeId,
@@ -403,6 +409,7 @@ export function SessionControlsPanel({
   onEmergencyStop,
 }: {
   settings: SettingsUiState;
+  sessionCapabilities: SessionCapabilitiesUiState;
   fleet: ProviderFleetSnapshot | null;
   lease: ApprovalLeaseSnapshot | null;
   runtimeId: string | null;
@@ -414,20 +421,40 @@ export function SessionControlsPanel({
   onEmergencyStop: () => void;
 }) {
   const snapshot = settings.snapshot;
+  const caps: SessionCapabilitiesSnapshot | null =
+    sessionCapabilities.snapshot;
   const provider =
     fleet?.providers.find((item) => item.providerId === snapshot?.settings.providerId) ??
     null;
+  // Models are inventory display only; enablement comes from Session projection.
   const models = provider?.models.filter((model) => !model.hidden) ?? [];
-  const modelCap = capabilitySupported(provider, "change_model");
-  const reasonCap = capabilitySupported(provider, "reasoning_levels");
-  const execCap = capabilitySupported(provider, "execution_modes");
-  const approvalCap = capabilitySupported(provider, "approval_policies");
-  const sandboxCap = capabilitySupported(provider, "sandbox_policies");
-  const networkCap = capabilitySupported(provider, "network_policies");
-  const leaseCap = approvalCap;
+  const controlCap = sessionSupportRow(caps, { type: "control" });
+  const modelCap = sessionSupportRow(caps, { type: "model" });
+  // Reasoning options still need fleet model rows for labels; gate on model support.
+  const reasonCap = modelCap;
+  const execCapAsk = sessionSupportRow(caps, { type: "execution", mode: "ask" });
+  const execCapPlan = sessionSupportRow(caps, { type: "execution", mode: "plan" });
+  const execCapAuto = sessionSupportRow(caps, { type: "execution", mode: "auto" });
+  const approvalRows = {
+    review: sessionSupportRow(caps, { type: "approval", policy: "review" }),
+    balanced: sessionSupportRow(caps, { type: "approval", policy: "balanced" }),
+    workspace_auto: sessionSupportRow(caps, {
+      type: "approval",
+      policy: "workspace_auto",
+    }),
+    full_auto_lease: sessionSupportRow(caps, {
+      type: "approval",
+      policy: "full_auto_lease",
+    }),
+  } as const;
+  const leaseCap = sessionSupportRow(caps, { type: "lease" });
+  // Sandbox/network: fail closed without Session-level support rows (not on projection).
+  // Keep controls visible from settings but only mutable when control authority holds.
+  const sandboxCap = controlCap;
+  const networkCap = controlCap;
   const active = activeLease(lease);
   const remaining = leaseRemainingMs(lease, now);
-  const mutable = snapshot?.mutable ?? false;
+  const mutable = (snapshot?.mutable ?? false) && controlCap.ok;
 
   if (!snapshot) {
     return (
@@ -441,14 +468,29 @@ export function SessionControlsPanel({
     onUpdateSettings({ ...snapshot.settings, ...patch });
   };
 
+  const currentExecSupport =
+    snapshot.settings.executionMode === "ask"
+      ? execCapAsk
+      : snapshot.settings.executionMode === "plan"
+        ? execCapPlan
+        : execCapAuto;
+  const currentApprovalSupport =
+    approvalRows[snapshot.settings.approvalPolicy] ?? controlCap;
+
   return (
     <section className="m9-panel controls-panel" aria-labelledby="controls-title">
       <div className="panel-heading">
         <div>
           <p className="eyebrow">SESSION CONTROLS</p>
-          <h2 id="controls-title">Settings rev {snapshot.revision}</h2>
+          <h2 id="controls-title">
+            Settings rev {snapshot.revision}
+            {caps ? ` · cap rev ${caps.settingsRevision}` : ""}
+          </h2>
         </div>
-        <FreshnessBadge status={settings.status} />
+        <div className="panel-heading-actions">
+          <FreshnessBadge status={settings.status} />
+          <FreshnessBadge status={sessionCapabilities.status} />
+        </div>
       </div>
       {settings.conflict && (
         <p className="inline-error" role="alert">
@@ -457,18 +499,49 @@ export function SessionControlsPanel({
         </p>
       )}
       {settings.error && <p className="inline-error" role="alert">{settings.error}</p>}
+      {!controlCap.ok && (
+        <p className="control-reason" role="status">
+          {controlCap.reason}
+        </p>
+      )}
+      {caps && (
+        <p className="mono-meta">
+          bind {caps.controlAuthority.bindingStatus}
+          {caps.provider.providerId ? ` · ${caps.provider.providerId}` : ""}
+          {caps.account.accountId ? ` · ${caps.account.accountId}` : ""}
+          {caps.model.modelId ? ` · model ${caps.model.modelId}` : ""}
+          {` · ${caps.freshness}`}
+        </p>
+      )}
       {!mutable && (
-        <p className="control-reason">Settings are immutable while a Turn is active or binding is not ready.</p>
+        <p className="control-reason">
+          Settings are immutable while a Turn is active, binding is not ready, or
+          Session authority is withdrawn.
+        </p>
       )}
 
       <div className="control-grid">
         <label>
           Provider
           <input value={snapshot.settings.providerId} disabled readOnly />
+          <DisabledReason
+            reason={
+              !sessionSupportRow(caps, { type: "provider" }).ok
+                ? sessionSupportRow(caps, { type: "provider" }).reason
+                : null
+            }
+          />
         </label>
         <label>
           Account
           <input value={snapshot.settings.accountId ?? "—"} disabled readOnly />
+          <DisabledReason
+            reason={
+              !sessionSupportRow(caps, { type: "account" }).ok
+                ? sessionSupportRow(caps, { type: "account" }).reason
+                : null
+            }
+          />
         </label>
         <label>
           Project
@@ -495,7 +568,15 @@ export function SessionControlsPanel({
               </option>
             ))}
           </select>
-          <DisabledReason reason={!modelCap.ok ? modelCap.reason : models.length === 0 ? "No models in live inventory" : null} />
+          <DisabledReason
+            reason={
+              !modelCap.ok
+                ? modelCap.reason
+                : models.length === 0
+                  ? "No models in live inventory"
+                  : null
+            }
+          />
         </label>
         <label>
           Reasoning
@@ -524,24 +605,30 @@ export function SessionControlsPanel({
           Execution mode
           <select
             value={snapshot.settings.executionMode}
-            disabled={!mutable || !execCap.ok}
+            disabled={!mutable || !currentExecSupport.ok}
             onChange={(event) =>
               update({
                 executionMode: event.target.value as SessionSettings["executionMode"],
               })
             }
           >
-            <option value="ask">ask</option>
-            <option value="plan">plan</option>
-            <option value="auto">auto</option>
+            <option value="ask" disabled={!execCapAsk.ok}>
+              ask{!execCapAsk.ok ? " (unsupported)" : ""}
+            </option>
+            <option value="plan" disabled={!execCapPlan.ok}>
+              plan{!execCapPlan.ok ? " (unsupported)" : ""}
+            </option>
+            <option value="auto" disabled={!execCapAuto.ok}>
+              auto{!execCapAuto.ok ? " (unsupported)" : ""}
+            </option>
           </select>
-          <DisabledReason reason={!execCap.ok ? execCap.reason : null} />
+          <DisabledReason reason={!currentExecSupport.ok ? currentExecSupport.reason : null} />
         </label>
         <label>
           Approval policy
           <select
             value={snapshot.settings.approvalPolicy}
-            disabled={!mutable || !approvalCap.ok}
+            disabled={!mutable || !currentApprovalSupport.ok}
             onChange={(event) =>
               update({
                 approvalPolicy: event.target
@@ -549,12 +636,22 @@ export function SessionControlsPanel({
               })
             }
           >
-            <option value="review">review</option>
-            <option value="balanced">balanced</option>
-            <option value="workspace_auto">workspace_auto</option>
-            <option value="full_auto_lease">full_auto_lease</option>
+            <option value="review" disabled={!approvalRows.review.ok}>
+              review
+            </option>
+            <option value="balanced" disabled={!approvalRows.balanced.ok}>
+              balanced
+            </option>
+            <option value="workspace_auto" disabled={!approvalRows.workspace_auto.ok}>
+              workspace_auto
+            </option>
+            <option value="full_auto_lease" disabled={!approvalRows.full_auto_lease.ok}>
+              full_auto_lease
+            </option>
           </select>
-          <DisabledReason reason={!approvalCap.ok ? approvalCap.reason : null} />
+          <DisabledReason
+            reason={!currentApprovalSupport.ok ? currentApprovalSupport.reason : null}
+          />
         </label>
         <label>
           Sandbox
@@ -608,6 +705,7 @@ export function SessionControlsPanel({
               className="secondary-button"
               disabled={
                 !leaseCap.ok ||
+                !controlCap.ok ||
                 snapshot.settings.approvalPolicy !== "full_auto_lease" ||
                 runtimeId === null ||
                 runtimeGeneration === null
@@ -615,11 +713,13 @@ export function SessionControlsPanel({
               title={
                 !leaseCap.ok
                   ? leaseCap.reason ?? "Unavailable"
-                  : snapshot.settings.approvalPolicy !== "full_auto_lease"
-                    ? "Set approval policy to full_auto_lease first"
-                    : runtimeId === null
-                      ? "Runtime unavailable"
-                      : `Create ${minutes}m lease`
+                  : !controlCap.ok
+                    ? controlCap.reason ?? "Session not controllable"
+                    : snapshot.settings.approvalPolicy !== "full_auto_lease"
+                      ? "Set approval policy to full_auto_lease first"
+                      : runtimeId === null
+                        ? "Runtime unavailable"
+                        : `Create ${minutes}m lease`
               }
               onClick={() => onCreateLease(minutes)}
             >

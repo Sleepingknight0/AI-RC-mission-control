@@ -42,6 +42,7 @@ import {
   resolveCoreWebSocketUrl,
 } from "./runtime.js";
 import {
+  FILTER_DEBOUNCE_MS,
   attachmentKindForMediaType,
   basenameOnly,
   capabilitySupported,
@@ -53,13 +54,22 @@ import {
   initialFleetState,
   initialLeaseState,
   initialNativeState,
+  initialSessionCapabilitiesState,
   initialSettingsState,
+  isMaintenanceProtocolError,
+  maintenanceOperatorMessage,
+  remainingAttachmentSlots,
   reduceAttachments,
   reduceCatalog,
   reduceFleet,
   reduceLease,
   reduceNative,
+  reduceSessionCapabilities,
   reduceSettings,
+  sessionCanControl,
+  sessionSupportRow,
+  takePendingUploadByCommand,
+  type PendingUploadBytes,
 } from "./m9/state.js";
 import {
   AttachmentComposer,
@@ -389,17 +399,20 @@ export function App() {
   const [catalog, setCatalog] = useState(initialCatalogState);
   const [native, setNative] = useState(initialNativeState);
   const [settingsUi, setSettingsUi] = useState(initialSettingsState);
+  const [sessionCapabilitiesUi, setSessionCapabilitiesUi] = useState(
+    initialSessionCapabilitiesState,
+  );
   const [leaseUi, setLeaseUi] = useState(initialLeaseState);
   const [attachmentsUi, setAttachmentsUi] = useState(initialAttachmentState);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [pendingAttachmentIds, setPendingAttachmentIds] = useState<string[]>([]);
+  const [maintenanceNotice, setMaintenanceNotice] = useState<string | null>(null);
   const deviceIdRef = useRef(deviceId());
   const catalogFiltersRef = useRef(defaultCatalogFilters());
-  const pendingUploadsRef = useRef(
-    new Map<string, { bytes: Uint8Array; chunkCount: number; name: string }>(),
-  );
+  const filterDebounceRef = useRef<number | undefined>(undefined);
+  const pendingUploadsRef = useRef(new Map<string, PendingUploadBytes>());
 
   const send = useCallback((socket: WebSocket, envelope: unknown) => {
     if (socket.readyState === WebSocket.OPEN) {
@@ -433,8 +446,13 @@ export function App() {
     outputSeqRef.current.clear();
     setAttachmentsUi(initialAttachmentState());
     setSettingsUi(initialSettingsState());
+    setSessionCapabilitiesUi(initialSessionCapabilitiesState());
     setLeaseUi(initialLeaseState());
     setPendingAttachmentIds([]);
+    // Drop in-flight uploads that belong to another Session.
+    for (const [commandId, pending] of [...pendingUploadsRef.current.entries()]) {
+      if (pending.sessionId !== sessionId) pendingUploadsRef.current.delete(commandId);
+    }
     send(socket, makeEnvelope("sessions.list", {}));
     send(socket, makeEnvelope("providers.refresh", {}));
     requestCatalog(socket, null);
@@ -534,10 +552,68 @@ export function App() {
         setCatalog((current) => reduceCatalog(current, message));
         setNative((current) => reduceNative(current, message));
         setSettingsUi((current) => reduceSettings(current, message));
+        setSessionCapabilitiesUi((current) =>
+          reduceSessionCapabilities(current, message, selectedSessionRef.current),
+        );
         setLeaseUi((current) => reduceLease(current, message));
         setAttachmentsUi((current) =>
           reduceAttachments(current, message, selectedSessionRef.current),
         );
+
+        // Correlate attachment bytes by commandId (not name/size).
+        if (
+          message.type === "attachment.command.accepted" &&
+          message.payload.sessionId === selectedSessionRef.current
+        ) {
+          const pending = takePendingUploadByCommand(
+            pendingUploadsRef.current,
+            message.payload.commandId,
+            selectedSessionRef.current,
+          );
+          if (pending && message.payload.attachment.status === "uploading") {
+            const socketLive = socketRef.current;
+            const attachment = message.payload.attachment;
+            if (socketLive?.readyState === WebSocket.OPEN) {
+              void (async () => {
+                for (let index = 0; index < pending.chunkCount; index += 1) {
+                  const start = index * INPUT_ATTACHMENT_CHUNK_BYTES;
+                  const end = Math.min(
+                    pending.bytes.byteLength,
+                    start + INPUT_ATTACHMENT_CHUNK_BYTES,
+                  );
+                  const slice = pending.bytes.subarray(start, end);
+                  let binary = "";
+                  for (const byte of slice) binary += String.fromCharCode(byte);
+                  send(
+                    socketLive,
+                    makeEnvelope("attachment.upload.chunk", {
+                      sessionId: selectedSessionRef.current,
+                      deviceId: deviceIdRef.current,
+                      attachmentId: attachment.attachmentId,
+                      chunkIndex: index,
+                      contentBase64: btoa(binary),
+                    }),
+                  );
+                }
+                send(
+                  socketLive,
+                  makeEnvelope("attachment.upload.complete", {
+                    commandId: crypto.randomUUID(),
+                    sessionId: selectedSessionRef.current,
+                    deviceId: deviceIdRef.current,
+                    attachmentId: attachment.attachmentId,
+                  }),
+                );
+                setPendingAttachmentIds((ids) =>
+                  ids.includes(attachment.attachmentId)
+                    ? ids
+                    : [...ids, attachment.attachmentId],
+                );
+              })();
+            }
+          }
+        }
+
         if (message.type === "sessions.snapshot") setSessions(message.payload.sessions);
         if (message.type === "runtime.status") setRuntime(message.payload.runtime);
         if (message.type === "providers.snapshot") {
@@ -546,7 +622,12 @@ export function App() {
             if (current && controllable.some((item) => item.providerId === current)) {
               return current;
             }
-            return controllable[0]?.providerId ?? null;
+            // Prefer still-listed inventory; never retain optimistic control selection.
+            const anyListed = message.payload.snapshot.providers.find(
+              (item) => item.providerId === current,
+            );
+            if (current && anyListed) return current;
+            return controllable[0]?.providerId ?? message.payload.snapshot.providers[0]?.providerId ?? null;
           });
         }
         if (message.type === "session.command.accepted") {
@@ -568,7 +649,12 @@ export function App() {
           setNotice(`Command accepted · ${message.payload.commandId}`);
         }
         if (message.type === "command.rejected") {
-          setNotice(`${message.payload.error.code}: ${message.payload.error.message}`);
+          const code = message.payload.error.code;
+          const detail = message.payload.error.message;
+          if (isMaintenanceProtocolError(code)) {
+            setMaintenanceNotice(maintenanceOperatorMessage(code, detail));
+          }
+          setNotice(`${code}: ${detail}`);
           const approvalId = approvalForRejectedCommand(
             approvalCommandsRef.current,
             message.payload.commandId,
@@ -580,9 +666,18 @@ export function App() {
               return next;
             });
           }
+          // Rejected begin frees a pending upload slot.
+          if (code.startsWith("ATTACHMENT_")) {
+            pendingUploadsRef.current.delete(message.payload.commandId);
+          }
         }
         if (message.type === "protocol.error") {
-          setNotice(`${message.payload.error.code}: ${message.payload.error.message}`);
+          const code = message.payload.error.code;
+          const detail = message.payload.error.message;
+          if (isMaintenanceProtocolError(code)) {
+            setMaintenanceNotice(maintenanceOperatorMessage(code, detail));
+          }
+          setNotice(`${code}: ${detail}`);
         }
         if (
           message.type === "approval.resolved" ||
@@ -768,10 +863,27 @@ export function App() {
     switchSession(sessionInput.trim());
   };
 
-  const availability = turnAvailability(connection, runtime, snapshot);
+  const baseAvailability = turnAvailability(connection, runtime, snapshot);
   const selectedProvider =
     fleet.snapshot?.providers.find((item) => item.providerId === selectedProviderId) ??
     null;
+  // Catalog cursor recovery: discard cursor and request first page explicitly.
+  useEffect(() => {
+    if (!catalog.needsFreshPage) return;
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      requestCatalog(socket, null);
+    }
+  }, [catalog.needsFreshPage, requestCatalog]);
+
+  // Cancel debounced filter requests on unmount.
+  useEffect(() => {
+    return () => {
+      if (filterDebounceRef.current !== undefined) {
+        window.clearTimeout(filterDebounceRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!selectedProvider) {
@@ -1007,6 +1119,17 @@ export function App() {
   const catalogEntry =
     catalog.sessions.find((item) => item.sessionId === selectedSessionId) ?? null;
   const sessionTitle = catalogEntry?.title ?? selectedSessionId;
+  const controlDecision = sessionCanControl({
+    catalogEntry,
+    capabilities: sessionCapabilitiesUi.snapshot,
+    fleetStale: fleet.status === "stale" || fleet.snapshot?.freshness === "stale",
+  });
+  const availability = controlDecision.ok
+    ? baseAvailability
+    : {
+        canSubmit: false,
+        reason: controlDecision.reason ?? "Session is not controllable",
+      };
   const timelineBusy = latest?.status === "running";
   const recoveryRequired =
     runtime?.status === "lost" || latest?.status === "outcome_unknown";
@@ -1020,6 +1143,7 @@ export function App() {
   );
   const createDisabledReason = (() => {
     if (connection !== "online") return "Core offline";
+    if (maintenanceNotice) return "Database maintenance required";
     if (!selectedProviderId || !selectedAccountId) return "Select provider and account";
     const remote = capabilitySupported(selectedProvider, "create_session");
     if (!remote.ok) return remote.reason;
@@ -1029,25 +1153,45 @@ export function App() {
     if (account?.control !== "remote_control") {
       return "Selected account is inventory-only";
     }
+    if (
+      selectedProvider?.freshness === "stale" ||
+      selectedProvider?.freshness === "offline"
+    ) {
+      return `Provider evidence is ${selectedProvider.freshness}`;
+    }
     return null;
   })();
 
-  const textAttach = capabilitySupported(selectedProvider, "file_input");
-  const imageAttach = capabilitySupported(selectedProvider, "image_input");
-  const attachDisabledReason =
-    !textAttach.ok && !imageAttach.ok
+  // Attachment support from Session capability projection, not fleet alone.
+  const textAttach = sessionSupportRow(sessionCapabilitiesUi.snapshot, {
+    type: "attachment",
+    kind: "text",
+  });
+  const imageAttach = sessionSupportRow(sessionCapabilitiesUi.snapshot, {
+    type: "attachment",
+    kind: "image",
+  });
+  const attachDisabledReason = !controlDecision.ok
+    ? controlDecision.reason
+    : !textAttach.ok && !imageAttach.ok
       ? textAttach.reason ?? imageAttach.reason
       : null;
 
   const uploadFiles = async (files: FileList) => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    const remaining =
-      MAX_INPUT_ATTACHMENTS_PER_TURN -
-      pendingAttachmentIds.length -
-      attachmentsUi.attachments.filter((item) => item.status === "ready").length;
+    if (!controlDecision.ok) {
+      setNotice(controlDecision.reason ?? "Session not controllable");
+      return;
+    }
+    let remaining = remainingAttachmentSlots(
+      attachmentsUi.attachments,
+      pendingUploadsRef.current.size,
+      MAX_INPUT_ATTACHMENTS_PER_TURN,
+    );
     const queue = Array.from(files).slice(0, Math.max(0, remaining));
     for (const file of queue) {
+      if (remaining <= 0) break;
       const name = basenameOnly(file.name);
       if (!name) {
         setNotice("Attachment name must be a basename only");
@@ -1071,6 +1215,13 @@ export function App() {
       const digest = await sha256Hex(bytes.buffer);
       const chunkCount = Math.max(1, Math.ceil(bytes.byteLength / INPUT_ATTACHMENT_CHUNK_BYTES));
       const commandId = crypto.randomUUID();
+      // Reserve slot before send so simultaneous picks cannot overshoot.
+      pendingUploadsRef.current.set(commandId, {
+        bytes,
+        chunkCount,
+        sessionId: selectedSessionId,
+      });
+      remaining -= 1;
       send(
         socket,
         makeEnvelope("attachment.upload.begin", {
@@ -1091,63 +1242,8 @@ export function App() {
           chunkCount,
         }),
       );
-      // Chunks are driven after attachment.command.accepted via notice flow —
-      // store pending file bytes keyed by command for the accepted handler path.
-      pendingUploadsRef.current.set(commandId, { bytes, chunkCount, name });
     }
   };
-
-  useEffect(() => {
-    // When an attachment becomes uploading with progress 0, stream chunks for matching pending upload by name+size
-    const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    for (const attachment of attachmentsUi.attachments) {
-      if (attachment.status !== "uploading") continue;
-      if (attachmentsUi.uploadProgress[attachment.attachmentId]) continue;
-      const pending = [...pendingUploadsRef.current.entries()].find(
-        ([, value]) =>
-          value.name === attachment.name &&
-          value.bytes.byteLength === attachment.byteLength,
-      );
-      if (!pending) continue;
-      const [commandId, value] = pending;
-      pendingUploadsRef.current.delete(commandId);
-      void (async () => {
-        for (let index = 0; index < value.chunkCount; index += 1) {
-          const start = index * INPUT_ATTACHMENT_CHUNK_BYTES;
-          const end = Math.min(value.bytes.byteLength, start + INPUT_ATTACHMENT_CHUNK_BYTES);
-          const slice = value.bytes.subarray(start, end);
-          let binary = "";
-          for (const byte of slice) binary += String.fromCharCode(byte);
-          const contentBase64 = btoa(binary);
-          send(
-            socket,
-            makeEnvelope("attachment.upload.chunk", {
-              sessionId: selectedSessionId,
-              deviceId: deviceIdRef.current,
-              attachmentId: attachment.attachmentId,
-              chunkIndex: index,
-              contentBase64,
-            }),
-          );
-        }
-        send(
-          socket,
-          makeEnvelope("attachment.upload.complete", {
-            commandId: crypto.randomUUID(),
-            sessionId: selectedSessionId,
-            deviceId: deviceIdRef.current,
-            attachmentId: attachment.attachmentId,
-          }),
-        );
-        setPendingAttachmentIds((ids) =>
-          ids.includes(attachment.attachmentId)
-            ? ids
-            : [...ids, attachment.attachmentId],
-        );
-      })();
-    }
-  }, [attachmentsUi.attachments, attachmentsUi.uploadProgress, selectedSessionId, send]);
 
   const operationalAnnouncement = `${connectionLabel(connection)}. Session ${selectedSessionId} is ${formatState(sessionState)}. ${pendingApprovals.length} pending ${pendingApprovals.length === 1 ? "approval" : "approvals"}.`;
   const systemThinking =
@@ -1260,6 +1356,9 @@ export function App() {
             label: provider.displayName,
           }))}
           onFiltersChange={(patch) => {
+            const isTextFilter =
+              Object.prototype.hasOwnProperty.call(patch, "search") ||
+              Object.prototype.hasOwnProperty.call(patch, "project");
             catalogFiltersRef.current = {
               ...catalogFiltersRef.current,
               ...patch,
@@ -1268,8 +1367,22 @@ export function App() {
               ...current,
               filters: catalogFiltersRef.current,
             }));
-            const socket = socketRef.current;
-            if (socket) requestCatalog(socket, null);
+            const flush = () => {
+              const socket = socketRef.current;
+              if (socket) requestCatalog(socket, null);
+            };
+            if (isTextFilter) {
+              if (filterDebounceRef.current !== undefined) {
+                window.clearTimeout(filterDebounceRef.current);
+              }
+              filterDebounceRef.current = window.setTimeout(flush, FILTER_DEBOUNCE_MS);
+            } else {
+              if (filterDebounceRef.current !== undefined) {
+                window.clearTimeout(filterDebounceRef.current);
+                filterDebounceRef.current = undefined;
+              }
+              flush();
+            }
           }}
           onLoadMore={() => {
             const socket = socketRef.current;
@@ -1491,6 +1604,23 @@ export function App() {
             </section>
           )}
 
+          {maintenanceNotice && (
+            <section className="state-banner recovery-banner" role="alert">
+              <div>
+                <p className="eyebrow">DATABASE MAINTENANCE REQUIRED</p>
+                <h3>Session control paused</h3>
+              </div>
+              <p>{maintenanceNotice}</p>
+            </section>
+          )}
+
+          {!controlDecision.ok && connection === "online" && (
+            <section className="state-banner connection-banner" role="status">
+              <strong>Session not controllable</strong>
+              <p>{controlDecision.reason}</p>
+            </section>
+          )}
+
           {recoveryRequired && (
             <section className="state-banner recovery-banner" role="alert">
               <div>
@@ -1603,6 +1733,7 @@ export function App() {
 
           <SessionControlsPanel
             settings={settingsUi}
+            sessionCapabilities={sessionCapabilitiesUi}
             fleet={fleet.snapshot}
             lease={leaseUi.snapshot}
             runtimeId={runtime?.runtimeId ?? null}
