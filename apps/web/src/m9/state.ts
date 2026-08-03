@@ -1,3 +1,8 @@
+import {
+  InputAttachmentMediaTypeSchema,
+  SessionSettingsSnapshotSchema,
+  type SessionSettingsSnapshot,
+} from "@aicl/protocol";
 import type {
   ApprovalLeaseSnapshot,
   InputAttachment,
@@ -9,12 +14,13 @@ import type {
   SessionCapabilitiesSnapshot,
   SessionCatalogFilter,
   SessionSettings,
-  SessionSettingsSnapshot,
   SessionSummaryV2,
 } from "@aicl/protocol";
 
 type ExecutionMode = SessionSettings["executionMode"];
 type ApprovalPolicy = SessionSettings["approvalPolicy"];
+type InputAttachmentMediaType =
+  (typeof InputAttachmentMediaTypeSchema)["_output"];
 
 export type ResourceFreshness =
   | "loading"
@@ -161,24 +167,14 @@ export function reduceFleet(
 ): FleetState {
   if (message.type === "providers.snapshot") {
     return {
-      status: message.payload.snapshot.freshness === "stale" ? "stale" : "ready",
+      status: resourceStatus(message.payload.snapshot.freshness),
       snapshot: message.payload.snapshot,
       error: null,
     };
   }
   if (
-    message.type === "command.rejected" &&
-    message.payload.error.code.startsWith("PROVIDER_")
-  ) {
-    return {
-      ...current,
-      status: current.snapshot ? "stale" : "error",
-      error: `${message.payload.error.code}: ${message.payload.error.message}`,
-    };
-  }
-  if (
     message.type === "protocol.error" &&
-    message.payload.error.code.startsWith("PROVIDER_")
+    message.payload.error.code === "PROVIDER_INVENTORY_UNAVAILABLE"
   ) {
     return {
       ...current,
@@ -187,6 +183,12 @@ export function reduceFleet(
     };
   }
   return current;
+}
+
+function resourceStatus(freshness: ProviderFleetSnapshot["freshness"]): ResourceFreshness {
+  if (freshness === "live" || freshness === "local") return "ready";
+  if (freshness === "unavailable") return "unavailable";
+  return "stale";
 }
 
 function isCatalogCursorError(code: string): boolean {
@@ -313,10 +315,20 @@ export function catalogRequestStarted(
 export function reduceNative(
   current: NativeState,
   message: ServerEnvelope,
+  selectedProviderId: string | null,
+  selectedAccountId: string | null,
 ): NativeState {
   if (message.type === "sessions.native.snapshot") {
+    if (
+      selectedProviderId === null ||
+      selectedAccountId === null ||
+      message.payload.snapshot.providerId !== selectedProviderId ||
+      message.payload.snapshot.accountId !== selectedAccountId
+    ) {
+      return current;
+    }
     return {
-      status: message.payload.snapshot.freshness === "stale" ? "stale" : "ready",
+      status: resourceStatus(message.payload.snapshot.freshness),
       snapshot: message.payload.snapshot,
       error: null,
     };
@@ -327,8 +339,10 @@ export function reduceNative(
 export function reduceSettings(
   current: SettingsUiState,
   message: ServerEnvelope,
+  selectedSessionId: string,
 ): SettingsUiState {
   if (message.type === "session.settings.snapshot") {
+    if (message.payload.snapshot.sessionId !== selectedSessionId) return current;
     return {
       status: "ready",
       snapshot: message.payload.snapshot,
@@ -338,20 +352,26 @@ export function reduceSettings(
   }
   if (
     message.type === "command.rejected" &&
-    message.payload.error.code === "SESSION_SETTINGS_CONFLICT"
+    message.payload.error.code === "SESSION_SETTINGS_CONFLICT" &&
+    message.payload.sessionId === selectedSessionId
   ) {
-    const details = message.payload.error.details as
-      | { snapshot?: SessionSettingsSnapshot }
-      | undefined;
+    const parsed = SessionSettingsSnapshotSchema.safeParse(
+      message.payload.error.details?.snapshot,
+    );
+    const conflict =
+      parsed.success && parsed.data.sessionId === selectedSessionId
+        ? parsed.data
+        : null;
     return {
       status: "error",
-      snapshot: details?.snapshot ?? current.snapshot,
-      conflict: details?.snapshot ?? current.snapshot,
+      snapshot: conflict ?? current.snapshot,
+      conflict,
       error: `${message.payload.error.code}: ${message.payload.error.message}`,
     };
   }
   if (
     message.type === "command.rejected" &&
+    message.payload.sessionId === selectedSessionId &&
     (message.payload.error.code.startsWith("SESSION_SETTING") ||
       message.payload.error.code === "SESSION_BUSY")
   ) {
@@ -391,8 +411,10 @@ export function reduceSessionCapabilities(
 export function reduceLease(
   current: LeaseUiState,
   message: ServerEnvelope,
+  selectedSessionId: string,
 ): LeaseUiState {
   if (message.type === "approval.lease.snapshot") {
+    if (message.payload.snapshot.sessionId !== selectedSessionId) return current;
     return {
       status: "ready",
       snapshot: message.payload.snapshot,
@@ -454,6 +476,7 @@ export function reduceAttachments(
   }
   if (
     message.type === "command.rejected" &&
+    message.payload.sessionId === selectedSessionId &&
     message.payload.error.code.startsWith("ATTACHMENT_")
   ) {
     return {
@@ -479,7 +502,7 @@ export function capabilitySupported(
   if (!provider) {
     return { ok: false, reason: "Provider inventory unavailable" };
   }
-  if (provider.freshness === "stale" || provider.freshness === "offline") {
+  if (provider.freshness !== "live" && provider.freshness !== "local") {
     return {
       ok: false,
       reason: `Provider evidence is ${provider.freshness}`,
@@ -510,7 +533,7 @@ export function controllableProviders(fleet: ProviderFleetSnapshot | null) {
     if (!provider.enabled) return false;
     if (provider.installation !== "installed") return false;
     if (provider.adapterSupport !== "remote_control") return false;
-    if (provider.freshness === "stale" || provider.freshness === "offline") {
+    if (provider.freshness !== "live" && provider.freshness !== "local") {
       return false;
     }
     return capabilitySupported(provider, "remote_control").ok;
@@ -527,6 +550,8 @@ export function sessionSupportRow(
     | { type: "model" }
     | { type: "provider" }
     | { type: "account" }
+    | { type: "sandbox" }
+    | { type: "network" }
     | { type: "control" },
 ): { ok: boolean; reason: string | null } {
   if (!snapshot) {
@@ -558,9 +583,9 @@ export function sessionSupportRow(
               ? snapshot.model
               : kind.type === "provider"
                 ? snapshot.provider
-                : kind.type === "account"
-                  ? snapshot.account
-                  : null;
+              : kind.type === "account"
+                ? snapshot.account
+                : null;
 
   if (kind.type === "control") {
     if (!snapshot.controlAuthority.canControl) {
@@ -594,9 +619,10 @@ export function sessionSupportRow(
 export function sessionCanControl(input: {
   catalogEntry: SessionSummaryV2 | null;
   capabilities: SessionCapabilitiesSnapshot | null;
+  settingsRevision: number | null;
   fleetStale?: boolean;
 }): { ok: boolean; reason: string | null } {
-  const { catalogEntry, capabilities, fleetStale = false } = input;
+  const { catalogEntry, capabilities, settingsRevision, fleetStale = false } = input;
 
   if (fleetStale) {
     return {
@@ -605,39 +631,52 @@ export function sessionCanControl(input: {
     };
   }
 
-  if (capabilities) {
-    const control = sessionSupportRow(capabilities, { type: "control" });
-    if (!control.ok) return control;
-  } else if (catalogEntry) {
-    if (!catalogEntry.canControl) {
-      return {
-        ok: false,
-        reason: "Catalog marks this Session as non-controllable",
-      };
-    }
-  } else {
+  if (!catalogEntry) {
     return {
       ok: false,
-      reason: "No authoritative Session control evidence",
+      reason: "Authoritative Catalog entry unavailable",
+    };
+  }
+  if (!capabilities) {
+    return {
+      ok: false,
+      reason: "Session capability projection unavailable",
+    };
+  }
+  if (capabilities.sessionId !== catalogEntry.sessionId) {
+    return {
+      ok: false,
+      reason: "Session capability projection belongs to another Session",
+    };
+  }
+  if (
+    settingsRevision === null ||
+    capabilities.settingsRevision !== settingsRevision
+  ) {
+    return {
+      ok: false,
+      reason: "Session capability projection does not match current settings",
     };
   }
 
+  const control = sessionSupportRow(capabilities, { type: "control" });
+  if (!control.ok) return control;
+
   // Catalog is computed with the same exact validator as Turn submit.
-  if (catalogEntry && !catalogEntry.canControl) {
+  if (!catalogEntry.canControl) {
     return {
       ok: false,
       reason:
-        capabilities?.controlAuthority.reason ??
+        capabilities.controlAuthority.reason ??
         "Catalog marks this Session as non-controllable",
     };
   }
 
   if (
-    catalogEntry &&
-    (catalogEntry.providerBindingStatus === "pending" ||
+    catalogEntry.providerBindingStatus === "pending" ||
       catalogEntry.providerBindingStatus === "failed" ||
       catalogEntry.providerBindingStatus === "outcome_unknown" ||
-      catalogEntry.providerBindingStatus === "unbound")
+      catalogEntry.providerBindingStatus === "unbound"
   ) {
     return {
       ok: false,
@@ -669,12 +708,19 @@ export function basenameOnly(fileName: string) {
 }
 
 export function attachmentKindForMediaType(
-  mediaType: string,
+  mediaType: InputAttachmentMediaType,
 ): "text" | "image" | "document" | "archive" {
   if (mediaType.startsWith("image/")) return "image";
   if (mediaType === "text/plain" || mediaType === "text/markdown") return "text";
   if (mediaType === "application/pdf") return "document";
   return "archive";
+}
+
+export function parseInputAttachmentMediaType(
+  mediaType: string,
+): InputAttachmentMediaType | null {
+  const parsed = InputAttachmentMediaTypeSchema.safeParse(mediaType);
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -684,20 +730,34 @@ export function attachmentKindForMediaType(
  */
 export function countAttachmentSlots(
   attachments: InputAttachment[],
+  selectedAttachmentIds: string[],
   inFlightBeginCount: number,
 ): number {
-  const consuming = attachments.filter(
-    (item) => item.status === "uploading" || item.status === "ready",
+  const consumingIds = new Set(
+    attachments
+      .filter((item) => item.status === "uploading")
+      .map((item) => item.attachmentId),
   );
-  return consuming.length + Math.max(0, inFlightBeginCount);
+  const selected = new Set(selectedAttachmentIds);
+  for (const attachment of attachments) {
+    if (selected.has(attachment.attachmentId) && attachment.status === "ready") {
+      consumingIds.add(attachment.attachmentId);
+    }
+  }
+  return consumingIds.size + Math.max(0, inFlightBeginCount);
 }
 
 export function remainingAttachmentSlots(
   attachments: InputAttachment[],
+  selectedAttachmentIds: string[],
   inFlightBeginCount: number,
   maxPerTurn: number,
 ): number {
-  return Math.max(0, maxPerTurn - countAttachmentSlots(attachments, inFlightBeginCount));
+  return Math.max(
+    0,
+    maxPerTurn -
+      countAttachmentSlots(attachments, selectedAttachmentIds, inFlightBeginCount),
+  );
 }
 
 /** Extract pending upload bytes by commandId (authoritative correlation). */
@@ -716,11 +776,10 @@ export function takePendingUploadByCommand(
 /** Detect database / migration maintenance from Core protocol notices. */
 export function isMaintenanceProtocolError(code: string): boolean {
   return (
-    code.includes("MIGRATION") ||
-    code.includes("SCHEMA") ||
-    code.includes("DATABASE") ||
-    code === "CORE_UNAVAILABLE" ||
-    code === "PROVIDER_INVENTORY_UNAVAILABLE"
+    code.startsWith("MIGRATION_") ||
+    code.startsWith("DATABASE_") ||
+    code.startsWith("CORE_SCHEMA_") ||
+    code.startsWith("CONNECTOR_SCHEMA_")
   );
 }
 

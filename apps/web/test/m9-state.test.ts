@@ -16,15 +16,24 @@ import {
   controllableProviders,
   countAttachmentSlots,
   defaultCatalogFilters,
+  initialAttachmentState,
   initialCatalogState,
   initialFleetState,
+  initialLeaseState,
+  initialNativeState,
   initialSessionCapabilitiesState,
+  initialSettingsState,
   isMaintenanceProtocolError,
   maintenanceOperatorMessage,
   mergeCatalogPage,
+  parseInputAttachmentMediaType,
+  reduceAttachments,
   reduceCatalog,
   reduceFleet,
+  reduceLease,
+  reduceNative,
   reduceSessionCapabilities,
+  reduceSettings,
   remainingAttachmentSlots,
   sessionCanControl,
   sessionSupportRow,
@@ -213,6 +222,8 @@ describe("m9 state helpers", () => {
     expect(
       sessionSupportRow(ready.snapshot, { type: "attachment", kind: "image" }).reason,
     ).toMatch(/image/i);
+    expect(sessionSupportRow(ready.snapshot, { type: "sandbox" }).ok).toBe(false);
+    expect(sessionSupportRow(ready.snapshot, { type: "network" }).ok).toBe(false);
 
     const stale = reduceSessionCapabilities(
       ready,
@@ -253,6 +264,7 @@ describe("m9 state helpers", () => {
     const decision = sessionCanControl({
       catalogEntry: entry,
       capabilities: denied,
+      settingsRevision: 3,
       fleetStale: false,
     });
     expect(decision.ok).toBe(false);
@@ -261,9 +273,42 @@ describe("m9 state helpers", () => {
     const fleetOkButStale = sessionCanControl({
       catalogEntry: seed("session-1", "Demo", true),
       capabilities: caps(),
+      settingsRevision: 3,
       fleetStale: true,
     });
     expect(fleetOkButStale.ok).toBe(false);
+
+    expect(
+      sessionCanControl({
+        catalogEntry: seed("session-1", "Demo", true),
+        capabilities: null,
+        settingsRevision: 3,
+      }).ok,
+    ).toBe(false);
+    expect(
+      sessionCanControl({
+        catalogEntry: null,
+        capabilities: caps(),
+        settingsRevision: 3,
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("treats unavailable provider evidence as non-controllable", () => {
+    const unavailable = baseProvider({ freshness: "unavailable" });
+    expect(capabilitySupported(unavailable, "remote_control").ok).toBe(false);
+    expect(controllableProviders(fleet([unavailable]))).toEqual([]);
+    expect(
+      reduceFleet(
+        initialFleetState(),
+        makeEnvelope("providers.snapshot", {
+          snapshot: {
+            ...fleet([unavailable]),
+            freshness: "unavailable" as const,
+          },
+        }),
+      ).status,
+    ).toBe("unavailable");
   });
 
   it("uses exact Catalog canControl and binding status", () => {
@@ -274,6 +319,7 @@ describe("m9 state helpers", () => {
         providerBindingStatus: "unbound",
       },
       capabilities: null,
+      settingsRevision: 1,
     });
     expect(unbound.ok).toBe(false);
 
@@ -283,9 +329,25 @@ describe("m9 state helpers", () => {
         providerBindingStatus: "pending",
       },
       capabilities: caps(),
+      settingsRevision: 3,
     });
     expect(pending.ok).toBe(false);
     expect(pending.reason).toMatch(/pending/);
+
+    expect(
+      sessionCanControl({
+        catalogEntry: seed("session-1", "Demo", true),
+        capabilities: caps({ sessionId: "other" }),
+        settingsRevision: 3,
+      }).ok,
+    ).toBe(false);
+    expect(
+      sessionCanControl({
+        catalogEntry: seed("session-1", "Demo", true),
+        capabilities: caps(),
+        settingsRevision: 99,
+      }).ok,
+    ).toBe(false);
   });
 
   it("recovers catalog cursor with fresh-page flag and ignores late requestIds", () => {
@@ -376,6 +438,111 @@ describe("m9 state helpers", () => {
     expect(afterActivity.revision).toBe(5);
   });
 
+  it("rejects late native, settings, lease, and attachment errors for another selection", () => {
+    const native = makeEnvelope("sessions.native.snapshot", {
+      snapshot: {
+        snapshotId: "native-1",
+        revision: 1,
+        providerId: "codex",
+        accountId: "account-a",
+        observedAt: "2026-08-03T00:00:00.000Z",
+        staleAt: "2026-08-03T00:01:00.000Z",
+        freshness: "live" as const,
+        truncated: false,
+        sessions: [],
+        notice: null,
+      },
+    });
+    expect(
+      reduceNative(initialNativeState(), native, "codex", "account-b").snapshot,
+    ).toBeNull();
+    expect(
+      reduceNative(initialNativeState(), native, "codex", "account-a").snapshot
+        ?.accountId,
+    ).toBe("account-a");
+    const staleNative = makeEnvelope("sessions.native.snapshot", {
+      snapshot: { ...native.payload.snapshot, freshness: "stale" as const },
+    });
+    expect(
+      reduceNative(
+        initialNativeState(),
+        staleNative,
+        "codex",
+        "account-a",
+      ).status,
+    ).toBe("stale");
+
+    const settings = makeEnvelope("session.settings.snapshot", {
+      snapshot: {
+        sessionId: "session-a",
+        revision: 1,
+        mutable: true,
+        settings: {
+          providerId: "codex",
+          accountId: "account-a",
+          model: null,
+          reasoningLevel: null,
+          executionMode: "ask" as const,
+          approvalPolicy: "review" as const,
+          sandboxPolicy: "read_only" as const,
+          networkPolicy: "denied" as const,
+          projectPath: "C:\\project",
+          branch: null,
+        },
+      },
+    });
+    expect(
+      reduceSettings(initialSettingsState(), settings, "session-b").snapshot,
+    ).toBeNull();
+    expect(
+      reduceSettings(initialSettingsState(), settings, "session-a").snapshot
+        ?.sessionId,
+    ).toBe("session-a");
+
+    const lease = makeEnvelope("approval.lease.snapshot", {
+      snapshot: {
+        sessionId: "session-a",
+        revision: 0,
+        serverTime: "2026-08-03T00:00:00.000Z",
+        leases: [],
+      },
+    });
+    expect(reduceLease(initialLeaseState(), lease, "session-b").snapshot).toBeNull();
+    expect(
+      reduceLease(initialLeaseState(), lease, "session-a").snapshot?.sessionId,
+    ).toBe("session-a");
+
+    const attachmentError = makeEnvelope("command.rejected", {
+      commandId: "attachment-command",
+      sessionId: "session-a",
+      error: {
+        code: "ATTACHMENT_INVALID",
+        message: "invalid",
+        retryable: false,
+      },
+    });
+    expect(
+      reduceAttachments(initialAttachmentState(), attachmentError, "session-b").error,
+    ).toBeNull();
+  });
+
+  it("parses settings conflict snapshots before using them", () => {
+    const malformed = makeEnvelope("command.rejected", {
+      commandId: "settings-command",
+      sessionId: "session-1",
+      error: {
+        code: "SESSION_SETTINGS_CONFLICT",
+        message: "conflict",
+        retryable: false,
+        details: { snapshot: { sessionId: "session-1", revision: "bad" } },
+      },
+    });
+    const next = reduceSettings(initialSettingsState(), malformed, "session-1");
+    expect(next.snapshot).toBeNull();
+    expect(next.conflict).toBeNull();
+    expect(next.error).toMatch(/SESSION_SETTINGS_CONFLICT/);
+  });
+
   it("appends cursor pages without duplicate Session IDs", () => {
     expect(
       mergeCatalogPage([seed("a")], [seed("a"), seed("b")]).map((s) => s.sessionId),
@@ -461,15 +628,19 @@ describe("m9 state helpers", () => {
       },
     ];
     // ready + uploading + 1 in-flight begin = 3; rejected/deleted excluded
-    expect(countAttachmentSlots(attachments, 1)).toBe(3);
-    expect(remainingAttachmentSlots(attachments, 1, 8)).toBe(5);
-    expect(remainingAttachmentSlots(attachments, 6, 8)).toBe(0);
+    expect(countAttachmentSlots(attachments, ["1"], 1)).toBe(3);
+    expect(countAttachmentSlots(attachments, [], 1)).toBe(2);
+    expect(remainingAttachmentSlots(attachments, ["1"], 1, 8)).toBe(5);
+    expect(remainingAttachmentSlots(attachments, ["1"], 6, 8)).toBe(0);
   });
 
   it("derives attachment kind and basename safely", () => {
     expect(basenameOnly("C:\\\\tmp\\\\note.md")).toBe("note.md");
-    expect(attachmentKindForMediaType("image/png")).toBe("image");
-    expect(attachmentKindForMediaType("text/markdown")).toBe("text");
+    expect(parseInputAttachmentMediaType("image/svg+xml")).toBeNull();
+    const image = parseInputAttachmentMediaType("image/png");
+    const text = parseInputAttachmentMediaType("text/markdown");
+    expect(image && attachmentKindForMediaType(image)).toBe("image");
+    expect(text && attachmentKindForMediaType(text)).toBe("text");
   });
 
   it("finds only active leases", () => {
@@ -508,6 +679,9 @@ describe("m9 state helpers", () => {
   it("exposes operator-facing maintenance diagnostic without path invention", () => {
     expect(isMaintenanceProtocolError("MIGRATION_CHECKSUM_MISMATCH")).toBe(true);
     expect(isMaintenanceProtocolError("SESSION_BUSY")).toBe(false);
+    expect(isMaintenanceProtocolError("PROVIDER_INVENTORY_UNAVAILABLE")).toBe(false);
+    expect(isMaintenanceProtocolError("PROVIDER_SCHEMA_INCOMPATIBLE")).toBe(false);
+    expect(isMaintenanceProtocolError("CORE_UNAVAILABLE")).toBe(false);
     const message = maintenanceOperatorMessage(
       "MIGRATION_CHECKSUM_MISMATCH",
       "source migration failed",

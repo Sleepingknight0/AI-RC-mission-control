@@ -1,5 +1,6 @@
 import {
   INPUT_ATTACHMENT_CHUNK_BYTES,
+  MAX_INPUT_ATTACHMENT_BYTES,
   MAX_INPUT_ATTACHMENTS_PER_TURN,
   PROTOCOL_VERSION,
   ServerEnvelopeSchema,
@@ -58,6 +59,7 @@ import {
   initialSettingsState,
   isMaintenanceProtocolError,
   maintenanceOperatorMessage,
+  parseInputAttachmentMediaType,
   remainingAttachmentSlots,
   reduceAttachments,
   reduceCatalog,
@@ -81,6 +83,7 @@ import {
 } from "./m9/ui.js";
 
 const SESSION_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
+const MAX_TEXT_INPUT_ATTACHMENT_BYTES = 1024 * 1024;
 const requestedSessionId = new URLSearchParams(window.location.search).get("session");
 const INITIAL_SESSION_ID =
   requestedSessionId !== null && SESSION_PATTERN.test(requestedSessionId)
@@ -406,6 +409,8 @@ export function App() {
   const [attachmentsUi, setAttachmentsUi] = useState(initialAttachmentState);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const selectedProviderIdRef = useRef<string | null>(null);
+  const selectedAccountIdRef = useRef<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [pendingAttachmentIds, setPendingAttachmentIds] = useState<string[]>([]);
   const [maintenanceNotice, setMaintenanceNotice] = useState<string | null>(null);
@@ -550,12 +555,23 @@ export function App() {
         }
         setFleet((current) => reduceFleet(current, message));
         setCatalog((current) => reduceCatalog(current, message));
-        setNative((current) => reduceNative(current, message));
-        setSettingsUi((current) => reduceSettings(current, message));
+        setNative((current) =>
+          reduceNative(
+            current,
+            message,
+            selectedProviderIdRef.current,
+            selectedAccountIdRef.current,
+          ),
+        );
+        setSettingsUi((current) =>
+          reduceSettings(current, message, selectedSessionRef.current),
+        );
         setSessionCapabilitiesUi((current) =>
           reduceSessionCapabilities(current, message, selectedSessionRef.current),
         );
-        setLeaseUi((current) => reduceLease(current, message));
+        setLeaseUi((current) =>
+          reduceLease(current, message, selectedSessionRef.current),
+        );
         setAttachmentsUi((current) =>
           reduceAttachments(current, message, selectedSessionRef.current),
         );
@@ -669,6 +685,15 @@ export function App() {
           // Rejected begin frees a pending upload slot.
           if (code.startsWith("ATTACHMENT_")) {
             pendingUploadsRef.current.delete(message.payload.commandId);
+            if (message.payload.sessionId === selectedSessionRef.current) {
+              send(
+                socket,
+                makeEnvelope("attachments.list", {
+                  sessionId: selectedSessionRef.current,
+                  deviceId: deviceIdRef.current,
+                }),
+              );
+            }
           }
         }
         if (message.type === "protocol.error") {
@@ -678,6 +703,15 @@ export function App() {
             setMaintenanceNotice(maintenanceOperatorMessage(code, detail));
           }
           setNotice(`${code}: ${detail}`);
+          if (code.startsWith("ATTACHMENT_")) {
+            send(
+              socket,
+              makeEnvelope("attachments.list", {
+                sessionId: selectedSessionRef.current,
+                deviceId: deviceIdRef.current,
+              }),
+            );
+          }
         }
         if (
           message.type === "approval.resolved" ||
@@ -867,6 +901,19 @@ export function App() {
   const selectedProvider =
     fleet.snapshot?.providers.find((item) => item.providerId === selectedProviderId) ??
     null;
+  const accountOptions = Array.from(
+    new Map(
+      (fleet.snapshot?.providers ?? []).flatMap((provider) =>
+        provider.accounts.map((account) => [
+          account.accountId,
+          {
+            id: account.accountId,
+            label: `${account.displayName} · ${provider.displayName}`,
+          },
+        ] as const),
+      ),
+    ).values(),
+  );
   // Catalog cursor recovery: discard cursor and request first page explicitly.
   useEffect(() => {
     if (!catalog.needsFreshPage) return;
@@ -886,6 +933,14 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    selectedProviderIdRef.current = selectedProviderId;
+  }, [selectedProviderId]);
+
+  useEffect(() => {
+    selectedAccountIdRef.current = selectedAccountId;
+  }, [selectedAccountId]);
+
+  useEffect(() => {
     if (!selectedProvider) {
       setSelectedAccountId(null);
       return;
@@ -903,11 +958,15 @@ export function App() {
   }, [selectedProvider]);
 
   useEffect(() => {
+    setNative(initialNativeState());
     const socket = socketRef.current;
     if (
       socket?.readyState !== WebSocket.OPEN ||
       !selectedProviderId ||
-      !selectedAccountId
+      !selectedAccountId ||
+      !selectedProvider?.accounts.some(
+        (account) => account.accountId === selectedAccountId,
+      )
     ) {
       return;
     }
@@ -1122,7 +1181,8 @@ export function App() {
   const controlDecision = sessionCanControl({
     catalogEntry,
     capabilities: sessionCapabilitiesUi.snapshot,
-    fleetStale: fleet.status === "stale" || fleet.snapshot?.freshness === "stale",
+    settingsRevision: settingsUi.snapshot?.revision ?? null,
+    fleetStale: fleet.status !== "ready",
   });
   const availability = controlDecision.ok
     ? baseAvailability
@@ -1144,6 +1204,7 @@ export function App() {
   const createDisabledReason = (() => {
     if (connection !== "online") return "Core offline";
     if (maintenanceNotice) return "Database maintenance required";
+    if (fleet.status !== "ready") return "Provider inventory is not fresh";
     if (!selectedProviderId || !selectedAccountId) return "Select provider and account";
     const remote = capabilitySupported(selectedProvider, "create_session");
     if (!remote.ok) return remote.reason;
@@ -1186,6 +1247,7 @@ export function App() {
     }
     let remaining = remainingAttachmentSlots(
       attachmentsUi.attachments,
+      pendingAttachmentIds,
       pendingUploadsRef.current.size,
       MAX_INPUT_ATTACHMENTS_PER_TURN,
     );
@@ -1197,7 +1259,11 @@ export function App() {
         setNotice("Attachment name must be a basename only");
         continue;
       }
-      const mediaType = file.type || "text/plain";
+      const mediaType = parseInputAttachmentMediaType(file.type || "text/plain");
+      if (mediaType === null) {
+        setNotice(`Attachment media type ${file.type || "unknown"} is unsupported`);
+        continue;
+      }
       const kind = attachmentKindForMediaType(mediaType);
       if (kind === "image" && !imageAttach.ok) {
         setNotice(imageAttach.reason ?? "Image input unsupported");
@@ -1209,6 +1275,14 @@ export function App() {
       }
       if (kind === "document" || kind === "archive") {
         setNotice("PDF/ZIP/document attachments are rejected by M9 policy");
+        continue;
+      }
+      if (file.size <= 0 || file.size > MAX_INPUT_ATTACHMENT_BYTES) {
+        setNotice("Attachment must contain 1 byte to 8 MiB");
+        continue;
+      }
+      if (kind === "text" && file.size > MAX_TEXT_INPUT_ATTACHMENT_BYTES) {
+        setNotice("Text attachments are limited to 1 MiB");
         continue;
       }
       const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1230,13 +1304,7 @@ export function App() {
           deviceId: deviceIdRef.current,
           name,
           kind,
-          mediaType: mediaType as
-            | "text/plain"
-            | "text/markdown"
-            | "image/png"
-            | "image/jpeg"
-            | "image/gif"
-            | "image/webp",
+          mediaType,
           byteLength: bytes.byteLength,
           sha256: digest,
           chunkCount,
@@ -1355,6 +1423,9 @@ export function App() {
             id: provider.providerId,
             label: provider.displayName,
           }))}
+          accountOptions={accountOptions}
+          selectedProviderId={selectedProviderId}
+          selectedAccountId={selectedAccountId}
           onFiltersChange={(patch) => {
             const isTextFilter =
               Object.prototype.hasOwnProperty.call(patch, "search") ||
@@ -1437,6 +1508,15 @@ export function App() {
           onResumeNative={(providerSessionId) => {
             const socket = socketRef.current;
             if (!socket || !selectedProviderId || !selectedAccountId) return;
+            if (
+              native.status !== "ready" ||
+              native.snapshot?.freshness !== "live" ||
+              native.snapshot.providerId !== selectedProviderId ||
+              native.snapshot.accountId !== selectedAccountId
+            ) {
+              setNotice("Native Session snapshot is not current for this provider/account");
+              return;
+            }
             // Resume always creates a new AICL Session ID; Core rejects existing IDs.
             const suffix = providerSessionId
               .replace(/[^A-Za-z0-9._-]/g, "-")
@@ -1822,12 +1902,22 @@ export function App() {
             </div>
             <AttachmentComposer
               attachments={attachmentsUi.attachments}
+              selectedAttachmentIds={pendingAttachmentIds}
               uploadProgress={attachmentsUi.uploadProgress}
               error={attachmentsUi.error}
               canAttachText={textAttach.ok}
               canAttachImage={imageAttach.ok}
               disabledReason={attachDisabledReason}
               onPickFiles={(files) => void uploadFiles(files)}
+              onToggleSelection={(attachmentId) => {
+                setPendingAttachmentIds((ids) =>
+                  ids.includes(attachmentId)
+                    ? ids.filter((id) => id !== attachmentId)
+                    : ids.length < MAX_INPUT_ATTACHMENTS_PER_TURN
+                      ? [...ids, attachmentId]
+                      : ids,
+                );
+              }}
               onDelete={(attachmentId) => {
                 const socket = socketRef.current;
                 if (!socket) return;

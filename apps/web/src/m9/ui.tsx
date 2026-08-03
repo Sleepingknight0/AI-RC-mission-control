@@ -1,3 +1,4 @@
+import { SessionOperationalStateSchema } from "@aicl/protocol";
 import type {
   ApprovalLeaseSnapshot,
   InputAttachment,
@@ -7,7 +8,7 @@ import type {
   SessionSettings,
   SessionSummaryV2,
 } from "@aicl/protocol";
-import type { FormEvent, ReactNode } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import {
   activeLease,
@@ -152,6 +153,9 @@ export function SessionCatalogPanel({
   onRefreshNative,
   createDisabledReason,
   providerOptions,
+  accountOptions,
+  selectedProviderId,
+  selectedAccountId,
 }: {
   catalog: CatalogState;
   native: NativeState;
@@ -167,8 +171,16 @@ export function SessionCatalogPanel({
   onRefreshNative: () => void;
   createDisabledReason: string | null;
   providerOptions: Array<{ id: string; label: string }>;
+  accountOptions: Array<{ id: string; label: string }>;
+  selectedProviderId: string | null;
+  selectedAccountId: string | null;
 }) {
   const filters = catalog.filters;
+  const nativeIsCurrent =
+    native.status === "ready" &&
+    native.snapshot?.freshness === "live" &&
+    native.snapshot.providerId === selectedProviderId &&
+    native.snapshot.accountId === selectedAccountId;
   return (
     <section className="m9-panel catalog-panel" aria-labelledby="catalog-title">
       <div className="panel-heading">
@@ -208,6 +220,26 @@ export function SessionCatalogPanel({
           {providerOptions.map((provider) => (
             <option key={provider.id} value={provider.id}>
               {provider.label}
+            </option>
+          ))}
+        </select>
+        <label className="field-label" htmlFor="catalog-account">
+          Account
+        </label>
+        <select
+          id="catalog-account"
+          value={filters.accountIds[0] ?? ""}
+          onChange={(event) => {
+            const value = event.target.value;
+            onFiltersChange({
+              accountIds: value === "" ? [] : [value],
+            });
+          }}
+        >
+          <option value="">All accounts</option>
+          {accountOptions.map((account) => (
+            <option key={account.id} value={account.id}>
+              {account.label}
             </option>
           ))}
         </select>
@@ -256,6 +288,31 @@ export function SessionCatalogPanel({
             onFiltersChange({ project: value === "" ? null : value });
           }}
         />
+        <fieldset className="catalog-state-filter">
+          <legend>State</legend>
+          <div className="catalog-state-chips">
+            {SessionOperationalStateSchema.options.map((state) => {
+              const selected = filters.states.includes(state);
+              return (
+                <button
+                  key={state}
+                  type="button"
+                  className="text-button catalog-filter-chip"
+                  aria-pressed={selected}
+                  onClick={() =>
+                    onFiltersChange({
+                      states: selected
+                        ? filters.states.filter((item) => item !== state)
+                        : [...filters.states, state],
+                    })
+                  }
+                >
+                  {state.replaceAll("_", " ")}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
         <button
           type="button"
           disabled={createDisabledReason !== null}
@@ -376,11 +433,11 @@ export function SessionCatalogPanel({
                 <button
                   type="button"
                   className="text-button"
-                  disabled={!session.canResume}
+                  disabled={!nativeIsCurrent || !session.canResume}
                   title={
-                    session.canResume
+                    nativeIsCurrent && session.canResume
                       ? "Import/resume into a new AICL Session"
-                      : "Resume not available"
+                      : "Resume requires a current live snapshot for this provider/account"
                   }
                   onClick={() => onResumeNative(session.providerSessionId)}
                 >
@@ -422,7 +479,9 @@ export function SessionControlsPanel({
 }) {
   const snapshot = settings.snapshot;
   const caps: SessionCapabilitiesSnapshot | null =
-    sessionCapabilities.snapshot;
+    sessionCapabilities.snapshot?.settingsRevision === snapshot?.revision
+      ? sessionCapabilities.snapshot
+      : null;
   const provider =
     fleet?.providers.find((item) => item.providerId === snapshot?.settings.providerId) ??
     null;
@@ -448,10 +507,10 @@ export function SessionControlsPanel({
     }),
   } as const;
   const leaseCap = sessionSupportRow(caps, { type: "lease" });
-  // Sandbox/network: fail closed without Session-level support rows (not on projection).
-  // Keep controls visible from settings but only mutable when control authority holds.
-  const sandboxCap = controlCap;
-  const networkCap = controlCap;
+  // These fields are visible, but the current projection does not expose
+  // option-specific support. Missing evidence must not become authority.
+  const sandboxCap = sessionSupportRow(caps, { type: "sandbox" });
+  const networkCap = sessionSupportRow(caps, { type: "network" });
   const active = activeLease(lease);
   const remaining = leaseRemainingMs(lease, now);
   const mutable = (snapshot?.mutable ?? false) && controlCap.ok;
@@ -657,7 +716,7 @@ export function SessionControlsPanel({
           Sandbox
           <select
             value={snapshot.settings.sandboxPolicy}
-            disabled={!mutable || !sandboxCap.ok}
+            disabled
             onChange={(event) =>
               update({
                 sandboxPolicy: event.target.value as SessionSettings["sandboxPolicy"],
@@ -673,7 +732,7 @@ export function SessionControlsPanel({
           Network
           <select
             value={snapshot.settings.networkPolicy}
-            disabled={!mutable || !networkCap.ok}
+            disabled
             onChange={(event) =>
               update({
                 networkPolicy: event.target.value as SessionSettings["networkPolicy"],
@@ -746,21 +805,25 @@ export function SessionControlsPanel({
 
 export function AttachmentComposer({
   attachments,
+  selectedAttachmentIds,
   uploadProgress,
   error,
   canAttachText,
   canAttachImage,
   disabledReason,
   onPickFiles,
+  onToggleSelection,
   onDelete,
 }: {
   attachments: InputAttachment[];
+  selectedAttachmentIds: string[];
   uploadProgress: AttachmentUiState["uploadProgress"];
   error: string | null;
   canAttachText: boolean;
   canAttachImage: boolean;
   disabledReason: string | null;
   onPickFiles: (files: FileList) => void;
+  onToggleSelection: (attachmentId: string) => void;
   onDelete: (attachmentId: string) => void;
 }) {
   const accept = [
@@ -774,7 +837,15 @@ export function AttachmentComposer({
     <div className="attachment-composer">
       <div className="composer-heading">
         <span className="field-label">Managed attachments</span>
-        <span className="mono-meta">{attachments.filter((a) => a.status === "ready").length}/8 ready</span>
+        <span className="mono-meta">
+          {selectedAttachmentIds.filter((id) =>
+            attachments.some(
+              (attachment) =>
+                attachment.attachmentId === id && attachment.status === "ready",
+            ),
+          ).length}
+          /8 selected · {attachments.filter((a) => a.status === "ready").length} ready
+        </span>
       </div>
       <label className="attachment-pick">
         <span>Add file</span>
@@ -782,7 +853,7 @@ export function AttachmentComposer({
           type="file"
           multiple
           accept={accept || undefined}
-          disabled={!canAttachText && !canAttachImage}
+          disabled={disabledReason !== null || (!canAttachText && !canAttachImage)}
           onChange={(event) => {
             if (event.target.files) onPickFiles(event.target.files);
             event.currentTarget.value = "";
@@ -798,7 +869,18 @@ export function AttachmentComposer({
             const progress = uploadProgress[item.attachmentId];
             return (
               <li key={item.attachmentId}>
-                <span title={item.name}>{item.name}</span>
+                {item.status === "ready" ? (
+                  <input
+                    className="attachment-select"
+                    type="checkbox"
+                    aria-label={`Include ${item.name} in the next Turn`}
+                    checked={selectedAttachmentIds.includes(item.attachmentId)}
+                    onChange={() => onToggleSelection(item.attachmentId)}
+                  />
+                ) : (
+                  <span className="attachment-select-placeholder" aria-hidden="true" />
+                )}
+                <span className="attachment-name" title={item.name}>{item.name}</span>
                 <span className="mono-meta">{item.status}</span>
                 {progress && (
                   <span className="mono-meta">
@@ -898,6 +980,24 @@ export function CreateSessionForm({
     providers[0] ??
     null;
   const models = provider?.models.filter((model) => !model.hidden) ?? [];
+  const [selectedModelId, setSelectedModelId] = useState("");
+  const modelIds = models.map((model) => model.modelId).join("\u0000");
+  const effectiveModel =
+    models.find((model) => model.modelId === selectedModelId) ??
+    models.find((model) => model.isDefault) ??
+    models[0] ??
+    null;
+  const [selectedReasoning, setSelectedReasoning] = useState("");
+
+  useEffect(() => {
+    if (
+      selectedModelId !== "" &&
+      !models.some((model) => model.modelId === selectedModelId)
+    ) {
+      setSelectedModelId("");
+    }
+    setSelectedReasoning("");
+  }, [provider?.providerId, selectedModelId, modelIds]);
 
   const handle = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -933,7 +1033,11 @@ export function CreateSessionForm({
       </label>
       <label>
         Model
-        <select name="model" defaultValue="">
+        <select
+          name="model"
+          value={selectedModelId}
+          onChange={(event) => setSelectedModelId(event.target.value)}
+        >
           <option value="">Provider default</option>
           {models.map((model) => (
             <option key={model.modelId} value={model.modelId}>
@@ -944,9 +1048,13 @@ export function CreateSessionForm({
       </label>
       <label>
         Reasoning
-        <select name="reasoning" defaultValue="">
+        <select
+          name="reasoning"
+          value={selectedReasoning}
+          onChange={(event) => setSelectedReasoning(event.target.value)}
+        >
           <option value="">None</option>
-          {(models[0]?.reasoningEfforts ?? []).map((option) => (
+          {(effectiveModel?.reasoningEfforts ?? []).map((option) => (
             <option key={option.value} value={option.value}>
               {option.value}
             </option>
@@ -961,19 +1069,5 @@ export function CreateSessionForm({
         Create
       </button>
     </form>
-  );
-}
-
-export function ResourceShell({
-  children,
-  title,
-}: {
-  children: ReactNode;
-  title: string;
-}) {
-  return (
-    <div className="resource-shell" data-title={title}>
-      {children}
-    </div>
   );
 }
