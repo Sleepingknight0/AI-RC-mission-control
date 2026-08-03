@@ -126,6 +126,7 @@ export const ProviderCapabilityKeySchema = z.enum([
   "list_models",
   "change_model",
   "reasoning_levels",
+  "execution_modes",
   "text_input",
   "file_input",
   "image_input",

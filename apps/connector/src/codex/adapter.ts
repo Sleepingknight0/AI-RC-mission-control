@@ -526,7 +526,16 @@ export class CodexProvider implements ConnectorProvider {
         await rpc.request("turn/start", {
           threadId: providerSessionId,
           clientUserMessageId: command.payload.commandId,
-          input: [{ type: "text", text: command.payload.prompt }],
+          input:
+            settings === undefined
+              ? [{ type: "text", text: command.payload.prompt }]
+              : [
+                  {
+                    type: "text",
+                    text: executionModeInstruction(settings.executionMode),
+                  },
+                  { type: "text", text: command.payload.prompt },
+                ],
           ...(effectiveProjectPath === undefined
             ? {}
             : { cwd: effectiveProjectPath }),
@@ -1128,6 +1137,7 @@ function updateCodexCapabilities(
     "create_session",
     "resume_session",
     "text_input",
+    "execution_modes",
     "approval_policies",
     "sandbox_policies",
   ] as const) {
@@ -1172,6 +1182,17 @@ function updateCodexCapabilities(
     "Network policy translation has not been verified",
   );
   return current.map((capability) => updates.get(capability.key) ?? capability);
+}
+
+function executionModeInstruction(mode: "ask" | "plan" | "auto") {
+  switch (mode) {
+    case "ask":
+      return "[AICL execution: ask] Work interactively in one bounded Turn. Pause at every required approval boundary.";
+    case "plan":
+      return "[AICL execution: plan-first] Produce and validate a plan before side effects. Planning does not grant approval authority.";
+    case "auto":
+      return "[AICL execution: bounded-auto] Continue through multiple bounded steps in this Turn, but stop at approval, sandbox, network, or project boundaries.";
+  }
 }
 
 function activityTerminalStatus(status: string): ToolActivity["status"] {

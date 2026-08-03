@@ -94,6 +94,11 @@ integration must send the currently displayed revision.
 
 Execution modes are `ask`, `plan`, and `auto`. Approval policies are `review`, `balanced`, `workspace_auto`, and `full_auto_lease`; the two enums must never be collapsed.
 
+The provider capability key `execution_modes` gates the control. Ask means one
+interactive bounded Turn, plan means plan-first within the Turn, and auto means
+multiple bounded steps within the Turn. Auto never changes approval policy,
+never grants a lease, and never causes Core to submit another prompt.
+
 ## Lease lifecycle
 
 `approval.lease.snapshot` exposes state, scopes, revision, `expiresAt`, and server time. Create accepts only 15/30/60 minutes plus current Session/settings/Runtime/device fences. Revoke and emergency stop are idempotent. The UI derives countdown from `expiresAt` but treats server state as authoritative.

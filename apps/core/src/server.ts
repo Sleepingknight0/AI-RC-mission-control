@@ -1783,7 +1783,11 @@ function validateSessionSettingsSelection(
   }
   if (
     requested.executionMode !== current.executionMode &&
-    requested.executionMode !== "ask"
+    !provider.capabilities.some(
+      (capability) =>
+        capability.key === "execution_modes" &&
+        capability.state === "supported",
+    )
   ) {
     return {
       code: "EXECUTION_MODE_UNAVAILABLE",

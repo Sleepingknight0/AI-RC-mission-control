@@ -56,7 +56,7 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M9.3 Session Catalog V2 backend and migration
 - [x] M9.4 Codex native discovery, create, resume, and capabilities
 - [x] M9.5 revision-fenced Session settings and effective Turn snapshots
-- [ ] M9.6 normalized execution-mode semantics
+- [x] M9.6 normalized execution-mode semantics
 - [ ] M9.7 approval policies and scoped Full Auto leases
 - [ ] M9.8 managed attachment lifecycle and security
 - [ ] M9.9 normalized terminal/activity metadata
@@ -65,11 +65,12 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 
 ## Current milestone
 
-**M9.6 normalized execution-mode semantics.** M9.5 now provides authoritative
-full-document Session settings CAS, conflict snapshots, active-Turn fencing,
-and immutable effective settings on every newly accepted Turn. Core schema is
-8. Codex revalidates and applies model/reasoning/project overrides at dispatch.
-The Grok visual checkpoint remains isolated and frozen. M8.5 and
+**M9.7 approval policies and scoped Full Auto leases.** M9.6 now advertises
+verified execution-mode capability and translates ask/plan/auto into explicit
+Codex orchestration instructions while retaining the immutable effective Turn
+snapshot. Auto remains inside the same approval, sandbox, network, project,
+and Runtime fences and never creates or replays a prompt. Core schema remains
+8. The Grok visual checkpoint remains isolated and frozen. M8.5 and
 Google/Cloudflare identity remain deferred outside M9.
 
 ## Last verified demo
@@ -134,3 +135,8 @@ Google/Cloudflare identity remain deferred outside M9.
   the settings revision. `pnpm check` passed 150 automated tests plus compiled
   lifecycle/maintenance gates; one opt-in real-provider test remained skipped.
   Frozen Web source remains unchanged.
+- M9.6 execution modes: provider capabilities now explicitly report
+  `execution_modes`. Codex advertises support only after authenticated adapter
+  probing. Ask is interactive, plan is plan-first, and auto permits multiple
+  bounded steps inside the already accepted Turn. Adapter tests prove plan
+  translation and that auto still raises the normalized approval request.

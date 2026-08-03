@@ -25,6 +25,7 @@ const REMOTE_CAPABILITY_KEYS = [
   "list_models",
   "change_model",
   "reasoning_levels",
+  "execution_modes",
   "text_input",
   "approval_policies",
   "sandbox_policies",

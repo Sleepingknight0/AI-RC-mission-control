@@ -37,7 +37,7 @@ function provider(timeoutMs?: number) {
 function startCommand(
   prompt: string,
   providerSessionId: string | null = null,
-  withSettings = false,
+  executionMode?: "ask" | "plan" | "auto",
 ): TurnStartCommand {
   return CoreToConnectorEnvelopeSchema.parse(
     makeEnvelope("connector.turn.start", {
@@ -48,23 +48,23 @@ function startCommand(
       providerSessionId,
       runtimeId: "runtime-1",
       runtimeGeneration: 1,
-      ...(withSettings
-        ? {
+      ...(executionMode === undefined
+        ? {}
+        : {
             settingsRevision: 3,
             effectiveSettings: {
               providerId: "codex",
               accountId: "default",
               model: "fake-codex-model",
               reasoningLevel: "high",
-              executionMode: "ask",
+              executionMode,
               approvalPolicy: "review",
               sandboxPolicy: "workspace_write",
               networkPolicy: "restricted",
               projectPath: process.cwd(),
               branch: "main",
             },
-          }
-        : {}),
+          }),
     }),
   ) as TurnStartCommand;
 }
@@ -102,15 +102,16 @@ describe("Codex adapter normalization", () => {
   it("revalidates and forwards the immutable model and reasoning snapshot", async () => {
     const adapter = provider();
     const events: ConnectorEnvelope[] = [];
-    await adapter.startTurn(startCommand("report-settings", "fake-thread", true),
+    await adapter.startTurn(startCommand("report-settings", "fake-thread", "plan"),
       (event) => events.push(event));
     const completed = events.find(
       (event) => event.type === "connector.turn.message.completed",
     );
 
     expect(completed?.payload.content).toContain(
-      "fake-codex-model|high",
+      "plan-first",
     );
+    expect(completed?.payload.content).toContain("fake-codex-model|high");
   });
 
   it("normalizes an interrupt terminal state", async () => {
@@ -253,11 +254,12 @@ describe("Codex adapter normalization", () => {
     expect(events.at(-1)?.type).toBe("connector.turn.completed");
   });
 
-  it("keeps provider request IDs internal and resolves an opaque approval once", async () => {
+  it("keeps Auto mode behind the same opaque approval boundary", async () => {
     const adapter = provider();
     const events: ConnectorEnvelope[] = [];
-    const running = adapter.startTurn(startCommand("approval"), (event) =>
-      events.push(event),
+    const running = adapter.startTurn(
+      startCommand("approval", "fake-thread", "auto"),
+      (event) => events.push(event),
     );
     await waitUntil(() =>
       events.some((event) => event.type === "connector.approval.requested"),

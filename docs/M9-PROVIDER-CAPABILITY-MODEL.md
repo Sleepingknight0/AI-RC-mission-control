@@ -19,7 +19,7 @@ A provider snapshot carries:
 - freshness: `live`, `local`, `stale`, `offline`, or `unavailable`;
 - observation timestamp and bounded notice.
 
-Capabilities cover inventory, installation/authentication probes, usage, remote control, Session list/create/resume, model discovery/change, reasoning, text/image input, approval policies, sandbox, and network policy.
+Capabilities cover inventory, installation/authentication probes, usage, remote control, Session list/create/resume, model discovery/change, reasoning, execution modes, text/image input, approval policies, sandbox, and network policy.
 
 ## Evidence rules
 
@@ -45,3 +45,8 @@ plan, tokens, and credential paths are discarded. Model IDs, labels,
 modalities, and reasoning options are accepted only after normalized schema
 validation. A failed or timed-out probe degrades Codex capability evidence but
 does not remove other registry providers or block Turn dispatch.
+
+`execution_modes` is explicit evidence. The Codex adapter supports normalized
+ask/plan/auto orchestration even though installed `turn/start` has no
+provider-native collaboration-mode request field. Inventory-only providers
+report this capability unsupported and cannot expose the control.

@@ -116,7 +116,7 @@ lines.on("line", (line) => {
       break;
     }
     case "turn/start": {
-      const text = String(message.params.input[0].text);
+      const text = String(message.params.input.at(-1).text);
       const turnId = `fake-turn-${message.params.clientUserMessageId}`;
       active = { threadId: message.params.threadId, turnId, text, timer: undefined };
       if (text === "timeout-start") return;
@@ -354,7 +354,7 @@ lines.on("line", (line) => {
         setTimeout(() => {
           const answer =
             text === "report-settings"
-              ? `Real-shaped response: ${message.params.model}|${message.params.effort}`
+              ? `Real-shaped response: ${message.params.input[0].text}|${message.params.model}|${message.params.effort}`
               : `Real-shaped response: ${text}`;
           send({
             method: "item/agentMessage/delta",

@@ -39,7 +39,11 @@ rejected before creating or dispatching a Turn.
 ## Codex translation
 
 - model and reasoning come from `model/list` and are sent as `turn/start` overrides;
-- `plan` maps to the verified Codex collaboration-mode input when supported;
-- `ask` and `auto` remain AICL orchestration states and do not imply approval bypass;
+- installed Codex `turn/start` has no collaboration-mode request field, so AICL
+  supplies a bounded adapter instruction before the unchanged operator prompt;
+- `ask` requests interactive one-Turn work, `plan` requires plan-first behavior,
+  and `auto` permits multiple bounded steps inside that same Turn;
+- all modes remain AICL orchestration states and never imply approval bypass,
+  automatic prompt resubmission, or creation of another Turn;
 - sandbox/network values map only to installed-schema shapes;
 - unsupported account/profile switching is rejected rather than simulated.

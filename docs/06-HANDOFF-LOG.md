@@ -1667,3 +1667,33 @@ build / migration twice / lifecycle -> passed; Core 8, Connector 3
 
 M9.6 defines and enforces ask/plan/auto execution semantics without weakening
 approval, sandbox, network, or lease boundaries.
+
+---
+
+### 2026-08-03 12:18 — Codex — M9.6 execution modes
+
+**Outcome**
+
+- Added explicit `execution_modes` provider capability evidence; inventory-only
+  providers remain unsupported and the authenticated Codex adapter reports it
+  supported.
+- Defined ask, plan-first, and bounded-auto instructions at the Codex adapter
+  boundary while preserving the operator prompt as a separate input.
+- Auto remains one accepted Turn and cannot alter approval policy, sandbox,
+  network, project scope, Runtime generation, or prompt-replay rules.
+
+**Verification**
+
+```text
+protocol capability gate              -> 26 passed
+Codex discovery/inventory/mode tests   -> 21 passed
+plan-first adapter translation         -> passed
+Auto approval-boundary regression      -> passed
+Connector/Core/Web typecheck           -> passed
+frozen Web diff                        -> no changes
+```
+
+**Next**
+
+M9.7 implements Core-enforced review/balanced/workspace-auto policies and
+scoped, expiring Full Auto leases with emergency stop.
