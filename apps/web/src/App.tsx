@@ -11,7 +11,6 @@ import {
   type SessionSettings,
   type SessionSnapshot,
   type SessionSummary,
-  type SessionSummaryV2,
   type ToolActivity,
 } from "@aicl/protocol";
 import {
@@ -46,6 +45,7 @@ import {
   attachmentKindForMediaType,
   basenameOnly,
   capabilitySupported,
+  catalogRequestStarted,
   controllableProviders,
   defaultCatalogFilters,
   initialAttachmentState,
@@ -410,11 +410,10 @@ export function App() {
   const requestCatalog = useCallback(
     (socket: WebSocket, cursor: string | null = null) => {
       const requestId = crypto.randomUUID();
-      setCatalog((current) => ({
-        ...current,
-        status: current.sessions.length > 0 ? current.status : "loading",
-        requestId,
-      }));
+      const append = cursor !== null;
+      setCatalog((current) =>
+        catalogRequestStarted(current, requestId, append, catalogFiltersRef.current),
+      );
       send(
         socket,
         makeEnvelope("sessions.catalog.list", {
@@ -552,6 +551,11 @@ export function App() {
         }
         if (message.type === "session.command.accepted") {
           setNotice(`Session command accepted · rev ${message.payload.revision}`);
+          // Metadata mutations change pin/archive/title — refresh first catalog page.
+          const liveSocket = socketRef.current;
+          if (liveSocket?.readyState === WebSocket.OPEN) {
+            requestCatalog(liveSocket, null);
+          }
         }
         if (message.type === "session.provider.status") {
           setNotice(
@@ -996,17 +1000,13 @@ export function App() {
   const activeCount = sessions.filter(
     (item) => item.state === "running" || item.state === "awaiting_approval",
   ).length;
-  const degradedCount = sessions.filter(
-    (item) =>
-      item.state === "failed" ||
-      item.state === "outcome_unknown" ||
-      item.runtimeStatus === "lost" ||
-      item.runtimeStatus === "incompatible",
-  ).length;
   const approvalCount = sessions.reduce(
     (total, item) => total + item.pendingApprovalCount,
     0,
   );
+  const catalogEntry =
+    catalog.sessions.find((item) => item.sessionId === selectedSessionId) ?? null;
+  const sessionTitle = catalogEntry?.title ?? selectedSessionId;
   const timelineBusy = latest?.status === "running";
   const recoveryRequired =
     runtime?.status === "lost" || latest?.status === "outcome_unknown";
@@ -1255,11 +1255,19 @@ export function App() {
           native={native}
           selectedSessionId={selectedSessionId}
           createDisabledReason={createDisabledReason}
-          onSearch={(search) => {
+          providerOptions={(fleet.snapshot?.providers ?? []).map((provider) => ({
+            id: provider.providerId,
+            label: provider.displayName,
+          }))}
+          onFiltersChange={(patch) => {
             catalogFiltersRef.current = {
               ...catalogFiltersRef.current,
-              search: search.trim() === "" ? null : search.trim(),
+              ...patch,
             };
+            setCatalog((current) => ({
+              ...current,
+              filters: catalogFiltersRef.current,
+            }));
             const socket = socketRef.current;
             if (socket) requestCatalog(socket, null);
           }}
@@ -1269,6 +1277,22 @@ export function App() {
           }}
           onCreate={() => setShowCreateForm((open) => !open)}
           onSelectSession={(sessionId) => switchSession(sessionId)}
+          onRename={(session, title) => {
+            const socket = socketRef.current;
+            if (!socket) return;
+            const next = title.trim();
+            if (next === "" || next === session.title) return;
+            send(
+              socket,
+              makeEnvelope("session.rename", {
+                commandId: crypto.randomUUID(),
+                sessionId: session.sessionId,
+                deviceId: deviceIdRef.current,
+                expectedRevision: session.revision,
+                title: next,
+              }),
+            );
+          }}
           onPin={(session) => {
             const socket = socketRef.current;
             if (!socket) return;
@@ -1300,17 +1324,27 @@ export function App() {
           onResumeNative={(providerSessionId) => {
             const socket = socketRef.current;
             if (!socket || !selectedProviderId || !selectedAccountId) return;
+            // Resume always creates a new AICL Session ID; Core rejects existing IDs.
+            const suffix = providerSessionId
+              .replace(/[^A-Za-z0-9._-]/g, "-")
+              .slice(0, 48);
+            const sessionId = `import-${suffix || crypto.randomUUID().slice(0, 8)}`.slice(
+              0,
+              100,
+            );
             send(
               socket,
               makeEnvelope("session.resume", {
                 commandId: crypto.randomUUID(),
-                sessionId: selectedSessionId,
+                sessionId,
                 deviceId: deviceIdRef.current,
                 providerId: selectedProviderId,
                 accountId: selectedAccountId,
-                providerSessionId: providerSessionId,
+                providerSessionId,
               }),
             );
+            setNotice(`Resuming native Session into ${sessionId}`);
+            switchSession(sessionId);
           }}
           onRefreshNative={() => {
             const socket = socketRef.current;
@@ -1417,9 +1451,14 @@ export function App() {
           <header className="console-header">
             <div className="console-title-block">
               <p className="eyebrow">FLIGHT CONSOLE</p>
-              <h2 title={selectedSessionId}>{selectedSessionId}</h2>
-              <p className="console-path" title={currentSummary?.cwd ?? undefined}>
-                {currentSummary?.cwd ?? "Project path unavailable"}
+              <h2 title={`${sessionTitle} · ${selectedSessionId}`}>{sessionTitle}</h2>
+              <p className="console-path" title={catalogEntry?.projectPath ?? currentSummary?.cwd ?? undefined}>
+                <span className="mono-meta">{selectedSessionId}</span>
+                {" · "}
+                {catalogEntry?.projectName ??
+                  catalogEntry?.projectPath ??
+                  currentSummary?.cwd ??
+                  "Project path unavailable"}
               </p>
             </div>
             <div className="console-state">

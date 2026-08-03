@@ -2,11 +2,8 @@ import type {
   ApprovalLeaseSnapshot,
   InputAttachment,
   ProviderFleetSnapshot,
-  ProviderNativeSessionSnapshot,
-  ProviderRecord,
   SessionCatalogFilter,
   SessionSettings,
-  SessionSettingsSnapshot,
   SessionSummaryV2,
 } from "@aicl/protocol";
 import type { FormEvent, ReactNode } from "react";
@@ -142,28 +139,33 @@ export function SessionCatalogPanel({
   native,
   selectedSessionId,
   onSelectSession,
-  onSearch,
+  onFiltersChange,
   onLoadMore,
   onCreate,
   onResumeNative,
+  onRename,
   onPin,
   onArchive,
   onRefreshNative,
   createDisabledReason,
+  providerOptions,
 }: {
   catalog: CatalogState;
   native: NativeState;
   selectedSessionId: string;
   onSelectSession: (sessionId: string) => void;
-  onSearch: (search: string) => void;
+  onFiltersChange: (patch: Partial<SessionCatalogFilter>) => void;
   onLoadMore: () => void;
   onCreate: () => void;
   onResumeNative: (providerSessionId: string) => void;
+  onRename: (session: SessionSummaryV2, title: string) => void;
   onPin: (session: SessionSummaryV2) => void;
   onArchive: (session: SessionSummaryV2) => void;
   onRefreshNative: () => void;
   createDisabledReason: string | null;
+  providerOptions: Array<{ id: string; label: string }>;
 }) {
+  const filters = catalog.filters;
   return (
     <section className="m9-panel catalog-panel" aria-labelledby="catalog-title">
       <div className="panel-heading">
@@ -179,9 +181,77 @@ export function SessionCatalogPanel({
         </label>
         <input
           id="catalog-search"
-          defaultValue={catalog.filters.search ?? ""}
+          defaultValue={filters.search ?? ""}
           placeholder="Title, provider, project…"
-          onChange={(event) => onSearch(event.target.value)}
+          onChange={(event) => {
+            const value = event.target.value.trim();
+            onFiltersChange({ search: value === "" ? null : value });
+          }}
+        />
+        <label className="field-label" htmlFor="catalog-provider">
+          Provider
+        </label>
+        <select
+          id="catalog-provider"
+          value={filters.providerIds[0] ?? ""}
+          onChange={(event) => {
+            const value = event.target.value;
+            onFiltersChange({
+              providerIds: value === "" ? [] : [value],
+            });
+          }}
+        >
+          <option value="">All providers</option>
+          {providerOptions.map((provider) => (
+            <option key={provider.id} value={provider.id}>
+              {provider.label}
+            </option>
+          ))}
+        </select>
+        <label className="field-label" htmlFor="catalog-archived">
+          Archive
+        </label>
+        <select
+          id="catalog-archived"
+          value={filters.archived}
+          onChange={(event) =>
+            onFiltersChange({
+              archived: event.target.value as SessionCatalogFilter["archived"],
+            })
+          }
+        >
+          <option value="exclude">Hide archived</option>
+          <option value="include">Include archived</option>
+          <option value="only">Archived only</option>
+        </select>
+        <label className="field-label" htmlFor="catalog-pinned">
+          Pinned
+        </label>
+        <select
+          id="catalog-pinned"
+          value={filters.pinned === null ? "any" : filters.pinned ? "yes" : "no"}
+          onChange={(event) => {
+            const value = event.target.value;
+            onFiltersChange({
+              pinned: value === "any" ? null : value === "yes",
+            });
+          }}
+        >
+          <option value="any">Any</option>
+          <option value="yes">Pinned only</option>
+          <option value="no">Unpinned only</option>
+        </select>
+        <label className="field-label" htmlFor="catalog-project">
+          Project
+        </label>
+        <input
+          id="catalog-project"
+          defaultValue={filters.project ?? ""}
+          placeholder="Project label or path…"
+          onChange={(event) => {
+            const value = event.target.value.trim();
+            onFiltersChange({ project: value === "" ? null : value });
+          }}
         />
         <button
           type="button"
@@ -194,6 +264,10 @@ export function SessionCatalogPanel({
         <DisabledReason reason={createDisabledReason} />
       </div>
       {catalog.error && <p className="inline-error" role="alert">{catalog.error}</p>}
+      <p className="mono-meta catalog-count">
+        Showing {catalog.sessions.length} of {catalog.total}
+        {catalog.pendingAppend ? " · loading page…" : ""}
+      </p>
       <div className="catalog-list">
         {catalog.sessions.length === 0 ? (
           <p className="empty-state">
@@ -215,6 +289,7 @@ export function SessionCatalogPanel({
                   <span className="mono-meta">{session.state}</span>
                 </span>
                 <span className="catalog-row-meta" title={session.projectPath ?? undefined}>
+                  {session.source === "imported" ? "imported · " : ""}
                   {session.providerId}
                   {session.accountId ? ` · ${session.accountId}` : ""}
                   {session.projectName ? ` · ${session.projectName}` : ""}
@@ -227,6 +302,17 @@ export function SessionCatalogPanel({
                 </span>
               </button>
               <div className="catalog-row-actions">
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={!session.canControl}
+                  onClick={() => {
+                    const next = window.prompt("Rename Session", session.title);
+                    if (next !== null) onRename(session, next);
+                  }}
+                >
+                  Rename
+                </button>
                 <button
                   type="button"
                   className="text-button"
@@ -249,7 +335,12 @@ export function SessionCatalogPanel({
         )}
       </div>
       {catalog.nextCursor && (
-        <button type="button" className="secondary-button" onClick={onLoadMore}>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={catalog.pendingAppend}
+          onClick={onLoadMore}
+        >
           Load more ({catalog.total} total)
         </button>
       )}
@@ -273,12 +364,19 @@ export function SessionCatalogPanel({
             {native.snapshot!.sessions.map((session) => (
               <li key={session.providerSessionId}>
                 <span title={session.title}>{session.title}</span>
+                <span className="mono-meta" title={session.projectPath}>
+                  {session.projectName}
+                </span>
                 <span className="mono-meta">{session.providerStatus}</span>
                 <button
                   type="button"
                   className="text-button"
                   disabled={!session.canResume}
-                  title={session.canResume ? "Resume" : "Resume not available"}
+                  title={
+                    session.canResume
+                      ? "Import/resume into a new AICL Session"
+                      : "Resume not available"
+                  }
                   onClick={() => onResumeNative(session.providerSessionId)}
                 >
                   Resume

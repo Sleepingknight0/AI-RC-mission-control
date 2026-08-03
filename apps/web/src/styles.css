@@ -1640,8 +1640,22 @@ button:active:not(:disabled) { transform: translateY(0); }
 .catalog-toolbar {
   display: grid;
   gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.catalog-toolbar input,
+.catalog-toolbar select {
+  width: 100%;
+  min-width: 0;
+}
+.catalog-count {
+  padding: 0 14px 8px;
 }
 .catalog-list { max-height: 360px; overflow: auto; }
+.native-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 .catalog-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1656,14 +1670,15 @@ button:active:not(:disabled) { transform: translateY(0); }
 }
 .native-list li {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) auto auto;
   gap: 8px;
   align-items: center;
   padding: 8px 0;
   border-bottom: 1px solid var(--line-faint);
   min-width: 0;
 }
-.native-list li > span:first-child {
+.native-list li > span:first-child,
+.native-list li > span:nth-child(2) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
