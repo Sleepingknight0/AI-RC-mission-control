@@ -2061,3 +2061,65 @@ attachment counts, stale-cursor recovery, filter throttling, and migration-
 checksum recovery guidance. Rerun Web tests/build, responsive/accessibility
 browser acceptance, `pnpm check`, and Real Codex E2E; review the complete rebased
 range and merge only after the combined gate passes. Preserve `stash@{0}`.
+
+---
+
+### 2026-08-03 21:24 — Codex — Independent post-fix audit closure
+
+**Outcome**
+
+- Independent Standards and Spec reviews of the complete remediation range both
+  pass after three forward fixes; no accepted High/security finding remains.
+- Core schema 13 unconditionally revokes all unproven pre-v13
+  `workspace_write` grants. Catalog `canControl` now uses the exact per-Session
+  Turn-authority validator, including the bound model.
+- Invalid activity, file-change, artifact, approval, interrupt, terminal-Turn,
+  and Runtime evidence commits its Connector receipt and produces a stable,
+  structured diagnostic bounded per Core boot. Duplicate approval IDs cannot
+  strand the FIFO journal.
+- The only accepted deferred finding remains the Medium product-retention
+  policy. Two Low maintainability observations (capability projection module
+  size and policy scattering) have no demonstrated behavioral or security
+  effect and do not block frontend integration.
+
+**Forward fixes**
+
+```text
+f6e56a4  fix(core): close post-audit authority and journal gaps
+6c66ceb  test(host): align schema 13 lifecycle expectations
+708e623  fix(core): classify all rejected Connector evidence
+```
+
+**Verification**
+
+```text
+pnpm install --frozen-lockfile
+  passed; lockfile unchanged
+pnpm migrate; pnpm migrate
+  Core 12→13 with verified backup, then Core 13 no-op; Connector 3
+pnpm build
+  passed
+pnpm check
+  185 automated tests passed; 1 opt-in Real Codex test skipped in the ordinary
+  suite; compiled lifecycle, maintenance/restore, clean install, and private-
+  Serve automation passed
+explicit AICL_REAL_CODEX=1
+  1 passed; test body 71.228 s; Vitest 72.16 s; command wall 76.4 s
+```
+
+The 185 tests are Config 13, Protocol 33, Domain 4, frozen Web 11, Connector 50,
+Core 59, and Host 15. Fresh/idempotent/upgraded/legacy schema-13 databases,
+exact Catalog authority under model removal, and the full invalid-Connector-
+evidence matrix are covered. Frozen visual files and `stash@{0}` remain
+untouched.
+
+**Next**
+
+Grok must rebase `origin/grok/m9-frontend-integration` at `8d792cdd` onto the
+final pushed master SHA and adapt Session gating to
+`session.capabilities.snapshot` plus exact Catalog authority. Recheck stale
+provider/auth evidence, duplicate attachment names/sizes and counts, stale-
+cursor recovery, filter throttling, and migration-checksum recovery guidance;
+then rerun Web tests/build, browser accessibility/responsiveness, `pnpm check`,
+and the unchanged Real Codex E2E before the combined range is reviewed or
+merged.

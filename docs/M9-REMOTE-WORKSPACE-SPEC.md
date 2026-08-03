@@ -34,9 +34,11 @@ Browser -> Core -> Connector -> provider adapter -> provider
 6. M9.10 proves hostile-input, fault-isolation, recovery, 15-provider, and
    1,000-Session behavior; M9.11 reruns the exact-head repository, production,
    maintenance, and real-provider gates and hands the stable contract to Grok.
-7. The post-M9 Claude audit adds Core schema 12: fail-closed legacy settings,
-   catalog-visible-only pagination revisions, and catalog lookup indexes. It
-   also requires authoritative Session creation before any Turn and exposes
+7. The post-M9 Claude audit adds Core schemas 12–13: fail-closed defaults,
+   unconditional revocation of unproven pre-v13 write grants, catalog-visible-
+   only pagination revisions, and catalog lookup indexes. It also requires
+   authoritative Session creation before any Turn, exact per-Session Catalog
+   control, bounded classified Connector rejection diagnostics, and
    `session.capabilities.snapshot` for the later Web integration.
 
 ## Explicit non-goals

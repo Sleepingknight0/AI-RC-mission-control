@@ -68,9 +68,11 @@ may ignore this new envelope without losing its existing Session flow.
 
 ## Session payload
 
-Catalog V2 fields are defined in `docs/M9-SESSION-CATALOG.md`. `canControl` and
-`canResume` are authoritative and fail closed when provider inventory is absent
-or stale. Native records are never presented as imported AICL Sessions. Core
+Catalog V2 fields are defined in `docs/M9-SESSION-CATALOG.md`. `canControl` is
+computed with the same exact provider, account, project, model, capability, and
+binding validator used before Turn submission; it is not inferred from fleet-
+level support. `canControl` and `canResume` fail closed when provider inventory
+is absent or stale. Native records are never presented as imported AICL Sessions. Core
 returns `SESSION_CATALOG_CURSOR_INVALID` or `SESSION_CATALOG_CURSOR_STALE`; Web
 must discard the cursor and explicitly request a fresh first page. It must not
 retry a metadata mutation automatically.

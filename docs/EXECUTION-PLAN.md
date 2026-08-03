@@ -73,7 +73,7 @@ and must rebase and adapt to `docs/M9-WEB-INTEGRATION-CONTRACT.md` before merge.
 - Connector owns a separate inbox/outbox journal under the same configured data
   directory, never the Core database file
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
-- Core schema v12 projects tool activities, file changes, approvals, artifacts,
+- Core schema v13 projects tool activities, file changes, approvals, artifacts,
   Catalog/settings/provider bindings, attachments, terminal evidence,
   cross-type display sequence, guarded transitions, terminal work settlement,
   fail-closed legacy settings, and catalog-visible-only pagination revisions
@@ -128,9 +128,9 @@ Follow `docs/M9-EXECUTION-PLAN.md` as the detailed loop authority. Preserve M8
 envelopes while adding provider fleet, Catalog V2, settings, policy/lease,
 attachment, and terminal contracts. Each vertical slice includes tests,
 status/handoff updates, a frozen-Web diff review, and a clean commit before the
-next slice begins. After Claude-audit remediation, the unchanged Real Codex E2E
-passed with a 68.413-second test body and the final repository gate passed 184
-automated tests at Core 12 / Connector 3.
+next slice begins. After Claude-audit remediation and independent post-fix
+review, the unchanged Real Codex E2E passed with a 71.228-second test body and
+the final repository gate passed 185 automated tests at Core 13 / Connector 3.
 
 ## Implementation sequence
 

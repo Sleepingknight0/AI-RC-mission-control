@@ -4,7 +4,7 @@ Date: 2026-08-03
 
 M9.11 completion baseline: `b6cd01576ed0f817cc07ea7735dfc1ce86305c9d`
 
-Claude-audit remediation implementation head: `0b70ba7eeda10af85cb4376eaac7737e9687680f`
+Post-independent-review implementation head: `708e6237e112cf4581c2356e3d70f8b669d7fee4`
 
 ## Verdict
 
@@ -13,7 +13,7 @@ High/security Claude finding is remediated. The unchanged Real Codex E2E passed
 on the authenticated account, and the frozen-install, schema, build, automated,
 production-lifecycle, maintenance, clean-install, and diff gates all pass.
 
-Core is schema 12 and Connector is schema 3. Both migration ledgers remain
+Core is schema 13 and Connector is schema 3. Both migration ledgers remain
 checksummed. The frozen Web was not modified or integrated during remediation.
 
 ## Real Codex result
@@ -23,9 +23,9 @@ The exact opt-in test passed without weakened assertions:
 ```text
 pnpm --filter @aicl/core exec vitest run test/real-codex.e2e.test.ts --reporter verbose
   1 passed
-  test body: 68.413 s
-  Vitest duration: 69.29 s
-  command wall time: 73.8 s
+  test body: 71.228 s
+  Vitest duration: 72.16 s
+  command wall time: 76.4 s
 ```
 
 It proved authoritative provider/account/capability discovery, explicit Session
@@ -61,21 +61,21 @@ resume and proves the Turn executes once.
 
 ```text
 pnpm install --frozen-lockfile  PASS (lockfile unchanged)
-pnpm migrate                    PASS (Core 12, Connector 3, no change)
-pnpm migrate                    PASS (Core 12, Connector 3, no change)
+pnpm migrate                    PASS (Core 12→13, Connector 3, verified backup)
+pnpm migrate                    PASS (Core 13, Connector 3, no change)
 pnpm build                      PASS (compiled production + Web build)
 pnpm check                      PASS
 git diff --check                PASS
 ```
 
-`pnpm check` passed strict TypeScript, ESLint, production builds, 184 automated
+`pnpm check` passed strict TypeScript, ESLint, production builds, 185 automated
 tests, compiled production start/health/stop, online backup, verified restore,
 restart, corrupt-backup rejection, clean-directory compiled install, and the
 private-Serve automation smoke. The ordinary suite correctly reported the
 opt-in Real Codex test skipped; the explicit enabled run above passed.
 
-The 184 tests comprise Config 13, Protocol 33, Domain 4, frozen Web 11,
-Connector 50, Core 58, and Host 15. The no-test fixture package exited zero and
+The 185 tests comprise Config 13, Protocol 33, Domain 4, frozen Web 11,
+Connector 50, Core 59, and Host 15. The no-test fixture package exited zero and
 is not counted.
 
 ## Audit security and recovery evidence
@@ -91,7 +91,8 @@ is not counted.
 - Provider loss and ambiguous side effects converge to `outcome_unknown`; no
   prompt is replayed.
 - Legacy/unconfigured/null-project Sessions default to read-only/network-denied
-  and are not controllable; `turn.submit` never creates or fabricates authority.
+  and are not controllable; schema 13 also revokes every unproven pre-v13 write
+  grant. `turn.submit` never creates or fabricates authority.
 - Catalog cursors survive ordinary timeline events and become stale only on
   ordering/filter-visible changes.
 - `session.capabilities.snapshot` is the authoritative per-Session projection
@@ -99,9 +100,18 @@ is not counted.
   unsupported reasons, and freshness.
 - Provider/session/output/log data remains bounded and redacted. Non-Codex
   providers remain inventory-only.
+- Catalog `canControl` uses the same per-Session validator as Turn submission;
+  invalid durable Connector evidence commits its receipt and is acknowledged
+  only with a stable, structured, boot-bounded diagnostic.
 
 Detailed evidence remains in `M9-SECURITY-RECOVERY-PERFORMANCE.md` and
 `M9-CLAUDE-AUDIT-REMEDIATION.md`.
+
+Independent post-fix Standards and Spec reviews both passed. The reviewers
+confirmed all accepted High/security findings closed and no new scope
+regression. Two Low maintainability judgments remain (capability projection
+module size and policy scattering); neither has a demonstrated security or
+behavior effect and neither blocks the frontend integration review.
 
 ## Frozen Web and Grok handoff
 

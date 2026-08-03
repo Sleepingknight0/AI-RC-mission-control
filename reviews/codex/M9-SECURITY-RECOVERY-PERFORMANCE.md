@@ -34,6 +34,12 @@ immutable settings and settles normally. Full Auto authority still requires the 
 device, provider, account, project, Runtime generation, lease revision, and Core
 boot. Changing approval policy while a Turn executes returns `SESSION_BUSY`.
 
+The post-audit schema-13 gate additionally proves that no pre-v13 write grant is
+trusted without current explicit validation, Catalog `canControl` uses exact
+per-Session authority, and every semantically rejected durable Connector event
+commits its receipt and emits a stable structured diagnostic under a per-boot
+bound. Duplicate approval evidence therefore cannot strand the FIFO journal.
+
 ## Scale and performance evidence
 
 - A normalized 15-provider fleet validated in 5 ms in the verbose targeted run;

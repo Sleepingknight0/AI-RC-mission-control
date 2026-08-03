@@ -7,10 +7,12 @@ Core owns one settings row per AICL Session. Updates use `expectedRevision` comp
 Settings include provider ID, account ID, model, reasoning effort, execution mode, approval policy, sandbox policy, network policy, canonical project path, and optional branch.
 
 Schema 12 makes `read_only` plus network `denied` the database and trigger
-defaults. Upgrades force legacy, unbound, ambiguous, invalid, or null-project
-rows to that posture. Only a ready binding with an explicit canonical project
-may retain an already-explicit workspace-write selection; no migration,
-backfill, implicit Session creation, or missing field grants write authority.
+defaults. Schema 13 additionally revokes `workspace_write` from every pre-v13
+row, including ready/non-null rows, because migration 006 did not record proof
+of an explicit operator choice, canonical root, or current capability. A later
+revision-fenced settings CAS may grant write only after current authoritative
+validation; no migration, backfill, implicit creation, or missing field grants
+write authority.
 
 The update command replaces the complete document; partial patches are not
 accepted. Core returns `session.settings.snapshot` on subscribe, explicit get,

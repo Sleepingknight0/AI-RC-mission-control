@@ -70,13 +70,16 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 **M9.11 and the accepted Claude backend audit remediation are complete.** The
 installed account schema is handled nullishly, and only a valid present account
 plus a fresh successful capability probe grants control; no semantics are
-invented for `requiresOpenaiAuth`. Schema 12 fails legacy and unconfigured
+invented for `requiresOpenaiAuth`. Schema 13 fails legacy and unconfigured
 Sessions closed, Turn submission requires authoritative Session creation,
 Catalog cursors use catalog-visible revision changes, and Core publishes an
-authoritative per-Session capability projection. Frozen install, repeated
-schema 12/3 migration, build, 184 automated tests, compiled production
+authoritative per-Session capability projection. Catalog control uses that same
+Session-specific authority, and invalid durable Connector evidence is consumed
+with bounded stable diagnostics. Frozen install, backup-backed 12→13 migration,
+repeat no-op, build, 185 automated tests, compiled production
 lifecycle, maintenance/restore, clean-install, diff checks, and the unchanged
-Real Codex E2E all pass. The Grok branch remains isolated. M8.5,
+Real Codex E2E all pass. Independent post-fix Standards and Spec reviews pass.
+The Grok branch remains isolated. M8.5,
 Google/Cloudflare identity, and a product retention policy remain deferred.
 
 ## Last verified demo
@@ -86,9 +89,9 @@ Google/Cloudflare identity, and a product retention policy remain deferred.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 12 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, and bounded terminal evidence; Connector retains strict FIFO journal sequence.
-- Post-audit repository checks: `pnpm check` — strict typecheck, ESLint, production builds, 184 automated tests, compiled production lifecycle, maintenance/restore, clean-install, and private-Serve automation passed; the opt-in real test was separately enabled and passed.
-- Post-audit Real Codex E2E: the unchanged opt-in test passed with a 68.413 s test body (Vitest 69.29 s; wall 73.8 s), covering authoritative Session creation, first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, fresh capability validation, generation-incremented new-process resume, no command replay, normalized-event isolation, and deterministic provider teardown.
+- Database schema: Core schema version 13 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, and bounded terminal evidence; Connector retains strict FIFO journal sequence.
+- Post-audit repository checks: `pnpm check` — strict typecheck, ESLint, production builds, 185 automated tests, compiled production lifecycle, maintenance/restore, clean-install, and private-Serve automation passed; the opt-in real test was separately enabled and passed.
+- Post-audit Real Codex E2E: the unchanged opt-in test passed with a 71.228 s test body (Vitest 72.16 s; wall 76.4 s), covering authoritative Session creation, first delta/final, `TURN_ALREADY_ACTIVE`, interrupt, provider kill → `outcome_unknown`, lost-Runtime rejection, fresh capability validation, generation-incremented new-process resume, no command replay, normalized-event isolation, and deterministic provider teardown.
 - Recovery tests: durable command race/deduplication, replay sequence, runtime-generation fencing, Connector restart, Core restart, and commit-before-broadcast failure all passed.
 - M4 race/fault tests: exactly one of two tabs wins approval CAS; duplicate command IDs replay; expiry/provider loss/runtime restart reject stale decisions; interrupt, UTF-8 batching, inline/large diff thresholds, artifact integrity/auth/range/traversal all pass.
 - Mobile approval demo: Playwright at 390×844 used real Codex command approvals. Approve-once created only `output/playwright/provider-approval-proof.txt`; decline produced activity state `declined` and did not create its target file.

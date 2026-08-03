@@ -26,9 +26,10 @@ account-probe interpretation with regression coverage. The original gate was
 followed by Claude's independent audit as a post-M9 hardening gate.
 Frontend-blocking authority, creation-bypass, catalog-revision, capability-
 projection, authentication, concurrency, journal, and performance findings are
-remediated at Core schema 12 / Connector schema 3. The final local gate passed
-184 automated tests and the unchanged Real Codex E2E passed with a 68.413-
-second test body; exact evidence is recorded in the remediation report.
+remediated at Core schema 13 / Connector schema 3. Independent post-fix Standards
+and Spec reviews pass. The final local gate passed 185 automated tests and the
+unchanged Real Codex E2E passed with a 71.228-second test body; exact evidence
+is recorded in the remediation report.
 
 ## Checkpoint rule
 

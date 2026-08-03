@@ -74,4 +74,8 @@ Catalog rows expose `providerBindingStatus`. Pending, failed, ambiguous, and
 legacy-unbound bindings fail closed for control. Legacy rows remain readable
 but are never remotely controllable; new create/import rows become controllable
 only after the authoritative creation path validates provider/account/project
-authority and the binding is ready.
+authority and the binding is ready. Catalog `canControl` calls the same exact
+per-Session provider/account/project/model/capability validator as Turn
+submission. Fleet-level provider support cannot make a row controllable, and a
+fresh inventory change that removes the bound account, model, or capability
+immediately projects `canControl: false`.
