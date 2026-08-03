@@ -2204,3 +2204,73 @@ controls, survives refresh, and never auto-replays a prompt.
 - M9 frontend integration is complete. Do not rebase or merge the Grok review
   branch again; use `master` as the authoritative combined line. Preserve
   `stash@{0}` and the Grok safety ref for historical recovery only.
+
+---
+
+### 2026-08-04 01:30 — Codex — Live production Web acceptance complete
+
+**Outcome**
+
+- Ran the compiled production Web, real Core and Connector, current real Codex
+  account, and headed Chromium through normal same-origin HTTP/WebSocket paths.
+  Initial replay completed in 283 ms and final repaired replay in 872 ms.
+- Created real Session `live-web-fixed-20260803-235335`; authoritative binding,
+  Catalog, and Session capability evidence made it controllable without fleet-
+  derived authority. The read-only Turn streamed in 2.355 seconds and completed
+  in 12.126 seconds.
+- Resolved a real write approval in the Web, verified exact isolated-project
+  bytes and Diff Review, interrupted a bounded Turn without replay, refreshed
+  through a fresh runtime ticket while retaining an unsent draft, and proved
+  duplicate same-name/same-size attachment correlation by distinct contents.
+- Verified fail-closed inventory-only providers, missing/stale Session authority,
+  unsupported attachments, Connector loss, and a not-authenticated real provider
+  process using a newly created empty Codex home without copying credentials.
+- A separate fresh production database reached Catalog ready at 0 of 0 Sessions
+  and did not lock on the absent `session-demo` placeholder.
+- Responsive/accessibility acceptance passed seven viewports from 375x812 to
+  2560x1440, 200% text, reduced motion, keyboard focus, drawer Escape/focus
+  restoration, no horizontal overflow, and a final clean browser context with
+  zero errors and zero warnings.
+
+**Remediation**
+
+- Escaped the Session ID pattern hyphen for Chromium Unicode Sets semantics.
+- Invalidated the local Catalog cursor and requested an authoritative first page
+  when provider binding changes, without optimistically granting control.
+- Broadcast matching settings snapshots with capability revisions to every
+  subscribed browser.
+- Raised compact text actions from a measured 43.34 px to a 44 px minimum.
+- All four defects were reproduced before repair and covered in
+  `m9-ui.test.ts`, `m9-state.test.ts`, and `session-lifecycle.test.ts`.
+
+**Verification**
+
+```text
+pnpm install --frozen-lockfile  PASS
+pnpm migrate; pnpm migrate     PASS (Core 13 / Connector 3; no-op twice)
+pnpm build                     PASS
+pnpm check                     PASS (207 automated tests; 1 opt-in skip)
+git diff --check               PASS
+Real Codex E2E                 PASS (75.111 s body; 75.97 s Vitest)
+```
+
+The 207 tests are Config 13, Protocol 33, Domain 4, Web 32, Connector 50,
+Core 60, and Host 15. Compiled lifecycle, maintenance/restore, clean install,
+and Tailscale automation also passed.
+
+**Evidence and limitations**
+
+- Durable report: `reviews/codex/M9-LIVE-PRODUCTION-ACCEPTANCE.md`
+- Local evidence: `output/playwright/live-production-acceptance/20260803-235335/`
+- The authentic Catalog contained five Sessions, so a live page-two cursor was
+  not manufactured; pagination and stale/invalid-cursor behavior remain covered
+  by normalized protocol, Core, and Web regression tests.
+- General retention, M8.5 second-device acceptance, and Google/Cloudflare
+  identity remain deferred. Screenshots, traces, logs, databases, runtime
+  tickets, account details, and credentials are not tracked.
+
+**Implementation commit**
+
+```text
+85ae1cf  fix(core,web): close live production acceptance defects
+```
