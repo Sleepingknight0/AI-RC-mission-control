@@ -26,6 +26,7 @@ export function MobileOverlay({
   children,
 }: MobileOverlayProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -35,6 +36,10 @@ export function MobileOverlay({
       ? document.activeElement
       : null;
     const previousOverflow = document.body.style.overflow;
+    const siblings = [...(rootRef.current?.parentElement?.children ?? [])]
+      .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== rootRef.current)
+      .map((element) => ({ element, inert: element.inert }));
+    for (const { element } of siblings) element.inert = true;
     document.body.style.overflow = "hidden";
     const frame = window.requestAnimationFrame(() => {
       const focusable = panelRef.current?.querySelector<HTMLElement>(FOCUSABLE);
@@ -70,6 +75,7 @@ export function MobileOverlay({
     return () => {
       window.cancelAnimationFrame(frame);
       window.removeEventListener("keydown", handleKeyDown);
+      for (const { element, inert } of siblings) element.inert = inert;
       document.body.style.overflow = previousOverflow;
       window.requestAnimationFrame(() => returnTarget?.focus({ preventScroll: true }));
     };
@@ -77,7 +83,7 @@ export function MobileOverlay({
 
   if (!open) return null;
   return (
-    <div className={`mobile-overlay mobile-overlay-${variant}`} data-testid={testId}>
+    <div ref={rootRef} className={`mobile-overlay mobile-overlay-${variant}`} data-testid={testId}>
       <button
         type="button"
         className="mobile-overlay-backdrop"

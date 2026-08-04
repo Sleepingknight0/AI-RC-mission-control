@@ -26,6 +26,7 @@ export function MobileChatTimeline({
         ref={timelineRef}
         onScroll={onScroll}
         role="feed"
+        tabIndex={0}
         aria-label="Session event timeline"
         aria-busy={busy || loading}
       >

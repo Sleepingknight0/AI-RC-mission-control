@@ -1,5 +1,10 @@
 import { PlusIcon, SearchIcon } from "./icons.js";
-import { recentSessionsByPeriod, type AccountStatus, type MobileSessionRow } from "./state.js";
+import {
+  mobileSessionStateLabel,
+  recentSessionsByPeriod,
+  type AccountStatus,
+  type MobileSessionRow,
+} from "./state.js";
 
 export function MobileAccountHome({
   providerLabel,
@@ -26,8 +31,12 @@ export function MobileAccountHome({
   onOpenDrawer: () => void;
   onCreate: () => void;
 }) {
-  const groups = recentSessionsByPeriod(sessions.slice(0, 24), new Date(now));
-  const pinned = sessions.filter((session) => session.pinned).slice(0, 4);
+  const visibleSessions = sessions.slice(0, 24);
+  const pinned = visibleSessions.filter((session) => session.pinned);
+  const groups = recentSessionsByPeriod(
+    visibleSessions.filter((session) => !session.pinned),
+    new Date(now),
+  );
   const moreAvailable = sessions.length > 24;
   return (
     <main className="mobile-account-home" id="mobile-main" tabIndex={-1}>
@@ -78,12 +87,12 @@ export function MobileAccountHome({
         </section>
       )}
 
-      {groups.length === 0 ? (
+      {sessions.length === 0 ? (
         <section className="mobile-home-empty">
           <h2>No Sessions</h2>
           <p>{status.canControl ? "Create or resume a Session under this account." : status.reason}</p>
         </section>
-      ) : (
+      ) : groups.length > 0 || moreAvailable ? (
         <div className="mobile-home-groups">
           {groups.map((group) => (
             <section key={group.period}>
@@ -105,7 +114,7 @@ export function MobileAccountHome({
             <p className="mobile-list-notice" role="status">More Sessions available — open search.</p>
           )}
         </div>
-      )}
+      ) : null}
 
       <button
         type="button"
@@ -132,6 +141,7 @@ function SessionRow({
   onOpenSession: (sessionId: string) => void;
   onResumeNative: (providerSessionId: string) => void;
 }) {
+  const stateLabel = mobileSessionStateLabel(session.state);
   return (
     <button
       type="button"
@@ -145,6 +155,8 @@ function SessionRow({
       <span className="mobile-row-copy">
         <strong title={session.title}>{session.title}</strong>
         <small>
+          <span className="mobile-session-state-label">{stateLabel}</span>
+          <span aria-hidden="true"> · </span>
           {session.projectName ?? "Project unavailable"}
           {session.pendingApprovalCount > 0 ? ` · ${session.pendingApprovalCount} approval` : ""}
         </small>

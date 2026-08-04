@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { AccountSessionDrawer } from "../src/mobile/AccountSessionDrawer.js";
+import { MobileAccountHome } from "../src/mobile/MobileAccountHome.js";
 import { MobileComposer } from "../src/mobile/MobileComposer.js";
 import { MobileHeader } from "../src/mobile/MobileHeader.js";
 import { ModelModeSheet } from "../src/mobile/ModelModeSheet.js";
@@ -206,6 +207,7 @@ describe("M10 mobile visible contracts", () => {
       settings,
       capabilities,
       evidenceNotice: null,
+      settingsNotice: null,
       onClose: () => undefined,
       onUpdate: () => undefined,
     }));
@@ -226,6 +228,7 @@ describe("M10 mobile visible contracts", () => {
       disabledReason: "Ready",
       canAttachText: true,
       canAttachImage: false,
+      attachmentDisabledReason: null,
       attachmentChips: null,
       onChange: () => undefined,
       onSubmit: () => undefined,
@@ -307,10 +310,12 @@ describe("M10 mobile visible contracts", () => {
       settings: { ...settings, mutable: false },
       capabilities,
       evidenceNotice: null,
+      settingsNotice: "SESSION_SETTINGS_CONFLICT: authoritative revision is 7",
       onClose: () => undefined,
       onUpdate: () => undefined,
     }));
     expect(html).toContain("Settings are not mutable");
+    expect(html).toContain("SESSION_SETTINGS_CONFLICT: authoritative revision is 7");
     expect(html).toContain("Account-specific model");
     expect(html.match(/Settings are not mutable/g)?.length).toBe(3);
     expect(html).not.toMatch(/title="Settings are not mutable"/);
@@ -326,6 +331,7 @@ describe("M10 mobile visible contracts", () => {
       disabledReason: "Ready",
       canAttachText: true,
       canAttachImage: false,
+      attachmentDisabledReason: null,
       attachmentChips: null,
       onChange: () => undefined,
       onSubmit: () => undefined,
@@ -334,7 +340,76 @@ describe("M10 mobile visible contracts", () => {
       onPickFiles: () => undefined,
     }));
     expect(html).toContain('aria-hidden="true"');
+    expect(html).toContain('tabindex="-1"');
+    expect(html).toContain('hidden=""');
     expect(html).toContain('type="file"');
+  });
+
+  it("renders each pinned Session once and exposes its state as text", () => {
+    const html = renderToStaticMarkup(createElement(MobileAccountHome, {
+      providerLabel: "Codex",
+      accountLabel: "Account 1",
+      status: {
+        label: "Ready",
+        state: "ready",
+        canControl: true,
+        active: true,
+        reason: null,
+      },
+      sessions: [{
+        key: "codex-account-1-pinned",
+        kind: "catalog" as const,
+        providerId: "codex",
+        accountId: "account-1",
+        sessionId: "session-pinned",
+        providerSessionId: "native-pinned",
+        title: "Pinned Session",
+        projectName: "workspace",
+        lastActivityAt: observedAt,
+        pinned: true,
+        archived: false,
+        state: "outcome_unknown",
+        runtimeStatus: "lost",
+        pendingApprovalCount: 0,
+        canControl: false,
+        canResume: true,
+        bindingStatus: "ready",
+        catalog: null,
+        native: null,
+      }],
+      now: Date.parse(observedAt),
+      canCreate: true,
+      createDisabledReason: null,
+      onOpenSession: () => undefined,
+      onResumeNative: () => undefined,
+      onOpenDrawer: () => undefined,
+      onCreate: () => undefined,
+    }));
+    expect(html.match(/title="Pinned Session"/g)).toHaveLength(1);
+    expect(html).toContain("Outcome unknown");
+    expect(html).not.toContain("No Sessions");
+  });
+
+  it("disables the attachment picker before activation when authority is unavailable", () => {
+    const html = renderToStaticMarkup(createElement(MobileComposer, {
+      value: "draft",
+      modelLabel: "GPT Mobile",
+      modeLabel: "Ask",
+      busy: false,
+      canSubmit: false,
+      disabledReason: "Session capability snapshot is stale",
+      canAttachText: true,
+      canAttachImage: true,
+      attachmentDisabledReason: "Session capability snapshot is stale",
+      attachmentChips: null,
+      onChange: () => undefined,
+      onSubmit: () => undefined,
+      onAbort: () => undefined,
+      onOpenModelMode: () => undefined,
+      onPickFiles: () => undefined,
+    }));
+    expect(html).toMatch(/data-testid="mobile-attachment-trigger"[^>]*disabled=""/);
+    expect(html).toContain("Attachments unavailable: Session capability snapshot is stale");
   });
 
   it("requests native inventory for the exact selected account without provider-level gating", () => {

@@ -23,6 +23,7 @@ import {
   currentAccountStatus,
   displaySessionTitle,
   groupAccountsByProvider,
+  mobileSystemStatus,
   recentSessionsByPeriod,
   sessionBelongsToProviderAccount,
   sessionsForProviderAccount,
@@ -254,8 +255,34 @@ describe("M10 mobile provider/account/session selectors", () => {
   it("normalizes multi-line Session titles for single-line mobile display", () => {
     expect(displaySessionTitle("STATE\nYou are Codex")).toBe("STATE You are Codex");
     expect(displaySessionTitle("boundary.\nDo not use tools")).toBe("boundary. Do not use tools");
-    expect(displaySessionTitle("boundary.Do not use tools")).toBe("boundary. Do not use tools");
+    expect(displaySessionTitle("boundary.Do not use tools")).toBe("boundary.Do not use tools");
+    expect(displaySessionTitle("README.md · example.com · What?Next")).toBe("README.md · example.com · What?Next");
     expect(displaySessionTitle("  already   single  ")).toBe("already single");
+  });
+
+  it("never reports a healthy link when exact Session authority is stale", () => {
+    expect(mobileSystemStatus({
+      latestTurnState: "completed",
+      pendingApprovalCount: 0,
+      timelineBusy: false,
+      connectionOnline: true,
+      connectionLabel: "Core online",
+      runtimeStatus: "ready",
+      accountStatus: {
+        label: "Ready",
+        state: "ready",
+        canControl: true,
+        active: true,
+        reason: null,
+      },
+      accountHome: false,
+      bindingStatus: "ready",
+      sessionControllable: false,
+      sessionControlReason: "Session capability snapshot is stale",
+    })).toEqual({
+      label: "Session capability snapshot is stale",
+      tone: "warning",
+    });
   });
 
   it("collapses prompt newlines when building account Session rows", () => {

@@ -60,6 +60,25 @@ export interface AccountStatus {
   reason: string | null;
 }
 
+export interface MobileSystemStatus {
+  label: string;
+  tone: "ready" | "working" | "warning" | "offline";
+}
+
+export interface MobileSystemStatusInput {
+  latestTurnState: string | null;
+  pendingApprovalCount: number;
+  timelineBusy: boolean;
+  connectionOnline: boolean;
+  connectionLabel: string;
+  runtimeStatus: string | null;
+  accountStatus: AccountStatus;
+  accountHome: boolean;
+  bindingStatus: string | null;
+  sessionControllable: boolean;
+  sessionControlReason: string | null;
+}
+
 export function accountEvidenceIsCurrent(
   evidence: ProviderAccountCapabilitySnapshot | null,
   now = Date.now(),
@@ -165,9 +184,46 @@ export function groupAccountsByProvider(
 export function displaySessionTitle(title: string): string {
   return title
     .replace(/[\r\n\u2028\u2029]+/g, " ")
-    .replace(/([.!?])([A-Za-z])/g, "$1 $2")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function mobileSessionStateLabel(state: string): string {
+  const words = state.replaceAll("_", " ");
+  return words.length === 0 ? "Unknown" : `${words[0]?.toUpperCase()}${words.slice(1)}`;
+}
+
+/** Derive the compact header status without treating fleet health as Session authority. */
+export function mobileSystemStatus(input: MobileSystemStatusInput): MobileSystemStatus {
+  if (input.latestTurnState === "outcome_unknown") {
+    return { label: "Outcome unknown", tone: "warning" };
+  }
+  if (input.pendingApprovalCount > 0) {
+    return { label: "Approval required", tone: "warning" };
+  }
+  if (input.timelineBusy) return { label: "Running", tone: "working" };
+  if (!input.connectionOnline) {
+    return { label: input.connectionLabel, tone: "offline" };
+  }
+  if (input.runtimeStatus !== "ready") {
+    return { label: `Connector ${input.runtimeStatus ?? "offline"}`, tone: "offline" };
+  }
+  if (!input.accountStatus.canControl) {
+    return {
+      label: input.accountStatus.label,
+      tone: input.accountStatus.state === "inventory_only" ? "warning" : "offline",
+    };
+  }
+  if (!input.accountHome && !input.sessionControllable) {
+    return {
+      label: input.sessionControlReason ?? "Session view only",
+      tone: "warning",
+    };
+  }
+  if (input.bindingStatus !== "ready") {
+    return { label: input.accountHome ? "Connected" : "Binding pending", tone: "warning" };
+  }
+  return { label: "Connected", tone: "ready" };
 }
 
 function catalogRow(session: SessionSummaryV2): MobileSessionRow | null {

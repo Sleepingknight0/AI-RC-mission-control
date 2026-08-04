@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { MoreIcon, SearchIcon } from "./icons.js";
-import { recentSessionsByPeriod, type MobileSessionRow } from "./state.js";
+import { mobileSessionStateLabel, recentSessionsByPeriod, type MobileSessionRow } from "./state.js";
 
 function relativeActivity(value: string, now: number) {
   const elapsed = Math.max(0, now - Date.parse(value));
@@ -85,7 +85,9 @@ export function AccountSessionList({
                       <span className="mobile-row-copy">
                         <strong>{session.title}</strong>
                         <small>
-                          {session.projectName ?? "Project unavailable"}
+                          {mobileSessionStateLabel(session.state)} · {session.projectName ?? "Project unavailable"}
+                          {session.pinned ? " · Pinned" : ""}
+                          {session.archived ? " · Archived" : ""}
                           {session.kind === "native" ? " · Native" : session.canControl ? " · Controllable" : " · View only"}
                         </small>
                       </span>

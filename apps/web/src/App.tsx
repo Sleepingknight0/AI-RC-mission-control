@@ -102,6 +102,7 @@ import {
   canActivateAccount,
   currentAccountStatus,
   displaySessionTitle,
+  mobileSystemStatus,
   sessionBelongsToProviderAccount,
   sessionsForProviderAccount,
   supportedModelsForAccount,
@@ -1780,7 +1781,15 @@ export function App() {
     type: "attachment",
     kind: "image",
   });
-  const attachDisabledReason = !controlDecision.ok
+  const attachmentRuntimeUnavailable =
+    connection !== "online" ||
+    runtime === null ||
+    runtime.status === "offline" ||
+    runtime.status === "lost" ||
+    runtime.status === "incompatible";
+  const attachDisabledReason = attachmentRuntimeUnavailable
+    ? baseAvailability.reason
+    : !controlDecision.ok
     ? controlDecision.reason
     : !textAttach.ok && !imageAttach.ok
       ? textAttach.reason ?? imageAttach.reason
@@ -1898,31 +1907,19 @@ export function App() {
   const mobileModelLabel =
     mobileModels.find((model) => model.modelId === settingsUi.snapshot?.settings.model)
       ?.displayName ?? settingsUi.snapshot?.settings.model ?? "Model unavailable";
-  const mobileStatus = (() => {
-    if (latest?.status === "outcome_unknown") {
-      return { label: "Outcome unknown", tone: "warning" as const };
-    }
-    if (pendingApprovals.length > 0) {
-      return { label: "Approval required", tone: "warning" as const };
-    }
-    if (timelineBusy) return { label: "Running", tone: "working" as const };
-    if (connection !== "online") {
-      return { label: connectionLabel(connection), tone: "offline" as const };
-    }
-    if (runtime?.status !== "ready") {
-      return { label: `Connector ${runtime?.status ?? "offline"}`, tone: "offline" as const };
-    }
-    if (!mobileAccountStatus.canControl) {
-      return {
-        label: mobileAccountStatus.label,
-        tone: mobileAccountStatus.state === "inventory_only" ? "warning" as const : "offline" as const,
-      };
-    }
-    if (catalogEntry?.providerBindingStatus !== "ready") {
-      return { label: mobileAccountHome ? "Connected" : "Binding pending", tone: "warning" as const };
-    }
-    return { label: "Connected", tone: "ready" as const };
-  })();
+  const mobileStatus = mobileSystemStatus({
+    latestTurnState: latest?.status ?? null,
+    pendingApprovalCount: pendingApprovals.length,
+    timelineBusy,
+    connectionOnline: connection === "online",
+    connectionLabel: connectionLabel(connection),
+    runtimeStatus: runtime?.status ?? null,
+    accountStatus: mobileAccountStatus,
+    accountHome: mobileAccountHome,
+    bindingStatus: catalogEntry?.providerBindingStatus ?? null,
+    sessionControllable: controlDecision.ok,
+    sessionControlReason: controlDecision.reason,
+  });
   const mobileStatusFacts = [
     { label: "Provider", value: mobileProviderLabel },
     { label: "Account", value: mobileAccountLabel },
@@ -2098,9 +2095,11 @@ export function App() {
         composerReason={availability.reason}
         canAttachText={textAttach.ok}
         canAttachImage={imageAttach.ok}
+        attachmentDisabledReason={attachDisabledReason}
         attachmentChips={mobileAttachmentChips}
         models={mobileModels}
         modelEvidenceNotice={selectedAccountCapability?.notice ?? null}
+        settingsNotice={settingsUi.error}
         settings={settingsUi.snapshot}
         capabilities={sessionCapabilitiesUi.snapshot}
         activationPrompt={activationPrompt === null ? null : {

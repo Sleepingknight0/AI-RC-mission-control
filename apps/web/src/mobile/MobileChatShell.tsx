@@ -64,9 +64,11 @@ export interface MobileChatShellProps {
   composerReason: string;
   canAttachText: boolean;
   canAttachImage: boolean;
+  attachmentDisabledReason: string | null;
   attachmentChips: ReactNode;
   models: readonly ProviderModel[];
   modelEvidenceNotice: string | null;
+  settingsNotice: string | null;
   settings: SessionSettingsSnapshot | null;
   capabilities: SessionCapabilitiesSnapshot | null;
   onSelectAccount: (providerId: string, accountId: string) => void;
@@ -173,6 +175,7 @@ export function MobileChatShell(props: MobileChatShellProps) {
             disabledReason={props.composerReason}
             canAttachText={props.canAttachText}
             canAttachImage={props.canAttachImage}
+            attachmentDisabledReason={props.attachmentDisabledReason}
             attachmentChips={props.attachmentChips}
             onChange={props.onPromptChange}
             onSubmit={props.onSubmit}
@@ -211,7 +214,7 @@ export function MobileChatShell(props: MobileChatShellProps) {
         onLoadMore={props.onLoadMore}
         onOpenStatus={() => closeAnd(() => setStatusOpen(true))}
         approvalDestinationAvailable={!props.showAccountHome && props.approvals !== null}
-        attachmentDestinationAvailable={!props.showAccountHome && (props.canAttachText || props.canAttachImage)}
+        attachmentDestinationAvailable={!props.showAccountHome && props.attachmentDisabledReason === null && (props.canAttachText || props.canAttachImage)}
         settingsDestinationAvailable={!props.showAccountHome && props.settings !== null}
         onOpenApprovals={() => closeAnd(() => {
           const approvals = document.querySelector<HTMLElement>(".mobile-approval-list");
@@ -238,6 +241,7 @@ export function MobileChatShell(props: MobileChatShellProps) {
         settings={props.settings}
         capabilities={props.capabilities}
         evidenceNotice={props.modelEvidenceNotice}
+        settingsNotice={props.settingsNotice}
         onClose={() => setModelOpen(false)}
         onUpdate={props.onUpdateSettings}
       />

@@ -66,6 +66,7 @@ export function ModelModeSheet({
   settings,
   capabilities,
   evidenceNotice,
+  settingsNotice,
   onClose,
   onUpdate,
 }: {
@@ -74,6 +75,7 @@ export function ModelModeSheet({
   settings: SessionSettingsSnapshot | null;
   capabilities: SessionCapabilitiesSnapshot | null;
   evidenceNotice: string | null;
+  settingsNotice: string | null;
   onClose: () => void;
   onUpdate: (settings: SessionSettings) => void;
 }) {
@@ -98,6 +100,9 @@ export function ModelModeSheet({
     <MobileOverlay open={open} variant="sheet" title="Model and mode" testId="mobile-model-mode-sheet" onClose={onClose}>
       <MobileOverlayHeading title="Model and mode" detail={`Settings revision ${settings?.revision ?? "unavailable"}`} onClose={onClose} />
       <div className="mobile-sheet-scroll">
+        {settingsNotice !== null && (
+          <p className="mobile-list-notice warning" role="alert">{settingsNotice}</p>
+        )}
         <section className="mobile-choice-section">
           <h3>Model</h3>
           {modelUnavailable !== null && (
