@@ -88,7 +88,11 @@ import {
 } from "./m9/ui.js";
 import { MobileChatShell } from "./mobile/MobileChatShell.js";
 import { MobileCreateSessionForm } from "./mobile/MobileCreateSessionForm.js";
-import { activationResponseMatches } from "./mobile/activation.js";
+import {
+  activationResponseMatches,
+  nativeResumeRefreshDecision,
+  type PendingNativeResumeRefresh,
+} from "./mobile/activation.js";
 import { CloseIcon } from "./mobile/icons.js";
 import {
   accountEvidenceIsCurrent,
@@ -401,6 +405,7 @@ export function App() {
   const restoredSelectionCheckedRef = useRef(false);
   const socketEpochRef = useRef(0);
   const pendingMobileActionRef = useRef<PendingMobileAction | null>(null);
+  const pendingNativeResumeRefreshRef = useRef<PendingNativeResumeRefresh | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const inspectorRef = useRef<HTMLElement | null>(null);
   const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -524,6 +529,7 @@ export function App() {
           archived: "exclude",
         }),
       );
+      return requestId;
     },
     [send],
   );
@@ -726,6 +732,47 @@ export function App() {
 
         if (message.type === "sessions.snapshot") setSessions(message.payload.sessions);
         if (message.type === "runtime.status") setRuntime(message.payload.runtime);
+        if (message.type === "sessions.native.page") {
+          const pending = pendingNativeResumeRefreshRef.current;
+          const decision = nativeResumeRefreshDecision(
+            pending,
+            message.payload.requestId,
+            message.payload.page,
+            socketEpochRef.current,
+          );
+          if (decision.kind === "continue" && pending !== null) {
+            const requestId = requestNativeSessions(
+              socket,
+              pending.providerId,
+              pending.accountId,
+              decision.cursor,
+              pending.search,
+            );
+            pendingNativeResumeRefreshRef.current = { ...pending, requestId };
+          } else if (decision.kind === "resume" && pending !== null) {
+            pendingNativeResumeRefreshRef.current = null;
+            const suffix = pending.providerSessionId
+              .replace(/[^A-Za-z0-9._-]/g, "-")
+              .slice(0, 48);
+            const sessionId = `import-${suffix || crypto.randomUUID().slice(0, 8)}`.slice(0, 100);
+            send(
+              socket,
+              makeEnvelope("session.resume", {
+                commandId: crypto.randomUUID(),
+                sessionId,
+                deviceId: deviceIdRef.current,
+                providerId: pending.providerId,
+                accountId: pending.accountId,
+                providerSessionId: pending.providerSessionId,
+              }),
+            );
+            setNotice(`Resuming native Session into ${sessionId}`);
+            switchSession(sessionId);
+          } else if (decision.kind === "unavailable") {
+            pendingNativeResumeRefreshRef.current = null;
+            setNotice("Native Session is no longer resumable after account activation.");
+          }
+        }
         if (message.type === "provider.account.activation.accepted") {
           const pending = pendingMobileActionRef.current;
           if (
@@ -750,22 +797,22 @@ export function App() {
             if (pending.kind === "create") {
               setMobileCreateRequest((request) => request + 1);
             } else if (pending.kind === "resume_native") {
-              const suffix = pending.providerSessionId
-                .replace(/[^A-Za-z0-9._-]/g, "-")
-                .slice(0, 48);
-              const sessionId = `import-${suffix || crypto.randomUUID().slice(0, 8)}`.slice(0, 100);
-              send(
+              const requestId = requestNativeSessions(
                 socket,
-                makeEnvelope("session.resume", {
-                  commandId: crypto.randomUUID(),
-                  sessionId,
-                  deviceId: deviceIdRef.current,
-                  providerId: message.payload.providerId,
-                  accountId: message.payload.accountId,
-                  providerSessionId: pending.providerSessionId,
-                }),
+                message.payload.providerId,
+                message.payload.accountId,
+                null,
+                nativeSearchRef.current,
               );
-              switchSession(sessionId);
+              pendingNativeResumeRefreshRef.current = {
+                epoch: socketEpochRef.current,
+                requestId,
+                providerId: message.payload.providerId,
+                accountId: message.payload.accountId,
+                providerSessionId: pending.providerSessionId,
+                search: nativeSearchRef.current,
+              };
+              setNotice("Refreshing native Session authority after account activation.");
             } else {
               send(
                 socket,
@@ -939,6 +986,7 @@ export function App() {
       socket.addEventListener("close", () => {
         if (disposed) return;
         pendingMobileActionRef.current = null;
+        pendingNativeResumeRefreshRef.current = null;
         setActivationPrompt(null);
         setConnection("offline");
         setArtifactAccessToken(null);
@@ -1073,6 +1121,7 @@ export function App() {
   const selectMobileAccount = (providerId: string, accountId: string) => {
     // Selection is read-only: retain every Session draft and never dispatch a
     // provider command or prompt merely because the account changed.
+    pendingNativeResumeRefreshRef.current = null;
     const socket = socketRef.current;
     const subscribedSessionId = selectedSessionRef.current;
     if (
@@ -1601,6 +1650,7 @@ export function App() {
   const beginMobileAction = (
     action: PendingMobileActionInput,
   ) => {
+    pendingNativeResumeRefreshRef.current = null;
     if (accountHasCurrentControl(selectedAccountCapability, now)) {
       if (action.kind === "create") setMobileCreateRequest((request) => request + 1);
       else if (action.kind === "resume_native") resumeNativeNow(action.providerSessionId);

@@ -3,6 +3,7 @@ import type {
   ProviderFleetSnapshot,
   ProviderModel,
   ProviderNativeSession,
+  ProviderNativeSessionPage,
   ProviderRecord,
   SessionSummaryV2,
 } from "@aicl/protocol";
@@ -25,7 +26,10 @@ import {
   supportedModelsForAccount,
   supportedReasoningForModel,
 } from "../src/mobile/state.js";
-import { activationResponseMatches } from "../src/mobile/activation.js";
+import {
+  activationResponseMatches,
+  nativeResumeRefreshDecision,
+} from "../src/mobile/activation.js";
 
 const observedAt = "2026-08-04T10:00:00.000Z";
 
@@ -184,6 +188,53 @@ describe("M10 mobile provider/account/session selectors", () => {
       providerId: "codex",
       accountId: "blue-2",
     }, current)).toBe(false);
+  });
+
+  it("refreshes and paginates native resume evidence after activation", () => {
+    const pending = {
+      epoch: 8,
+      requestId: "native-request-1",
+      providerId: "codex",
+      accountId: "blue-2",
+      providerSessionId: "native-target",
+      search: "",
+    };
+    const page = (sessions: ProviderNativeSession[], nextCursor: string | null): ProviderNativeSessionPage => ({
+      providerId: "codex",
+      accountId: "blue-2",
+      observedAt,
+      freshness: "live",
+      sessions,
+      nextCursor,
+      hasMore: nextCursor !== null,
+      truncated: false,
+      cursorReset: false,
+      notice: null,
+    });
+    expect(nativeResumeRefreshDecision(
+      pending,
+      "stale-request",
+      page([], null),
+      8,
+    )).toEqual({ kind: "ignore" });
+    expect(nativeResumeRefreshDecision(
+      pending,
+      "native-request-1",
+      page([], "opaque-native-cursor"),
+      8,
+    )).toEqual({ kind: "continue", cursor: "opaque-native-cursor" });
+    expect(nativeResumeRefreshDecision(
+      pending,
+      "native-request-1",
+      page([nativeSession("native-target", "blue-2")], null),
+      8,
+    )).toEqual({ kind: "resume" });
+    expect(nativeResumeRefreshDecision(
+      pending,
+      "native-request-1",
+      { ...page([nativeSession("native-target", "blue-2")], null), freshness: "unavailable" },
+      8,
+    )).toEqual({ kind: "unavailable" });
   });
   it("groups three Codex accounts independently from authoritative inventory", () => {
     const groups = groupAccountsByProvider(fleet());
