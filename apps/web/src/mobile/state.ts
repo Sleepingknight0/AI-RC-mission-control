@@ -161,6 +161,15 @@ export function groupAccountsByProvider(
     .sort((left, right) => left.provider.displayName.localeCompare(right.provider.displayName));
 }
 
+/** Collapse multi-line / prompt-derived titles for single-line mobile list rows. */
+export function displaySessionTitle(title: string): string {
+  return title
+    .replace(/[\r\n\u2028\u2029]+/g, " ")
+    .replace(/([.!?])([A-Za-z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function catalogRow(session: SessionSummaryV2): MobileSessionRow | null {
   if (session.accountId === null) return null;
   return {
@@ -170,7 +179,7 @@ function catalogRow(session: SessionSummaryV2): MobileSessionRow | null {
     accountId: session.accountId,
     sessionId: session.sessionId,
     providerSessionId: session.providerSessionId,
-    title: session.title,
+    title: displaySessionTitle(session.title),
     projectName: session.projectName,
     lastActivityAt: session.lastActivityAt,
     pinned: session.pinned,
@@ -194,7 +203,7 @@ function nativeRow(session: ProviderNativeSession): MobileSessionRow {
     accountId: session.accountId,
     sessionId: null,
     providerSessionId: session.providerSessionId,
-    title: session.title,
+    title: displaySessionTitle(session.title),
     projectName: session.projectName,
     lastActivityAt: session.updatedAt,
     pinned: session.pinned,

@@ -75,6 +75,7 @@ export function MobileComposer({
           multiple
           accept={accept}
           tabIndex={-1}
+          aria-hidden="true"
           onChange={(event) => {
             if (event.target.files !== null) onPickFiles(event.target.files);
             event.currentTarget.value = "";
@@ -82,13 +83,18 @@ export function MobileComposer({
           }}
         />
         <label className="mobile-prompt-field">
-          <span className="sr-only">Ask anything</span>
+          <span className="sr-only">Mission prompt</span>
           <textarea
             value={value}
             rows={1}
-            placeholder="Ask anything…"
+            placeholder="Transmit a prompt…"
             aria-describedby="mobile-composer-help"
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => {
+              onChange(event.target.value);
+              const target = event.currentTarget;
+              target.style.height = "auto";
+              target.style.height = `${Math.min(target.scrollHeight, 132)}px`;
+            }}
             onKeyDown={handleKeyDown}
           />
         </label>

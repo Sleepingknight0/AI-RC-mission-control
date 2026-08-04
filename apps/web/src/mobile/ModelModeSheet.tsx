@@ -14,29 +14,38 @@ function Choice({
   description,
   selected,
   disabledReason,
+  suppressDisabledDetail = false,
   onSelect,
 }: {
   label: string;
   description?: string;
   selected: boolean;
   disabledReason: string | null;
+  /** When true, a section banner already explains the shared disabled reason. */
+  suppressDisabledDetail?: boolean;
   onSelect: () => void;
 }) {
+  const descriptionText = description !== undefined && description.trim() !== ""
+    ? description
+    : null;
+  const detail = descriptionText
+    ?? (!suppressDisabledDetail && disabledReason !== null ? disabledReason : null);
+  const title = suppressDisabledDetail
+    ? descriptionText ?? undefined
+    : disabledReason ?? descriptionText ?? undefined;
   return (
     <button
       type="button"
       className="mobile-choice"
       aria-pressed={selected}
       disabled={disabledReason !== null}
-      title={disabledReason ?? description}
+      title={title}
       onClick={onSelect}
     >
       <span className="mobile-choice-mark" aria-hidden="true">{selected ? "✓" : ""}</span>
       <span>
         <strong>{label}</strong>
-        {(description !== undefined || disabledReason !== null) && (
-          <small>{disabledReason ?? description}</small>
-        )}
+        {detail !== null && <small>{detail}</small>}
       </span>
     </button>
   );
@@ -44,6 +53,11 @@ function Choice({
 
 function unsupportedReason(row: SupportRow, fallback: string) {
   return row?.state === "supported" ? null : row?.reason ?? fallback;
+}
+
+function formatReasoningLabel(value: string) {
+  if (value.length === 0) return value;
+  return value[0]!.toUpperCase() + value.slice(1);
 }
 
 export function ModelModeSheet({
@@ -86,6 +100,9 @@ export function ModelModeSheet({
       <div className="mobile-sheet-scroll">
         <section className="mobile-choice-section">
           <h3>Model</h3>
+          {modelUnavailable !== null && (
+            <p className="mobile-list-notice" role="status">{modelUnavailable}</p>
+          )}
           {models.length === 0 ? (
             <p className="mobile-list-notice">{evidenceNotice ?? "No fresh models were reported for this account."}</p>
           ) : models.map((model) => (
@@ -95,6 +112,7 @@ export function ModelModeSheet({
               description={model.description}
               selected={model.modelId === current?.model}
               disabledReason={modelUnavailable}
+              suppressDisabledDetail={modelUnavailable !== null}
               onSelect={() => update({
                 model: model.modelId,
                 reasoningLevel: model.defaultReasoningEffort,
@@ -109,16 +127,20 @@ export function ModelModeSheet({
           ) : reasoning.map((option) => (
             <Choice
               key={option.value}
-              label={option.value}
+              label={formatReasoningLabel(option.value)}
               description={option.description}
               selected={option.value === current?.reasoningLevel}
               disabledReason={modelUnavailable}
+              suppressDisabledDetail={modelUnavailable !== null}
               onSelect={() => update({ reasoningLevel: option.value })}
             />
           ))}
         </section>
         <section className="mobile-choice-section">
           <h3>Execution mode</h3>
+          {!mutable && (
+            <p className="mobile-list-notice" role="status">Settings are not mutable</p>
+          )}
           {(["ask", "plan", "auto"] as const).map((mode) => {
             const row = capabilities?.executionModes.find((item) => item.mode === mode);
             return (
@@ -127,6 +149,7 @@ export function ModelModeSheet({
                 label={mode[0]?.toUpperCase() + mode.slice(1)}
                 selected={mode === current?.executionMode}
                 disabledReason={!mutable ? "Settings are not mutable" : unsupportedReason(row, `${mode} is unsupported`)}
+                suppressDisabledDetail={!mutable}
                 onSelect={() => update({ executionMode: mode })}
               />
             );
@@ -134,6 +157,9 @@ export function ModelModeSheet({
         </section>
         <section className="mobile-choice-section">
           <h3>Approval policy</h3>
+          {!mutable && (
+            <p className="mobile-list-notice" role="status">Settings are not mutable</p>
+          )}
           {([
             ["review", "Review"],
             ["balanced", "Balanced"],
@@ -147,6 +173,7 @@ export function ModelModeSheet({
                 label={label}
                 selected={policy === current?.approvalPolicy}
                 disabledReason={!mutable ? "Settings are not mutable" : unsupportedReason(row, `${label} is unsupported`)}
+                suppressDisabledDetail={!mutable}
                 onSelect={() => update({ approvalPolicy: policy })}
               />
             );

@@ -101,6 +101,7 @@ import {
   accountScopedCatalogFilters,
   canActivateAccount,
   currentAccountStatus,
+  displaySessionTitle,
   sessionBelongsToProviderAccount,
   sessionsForProviderAccount,
   supportedModelsForAccount,
@@ -1610,7 +1611,7 @@ export function App() {
   );
   const catalogEntry =
     catalog.sessions.find((item) => item.sessionId === selectedSessionId) ?? null;
-  const sessionTitle = catalogEntry?.title ?? selectedSessionId;
+  const sessionTitle = displaySessionTitle(catalogEntry?.title ?? selectedSessionId);
   const controlDecision = sessionCanControl({
     catalogEntry,
     capabilities: sessionCapabilitiesUi.snapshot,
