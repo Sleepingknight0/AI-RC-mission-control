@@ -7,7 +7,10 @@ import type {
   ApprovalLeaseSnapshot,
   InputAttachment,
   ProviderCapabilityKey,
+  ProviderAccountCapabilitySnapshot,
   ProviderFleetSnapshot,
+  ProviderNativeSession,
+  ProviderNativeSessionPage,
   ProviderNativeSessionSnapshot,
   ProviderRecord,
   ServerEnvelope,
@@ -57,6 +60,17 @@ export interface FleetState {
 export interface NativeState {
   status: ResourceFreshness;
   snapshot: ProviderNativeSessionSnapshot | null;
+  page: ProviderNativeSessionPage | null;
+  sessions: ProviderNativeSession[];
+  requestId: string | null;
+  pendingAppend: boolean;
+  needsFreshPage: boolean;
+  error: string | null;
+}
+
+export interface AccountCapabilitiesUiState {
+  status: ResourceFreshness;
+  snapshots: Record<string, ProviderAccountCapabilitySnapshot>;
   error: string | null;
 }
 
@@ -137,7 +151,20 @@ export function initialFleetState(): FleetState {
 }
 
 export function initialNativeState(): NativeState {
-  return { status: "loading", snapshot: null, error: null };
+  return {
+    status: "loading",
+    snapshot: null,
+    page: null,
+    sessions: [],
+    requestId: null,
+    pendingAppend: false,
+    needsFreshPage: false,
+    error: null,
+  };
+}
+
+export function initialAccountCapabilitiesState(): AccountCapabilitiesUiState {
+  return { status: "loading", snapshots: {}, error: null };
 }
 
 export function initialSettingsState(): SettingsUiState {
@@ -326,6 +353,31 @@ export function reduceNative(
   selectedProviderId: string | null,
   selectedAccountId: string | null,
 ): NativeState {
+  if (message.type === "sessions.native.page") {
+    const { page, requestId } = message.payload;
+    if (
+      selectedProviderId === null ||
+      selectedAccountId === null ||
+      page.providerId !== selectedProviderId ||
+      page.accountId !== selectedAccountId ||
+      (current.requestId !== null && current.requestId !== requestId)
+    ) {
+      return current;
+    }
+    const sessions = current.pendingAppend && !page.cursorReset
+      ? mergeNativeSessions(current.sessions, page.sessions)
+      : page.sessions;
+    return {
+      status: resourceStatus(page.freshness),
+      snapshot: null,
+      page,
+      sessions,
+      requestId,
+      pendingAppend: false,
+      needsFreshPage: false,
+      error: null,
+    };
+  }
   if (message.type === "sessions.native.snapshot") {
     if (
       selectedProviderId === null ||
@@ -338,10 +390,68 @@ export function reduceNative(
     return {
       status: resourceStatus(message.payload.snapshot.freshness),
       snapshot: message.payload.snapshot,
+      page: null,
+      sessions: message.payload.snapshot.sessions,
+      requestId: null,
+      pendingAppend: false,
+      needsFreshPage: false,
       error: null,
     };
   }
   return current;
+}
+
+export function mergeNativeSessions(
+  current: readonly ProviderNativeSession[],
+  incoming: readonly ProviderNativeSession[],
+): ProviderNativeSession[] {
+  const byId = new Map(current.map((session) => [session.providerSessionId, session]));
+  for (const session of incoming) byId.set(session.providerSessionId, session);
+  return [...byId.values()];
+}
+
+export function nativeRequestStarted(
+  current: NativeState,
+  requestId: string,
+  append: boolean,
+): NativeState {
+  return {
+    ...current,
+    status: append && current.sessions.length > 0 ? current.status : "loading",
+    requestId,
+    pendingAppend: append,
+    needsFreshPage: false,
+    error: append ? current.error : null,
+  };
+}
+
+function accountCapabilityKey(providerId: string, accountId: string) {
+  return `${providerId}\u0000${accountId}`;
+}
+
+export function reduceAccountCapabilities(
+  current: AccountCapabilitiesUiState,
+  message: ServerEnvelope,
+): AccountCapabilitiesUiState {
+  if (message.type !== "provider.account.capabilities.snapshot") return current;
+  const snapshot = message.payload.snapshot;
+  const key = accountCapabilityKey(snapshot.providerId, snapshot.accountId);
+  const existing = current.snapshots[key];
+  if (existing !== undefined && existing.revision > snapshot.revision) return current;
+  return {
+    status: resourceStatus(snapshot.freshness),
+    snapshots: { ...current.snapshots, [key]: snapshot },
+    error: null,
+  };
+}
+
+export function accountCapabilitiesFor(
+  current: AccountCapabilitiesUiState,
+  providerId: string | null,
+  accountId: string | null,
+): ProviderAccountCapabilitySnapshot | null {
+  if (providerId === null || accountId === null) return null;
+  return current.snapshots[accountCapabilityKey(providerId, accountId)] ?? null;
 }
 
 export function reduceSettings(
