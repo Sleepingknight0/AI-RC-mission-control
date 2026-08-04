@@ -15,7 +15,9 @@ import {
   reduceNative,
 } from "../src/m9/state.js";
 import {
+  accountHasCurrentControl,
   accountScopedCatalogFilters,
+  canActivateAccount,
   currentAccountStatus,
   groupAccountsByProvider,
   recentSessionsByPeriod,
@@ -288,6 +290,21 @@ describe("M10 mobile provider/account/session selectors", () => {
       state: "stale",
     });
     expect(supportedModelsForAccount(evidence, "codex", "blue-1", afterExpiry)).toEqual([]);
+    expect(accountHasCurrentControl(evidence, afterExpiry)).toBe(false);
+  });
+
+  it("allows exact first-boot account activation without provider aggregate control", () => {
+    const inactiveProvider = provider({ adapterSupport: "inventory_only" });
+    const evidence = accountCapabilities("blue-1", {
+      active: false,
+      control: "inventory_only",
+    });
+    expect(canActivateAccount(inactiveProvider, evidence, Date.parse(observedAt))).toBe(true);
+    expect(canActivateAccount(inactiveProvider, {
+      ...evidence,
+      staleAt: "2026-08-04T09:59:59.000Z",
+    }, Date.parse(observedAt))).toBe(false);
+    expect(canActivateAccount({ ...inactiveProvider, compatibility: "unknown" }, evidence, Date.parse(observedAt))).toBe(false);
   });
 
   it("returns honest empty states for empty provider, account, and Session inputs", () => {

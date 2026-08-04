@@ -92,7 +92,9 @@ import { activationResponseMatches } from "./mobile/activation.js";
 import { CloseIcon } from "./mobile/icons.js";
 import {
   accountEvidenceIsCurrent,
+  accountHasCurrentControl,
   accountScopedCatalogFilters,
+  canActivateAccount,
   currentAccountStatus,
   sessionsForProviderAccount,
   supportedModelsForAccount,
@@ -1545,10 +1547,7 @@ export function App() {
   const canActivateSelectedAccount =
     connection === "online" &&
     runtime !== null &&
-    selectedProvider?.adapterSupport === "remote_control" &&
-    selectedAccountCapability !== null &&
-    accountEvidenceIsCurrent(selectedAccountCapability, now) &&
-    selectedAccountCapability.authentication === "authenticated";
+    canActivateAccount(selectedProvider, selectedAccountCapability, now);
 
   const resumeNativeNow = (providerSessionId: string) => {
     const socket = socketRef.current;
@@ -1602,7 +1601,7 @@ export function App() {
   const beginMobileAction = (
     action: PendingMobileActionInput,
   ) => {
-    if (selectedAccountCapability?.active && selectedAccountCapability.control === "remote_control") {
+    if (accountHasCurrentControl(selectedAccountCapability, now)) {
       if (action.kind === "create") setMobileCreateRequest((request) => request + 1);
       else if (action.kind === "resume_native") resumeNativeNow(action.providerSessionId);
       else resumeRuntimeNow(action.sessionId);

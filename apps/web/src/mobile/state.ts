@@ -69,6 +69,36 @@ export function accountEvidenceIsCurrent(
   return Number.isFinite(staleAt) && staleAt > now;
 }
 
+export function accountHasCurrentControl(
+  evidence: ProviderAccountCapabilitySnapshot | null,
+  now = Date.now(),
+): boolean {
+  return (
+    accountEvidenceIsCurrent(evidence, now) &&
+    evidence?.active === true &&
+    evidence.control === "remote_control" &&
+    evidence.authentication === "authenticated"
+  );
+}
+
+export function canActivateAccount(
+  provider: ProviderRecord | null,
+  evidence: ProviderAccountCapabilitySnapshot | null,
+  now = Date.now(),
+): boolean {
+  return (
+    provider !== null &&
+    provider.enabled &&
+    provider.installation === "installed" &&
+    provider.compatibility === "compatible" &&
+    evidence !== null &&
+    evidence.providerId === provider.providerId &&
+    provider.accounts.some((account) => account.accountId === evidence.accountId) &&
+    accountEvidenceIsCurrent(evidence, now) &&
+    evidence.authentication === "authenticated"
+  );
+}
+
 export function providerAccountKey(providerId: string, accountId: string): AccountKey {
   return `${providerId}\u0000${accountId}`;
 }
