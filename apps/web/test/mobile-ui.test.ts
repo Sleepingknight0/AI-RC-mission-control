@@ -265,7 +265,7 @@ describe("M10 mobile visible contracts", () => {
   });
 
   it("uses an HTML pattern valid under the browser regex v flag", () => {
-    expect(createFormSource).toContain('pattern="[A-Za-z0-9._\\\\-]{1,100}"');
+    expect(createFormSource).toContain('pattern="[A-Za-z0-9._\\-]{1,100}"');
     expect(createFormSource).not.toContain('pattern="[A-Za-z0-9._-]{1,100}"');
   });
 });

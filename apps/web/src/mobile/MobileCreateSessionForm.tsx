@@ -41,7 +41,7 @@ export function MobileCreateSessionForm({
   };
   return (
     <form className="mobile-session-create" onSubmit={submit}>
-      <label>Session ID<input required pattern="[A-Za-z0-9._\\-]{1,100}" placeholder="mission-control" value={sessionId} onChange={(event) => setSessionId(event.target.value)} /></label>
+      <label>Session ID<input required pattern="[A-Za-z0-9._\-]{1,100}" placeholder="mission-control" value={sessionId} onChange={(event) => setSessionId(event.target.value)} /></label>
       <label>Title<input required maxLength={160} placeholder="Mission Control" value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <label>Project path<input required placeholder="C:\\workspace" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} /></label>
       <label>Model<select value={selectedModel?.modelId ?? ""} disabled={models.length === 0} onChange={(event) => {

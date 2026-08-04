@@ -103,6 +103,10 @@ export function MobileChatShell(props: MobileChatShellProps) {
     if (props.createRequest > 0) setCreateOpen(true);
   }, [props.createRequest]);
 
+  useEffect(() => {
+    if (!props.showAccountHome) setCreateOpen(false);
+  }, [props.showAccountHome, props.selectedSessionId]);
+
   const closeAnd = (next: () => void) => {
     setDrawerOpen(false);
     window.requestAnimationFrame(next);
