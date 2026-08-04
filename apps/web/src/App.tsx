@@ -97,9 +97,11 @@ import { CloseIcon } from "./mobile/icons.js";
 import {
   accountEvidenceIsCurrent,
   accountHasCurrentControl,
+  accountSelectionForProvider,
   accountScopedCatalogFilters,
   canActivateAccount,
   currentAccountStatus,
+  sessionBelongsToProviderAccount,
   sessionsForProviderAccount,
   supportedModelsForAccount,
   type MobileSessionRow,
@@ -458,7 +460,9 @@ export function App() {
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
     restoredAccountId,
   );
-  const [mobileAccountHome, setMobileAccountHome] = useState(!HAS_REQUESTED_SESSION);
+  const [mobileAccountHome, setMobileAccountHome] = useState(
+    mobileLayout || !HAS_REQUESTED_SESSION,
+  );
   const [mobileSearch, setMobileSearch] = useState("");
   const [mobileCreateRequest, setMobileCreateRequest] = useState(0);
   const [activationPrompt, setActivationPrompt] = useState<{
@@ -471,11 +475,20 @@ export function App() {
   const [pendingAttachmentIds, setPendingAttachmentIds] = useState<string[]>([]);
   const [maintenanceNotice, setMaintenanceNotice] = useState<string | null>(null);
   const deviceIdRef = useRef(deviceId());
-  const catalogFiltersRef = useRef({
-    ...defaultCatalogFilters(),
-    providerIds: restoredProviderId === null ? [] : [restoredProviderId],
-    accountIds: restoredAccountId === null ? [] : [restoredAccountId],
-  });
+  const initialMobileSessionId = mobileLayout
+    ? HAS_REQUESTED_SESSION
+      ? requestedSessionId
+      : restoredSessionId
+    : null;
+  const catalogFiltersRef = useRef(
+    restoredProviderId !== null && restoredAccountId !== null
+      ? accountScopedCatalogFilters(
+          restoredProviderId,
+          restoredAccountId,
+          initialMobileSessionId ?? "",
+        )
+      : defaultCatalogFilters(),
+  );
   const nativeSearchRef = useRef("");
   const filterDebounceRef = useRef<number | undefined>(undefined);
   const pendingUploadsRef = useRef(new Map<string, PendingUploadBytes>());
@@ -622,7 +635,12 @@ export function App() {
             }),
           ),
         );
-        if (SESSION_PATTERN.test(selectedSessionRef.current)) {
+        const deferInitialMobileSession =
+          mobileLayout && !restoredSelectionCheckedRef.current;
+        if (
+          SESSION_PATTERN.test(selectedSessionRef.current) &&
+          !deferInitialMobileSession
+        ) {
           subscribe(socket, selectedSessionRef.current);
         } else {
           send(socket, makeEnvelope("sessions.list", {}));
@@ -1095,6 +1113,7 @@ export function App() {
       setNotice("Session ID must use 1–100 letters, numbers, dots, dashes, or underscores.");
       return;
     }
+    restoredSelectionCheckedRef.current = true;
     selectedSessionRef.current = sessionId;
     sessionStorage.setItem(SELECTED_SESSION_KEY, sessionId);
     setMobileAccountHome(false);
@@ -1121,6 +1140,7 @@ export function App() {
   const selectMobileAccount = (providerId: string, accountId: string) => {
     // Selection is read-only: retain every Session draft and never dispatch a
     // provider command or prompt merely because the account changed.
+    restoredSelectionCheckedRef.current = true;
     pendingNativeResumeRefreshRef.current = null;
     const socket = socketRef.current;
     const subscribedSessionId = selectedSessionRef.current;
@@ -1278,43 +1298,87 @@ export function App() {
   }, [selectedAccountId, selectedProvider]);
 
   useEffect(() => {
-    if (!selectedProvider) {
-      setSelectedAccountId(null);
-      return;
-    }
-    const defaultAccount =
-      selectedProvider.accounts.find((account) => account.isDefault)?.accountId ??
-      selectedProvider.accounts[0]?.accountId ??
-      null;
-    setSelectedAccountId((current) => {
-      if (current && selectedProvider.accounts.some((account) => account.accountId === current)) {
-        return current;
-      }
-      return defaultAccount;
-    });
+    setSelectedAccountId((current) =>
+      accountSelectionForProvider(selectedProvider, current),
+    );
   }, [selectedProvider]);
 
   useEffect(() => {
     if (
       !mobileLayout ||
-      HAS_REQUESTED_SESSION ||
-      restoredSessionId === null ||
       restoredSelectionCheckedRef.current ||
       fleet.status === "loading" ||
       catalog.status !== "ready"
     ) return;
     restoredSelectionCheckedRef.current = true;
+    const initialSessionId = HAS_REQUESTED_SESSION
+      ? requestedSessionId
+      : restoredSessionId;
     const valid =
+      initialSessionId !== null &&
       selectedProviderId === restoredProviderId &&
       selectedAccountId === restoredAccountId &&
-      catalog.sessions.some(
-        (session) =>
-          session.sessionId === restoredSessionId &&
-          session.providerId === selectedProviderId &&
-          session.accountId === selectedAccountId,
+      sessionBelongsToProviderAccount(
+        catalog.sessions,
+        initialSessionId,
+        selectedProviderId,
+        selectedAccountId,
       );
-    setMobileAccountHome(!valid);
-    if (!valid) sessionStorage.removeItem(SELECTED_SESSION_KEY);
+    if (
+      valid &&
+      initialSessionId !== null &&
+      selectedProviderId !== null &&
+      selectedAccountId !== null
+    ) {
+      selectedSessionRef.current = initialSessionId;
+      sessionStorage.setItem(SELECTED_SESSION_KEY, initialSessionId);
+      setSelectedSessionId(initialSessionId);
+      setSessionInput(initialSessionId);
+      setPrompt(sessionStorage.getItem(draftKey(initialSessionId)) ?? "");
+      setMobileAccountHome(false);
+      const socket = socketRef.current;
+      catalogFiltersRef.current = accountScopedCatalogFilters(
+        selectedProviderId,
+        selectedAccountId,
+        "",
+      );
+      if (socket?.readyState === WebSocket.OPEN) {
+        setConnection("syncing");
+        subscribe(socket, initialSessionId);
+      }
+      return;
+    }
+
+    // A mobile deep link or restored Session must never cross the exact
+    // provider/account boundary. Keep its draft stored, but withdraw the
+    // subscription and remove the mismatched Session from the visible shell.
+    selectedSessionRef.current = "";
+    setSnapshot(null);
+    setSettingsUi(initialSettingsState());
+    setSessionCapabilitiesUi(initialSessionCapabilitiesState());
+    setLeaseUi(initialLeaseState());
+    setAttachmentsUi(initialAttachmentState());
+    setSelectedSessionId("");
+    setSessionInput("");
+    setPrompt("");
+    setMobileAccountHome(true);
+    sessionStorage.removeItem(SELECTED_SESSION_KEY);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session");
+    window.history.replaceState(null, "", url);
+    if (
+      initialSessionId !== null &&
+      selectedProviderId !== null &&
+      selectedAccountId !== null
+    ) {
+      catalogFiltersRef.current = accountScopedCatalogFilters(
+        selectedProviderId,
+        selectedAccountId,
+        "",
+      );
+      const socket = socketRef.current;
+      if (socket?.readyState === WebSocket.OPEN) requestCatalog(socket, null);
+    }
   }, [catalog.sessions, catalog.status, fleet.status, mobileLayout, selectedAccountId, selectedProviderId]);
 
   useEffect(() => {

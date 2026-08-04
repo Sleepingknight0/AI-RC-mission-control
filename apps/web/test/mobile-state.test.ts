@@ -17,11 +17,13 @@ import {
 } from "../src/m9/state.js";
 import {
   accountHasCurrentControl,
+  accountSelectionForProvider,
   accountScopedCatalogFilters,
   canActivateAccount,
   currentAccountStatus,
   groupAccountsByProvider,
   recentSessionsByPeriod,
+  sessionBelongsToProviderAccount,
   sessionsForProviderAccount,
   supportedModelsForAccount,
   supportedReasoningForModel,
@@ -246,6 +248,13 @@ describe("M10 mobile provider/account/session selectors", () => {
     ]);
   });
 
+  it("never falls back from a restored account during partial inventory", () => {
+    const partial = provider({ accounts: [account("blue-3", "Blue Three", true)] });
+    expect(accountSelectionForProvider(partial, "blue-1")).toBe("blue-1");
+    expect(accountSelectionForProvider(partial, null)).toBe("blue-3");
+    expect(accountSelectionForProvider(null, "blue-1")).toBe("blue-1");
+  });
+
   it("never leaks Sessions across account IDs", () => {
     const catalog = [
       catalogSession("managed-a", "blue-1", "native-shared"),
@@ -258,6 +267,16 @@ describe("M10 mobile provider/account/session selectors", () => {
     ];
     expect(sessionsForProviderAccount(catalog, native, "codex", "blue-1").map((row) => row.sessionId)).toEqual(["managed-a"]);
     expect(sessionsForProviderAccount(catalog, native, "codex", "blue-2").map((row) => row.sessionId)).toEqual(["managed-b", null]);
+  });
+
+  it("rejects restored or deep-linked Sessions outside the selected account", () => {
+    const catalog = [
+      catalogSession("managed-a", "blue-1", null),
+      catalogSession("managed-b", "blue-2", null),
+    ];
+    expect(sessionBelongsToProviderAccount(catalog, "managed-a", "codex", "blue-1")).toBe(true);
+    expect(sessionBelongsToProviderAccount(catalog, "managed-a", "codex", "blue-2")).toBe(false);
+    expect(sessionBelongsToProviderAccount(catalog, "managed-a", null, null)).toBe(false);
   });
 
   it("deduplicates a bound native row only inside the same provider/account", () => {

@@ -264,6 +264,12 @@ describe("M10 mobile visible contracts", () => {
     expect(appSource).toContain("No Session is subscribed");
   });
 
+  it("defers mobile Session subscription until exact account ownership is verified", () => {
+    expect(appSource).toContain("deferInitialMobileSession");
+    expect(appSource).toContain("sessionBelongsToProviderAccount(");
+    expect(appSource).toContain('url.searchParams.delete("session")');
+  });
+
   it("uses an HTML pattern valid under the browser regex v flag", () => {
     expect(createFormSource).toContain('pattern="[A-Za-z0-9._\\-]{1,100}"');
     expect(createFormSource).not.toContain('pattern="[A-Za-z0-9._-]{1,100}"');

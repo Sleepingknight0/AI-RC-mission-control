@@ -103,6 +103,21 @@ export function providerAccountKey(providerId: string, accountId: string): Accou
   return `${providerId}\u0000${accountId}`;
 }
 
+export function accountSelectionForProvider(
+  provider: ProviderRecord | null,
+  currentAccountId: string | null,
+): string | null {
+  // A partial or transitional inventory snapshot must never move the operator
+  // from one account to another. Only choose a default when there is no prior
+  // account intent at all.
+  if (currentAccountId !== null || provider === null) return currentAccountId;
+  return (
+    provider.accounts.find((account) => account.isDefault)?.accountId ??
+    provider.accounts[0]?.accountId ??
+    null
+  );
+}
+
 export function accountScopedCatalogFilters(
   providerId: string,
   accountId: string,
@@ -117,6 +132,21 @@ export function accountScopedCatalogFilters(
     archived: "exclude",
     pinned: null,
   };
+}
+
+export function sessionBelongsToProviderAccount(
+  catalog: readonly SessionSummaryV2[],
+  sessionId: string,
+  providerId: string | null,
+  accountId: string | null,
+): boolean {
+  if (providerId === null || accountId === null) return false;
+  return catalog.some(
+    (session) =>
+      session.sessionId === sessionId &&
+      session.providerId === providerId &&
+      session.accountId === accountId,
+  );
 }
 
 export function groupAccountsByProvider(
