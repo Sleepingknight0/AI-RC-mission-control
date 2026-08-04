@@ -48,8 +48,8 @@ interface ReceiptRow {
 export class ConnectorJournal {
   readonly connectorId: string;
   readonly bootId: string;
-  readonly runtimeId: string;
-  readonly runtimeGeneration: number;
+  #runtimeId: string;
+  #runtimeGeneration: number;
   readonly #database: DatabaseSync;
   #closed = false;
 
@@ -64,12 +64,60 @@ export class ConnectorJournal {
       options.connectorId ?? this.#metadata("connector_id") ?? `connector-${crypto.randomUUID()}`;
     this.bootId = `boot-${crypto.randomUUID()}`;
     const priorGeneration = Number(this.#metadata("last_runtime_generation") ?? "0");
-    this.runtimeGeneration =
+    this.#runtimeGeneration =
       options.runtimeGeneration ?? Math.max(1, priorGeneration + 1);
-    this.runtimeId = options.runtimeId ?? `runtime-${crypto.randomUUID()}`;
+    this.#runtimeId = options.runtimeId ?? `runtime-${crypto.randomUUID()}`;
     this.#setMetadata("connector_id", this.connectorId);
     this.#setMetadata("current_boot_id", this.bootId);
-    this.#setMetadata("last_runtime_generation", String(this.runtimeGeneration));
+    this.#setMetadata("last_runtime_generation", String(this.#runtimeGeneration));
+  }
+
+  get runtimeId() {
+    return this.#runtimeId;
+  }
+
+  get runtimeGeneration() {
+    return this.#runtimeGeneration;
+  }
+
+  get activeProviderId() {
+    return this.#metadata("active_provider_id");
+  }
+
+  get activeAccountId() {
+    return this.#metadata("active_account_id");
+  }
+
+  rotateRuntime(input: {
+    expectedRuntimeId: string;
+    expectedRuntimeGeneration: number;
+    nextRuntimeId: string;
+    nextRuntimeGeneration: number;
+    providerId: string;
+    accountId: string;
+  }) {
+    if (
+      input.expectedRuntimeId !== this.#runtimeId ||
+      input.expectedRuntimeGeneration !== this.#runtimeGeneration ||
+      input.nextRuntimeGeneration <= this.#runtimeGeneration
+    ) {
+      throw new Error("STALE_RUNTIME_GENERATION");
+    }
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      this.#setMetadata("active_provider_id", input.providerId);
+      this.#setMetadata("active_account_id", input.accountId);
+      this.#setMetadata(
+        "last_runtime_generation",
+        String(input.nextRuntimeGeneration),
+      );
+      this.#database.exec("COMMIT");
+      this.#runtimeId = input.nextRuntimeId;
+      this.#runtimeGeneration = input.nextRuntimeGeneration;
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   get schemaVersion() {
@@ -95,7 +143,8 @@ export class ConnectorJournal {
           | "connector.turn.interrupt"
           | "connector.approval.resolve"
           | "connector.session.create"
-          | "connector.session.resume";
+          | "connector.session.resume"
+          | "connector.provider.account.activate";
       }
     >,
   ): InboxDecision {

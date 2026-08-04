@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
 import { canonicalProjectRoot } from "@aicl/config";
@@ -29,10 +30,13 @@ export interface CodexDiscoveryOptions {
   allowedRoots: readonly string[];
   timeoutMs?: number;
   now?: () => Date;
+  search?: string | null;
+  archived?: "exclude" | "include" | "only";
 }
 
 export interface CodexCapabilityProbe {
   authenticated: boolean;
+  identityFingerprint: string | null;
   models: ProviderModel[];
   modelsTruncated: boolean;
 }
@@ -160,6 +164,12 @@ export async function probeCodexCapabilities(
     // `requiresOpenaiAuth: true` for a logged-in ChatGPT profile. The flag is
     // therefore not missing-login evidence; account presence is.
     authenticated: account.account !== null && account.account !== undefined,
+    identityFingerprint:
+      account.account?.type === "chatgpt" && account.account.email !== null
+        ? createHash("sha256")
+            .update(`chatgpt\u0000${account.account.email.trim().toLowerCase()}`)
+            .digest("hex")
+        : null,
     models,
     modelsTruncated,
   };
@@ -177,7 +187,13 @@ export async function discoverCodexNativeSessions(
   let malformed = 0;
   let truncated = false;
 
-  for (const archived of [false, true]) {
+  const archiveValues =
+    options.archived === "exclude"
+      ? [false]
+      : options.archived === "only"
+        ? [true]
+        : [false, true];
+  for (const [archiveIndex, archived] of archiveValues.entries()) {
     let cursor: string | null = null;
     do {
       const remaining = deadline - Date.now();
@@ -195,6 +211,9 @@ export async function discoverCodexNativeSessions(
             sortKey: "updated_at",
             sortDirection: "desc",
             useStateDbOnly: true,
+            ...(options.search === null || options.search === undefined
+              ? {}
+              : { searchTerm: options.search }),
           },
           { timeoutMs: remaining, terminateOnTimeout: false },
         ),
@@ -216,7 +235,13 @@ export async function discoverCodexNativeSessions(
         break;
       }
     } while (cursor !== null);
-    if (truncated) break;
+    if (
+      sessions.length >= MAX_PROVIDER_NATIVE_SESSIONS &&
+      archiveIndex < archiveValues.length - 1
+    ) {
+      truncated = true;
+    }
+    if (truncated || sessions.length >= MAX_PROVIDER_NATIVE_SESSIONS) break;
   }
 
   sessions.sort(

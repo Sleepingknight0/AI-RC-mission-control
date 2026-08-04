@@ -391,6 +391,63 @@ export const ProviderFleetSnapshotSchema = z
     }
   });
 
+export const ProviderAccountCapabilitySnapshotSchema = z
+  .object({
+    snapshotId: id,
+    revision: z.number().int().positive(),
+    providerId: providerSlug,
+    accountId: providerSlug,
+    source: z.enum(["terminal_registry", "provider_probe", "unavailable"]),
+    observedAt: timestamp,
+    staleAt: timestamp,
+    freshness: ProviderFreshnessSchema,
+    authentication: ProviderAuthenticationStateSchema,
+    control: ProviderAdapterSupportSchema,
+    active: z.boolean(),
+    capabilities: z
+      .array(ProviderCapabilityEvidenceSchema)
+      .max(ProviderCapabilityKeySchema.options.length),
+    models: z.array(ProviderModelSchema).max(MAX_PROVIDER_MODELS),
+    modelsState: ProviderModelsStateSchema,
+    notice: displayText(200).nullable(),
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    addDuplicateIssue(
+      snapshot.capabilities.map((capability) => capability.key),
+      "capability",
+      context,
+    );
+    addDuplicateIssue(
+      snapshot.models.map((model) => model.modelId),
+      "model",
+      context,
+    );
+    if (Date.parse(snapshot.staleAt) <= Date.parse(snapshot.observedAt)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "staleAt must be later than observedAt",
+      });
+    }
+    if (
+      snapshot.control === "remote_control" &&
+      (!snapshot.active ||
+        snapshot.authentication !== "authenticated" ||
+        snapshot.freshness !== "live" ||
+        !snapshot.capabilities.some(
+          (capability) =>
+            capability.key === "remote_control" &&
+            capability.state === "supported",
+        ))
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "remote control requires the active, live, authenticated account with supported evidence",
+      });
+    }
+  });
+
 export const ProviderNativeSessionSchema = z
   .object({
     providerId: providerSlug,
@@ -456,6 +513,52 @@ export const ProviderNativeSessionSnapshotSchema = z
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: "native Sessions must match snapshot provider and account",
+      });
+    }
+  });
+
+export const ProviderNativeSessionArchiveFilterSchema = z.enum([
+  "exclude",
+  "include",
+  "only",
+]);
+
+export const ProviderNativeSessionPageSchema = z
+  .object({
+    providerId: providerSlug,
+    accountId: providerSlug,
+    observedAt: timestamp,
+    freshness: ProviderFreshnessSchema,
+    sessions: z.array(ProviderNativeSessionSchema).max(100),
+    nextCursor: z.string().min(16).max(1_024).nullable(),
+    hasMore: z.boolean(),
+    truncated: z.boolean(),
+    cursorReset: z.boolean(),
+    notice: displayText(200).nullable(),
+  })
+  .strict()
+  .superRefine((page, context) => {
+    addDuplicateIssue(
+      page.sessions.map((session) => session.providerSessionId),
+      "provider-native Session",
+      context,
+    );
+    if (page.hasMore !== (page.nextCursor !== null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "hasMore must match nextCursor presence",
+      });
+    }
+    if (
+      page.sessions.some(
+        (session) =>
+          session.providerId !== page.providerId ||
+          session.accountId !== page.accountId,
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "native Sessions must match page provider and account",
       });
     }
   });
@@ -950,11 +1053,43 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
   ),
   envelope("providers.refresh", z.object({}).strict()),
   envelope(
+    "provider.account.capabilities.refresh",
+    z.object({ providerId: providerSlug, accountId: providerSlug }).strict(),
+  ),
+  envelope(
+    "provider.account.activate",
+    z
+      .object({
+        commandId: id,
+        deviceId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        expectedRevision: z.number().int().positive(),
+        expectedRuntimeId: id,
+        expectedRuntimeGeneration: z.number().int().positive(),
+      })
+      .strict(),
+  ),
+  envelope(
     "sessions.native.refresh",
     z
       .object({
         providerId: providerSlug,
         accountId: providerSlug,
+      })
+      .strict(),
+  ),
+  envelope(
+    "sessions.native.list",
+    z
+      .object({
+        requestId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        pageSize: z.number().int().min(1).max(100),
+        cursor: z.string().min(16).max(1_024).nullable(),
+        search: z.string().trim().max(200).nullable(),
+        archived: ProviderNativeSessionArchiveFilterSchema,
       })
       .strict(),
   ),
@@ -988,6 +1123,19 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
         providerId: providerSlug,
         accountId: providerSlug,
         providerSessionId: id,
+      })
+      .strict(),
+  ),
+  envelope(
+    "session.runtime.resume",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        expectedAccountRevision: z.number().int().positive(),
+        expectedRuntimeId: id,
+        expectedRuntimeGeneration: z.number().int().positive(),
       })
       .strict(),
   ),
@@ -1300,8 +1448,41 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
     z.object({ snapshot: ProviderFleetSnapshotSchema }).strict(),
   ),
   envelope(
+    "provider.account.capabilities.snapshot",
+    z.object({ snapshot: ProviderAccountCapabilitySnapshotSchema }).strict(),
+  ),
+  envelope(
+    "provider.account.activation.accepted",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        revision: z.number().int().positive(),
+        runtime: RuntimeSchema,
+      })
+      .strict(),
+  ),
+  envelope(
+    "provider.account.activation.rejected",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        error: ProtocolErrorSchema,
+      })
+      .strict(),
+  ),
+  envelope(
     "sessions.native.snapshot",
     z.object({ snapshot: ProviderNativeSessionSnapshotSchema }).strict(),
+  ),
+  envelope(
+    "sessions.native.page",
+    z
+      .object({ requestId: id, page: ProviderNativeSessionPageSchema })
+      .strict(),
   ),
   envelope("runtime.status", z.object({ runtime: RuntimeSchema })),
   envelope(
@@ -1535,6 +1716,25 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   ),
   envelope("connector.providers.refresh", z.object({}).strict()),
   envelope(
+    "connector.provider.account.capabilities.refresh",
+    z.object({ providerId: providerSlug, accountId: providerSlug }).strict(),
+  ),
+  envelope(
+    "connector.provider.account.activate",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        expectedRevision: z.number().int().positive(),
+        expectedRuntimeId: id,
+        expectedRuntimeGeneration: z.number().int().positive(),
+        nextRuntimeId: id,
+        nextRuntimeGeneration: z.number().int().positive(),
+      })
+      .strict(),
+  ),
+  envelope(
     "connector.sessions.native.refresh",
     z
       .object({
@@ -1543,17 +1743,46 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       })
       .strict(),
   ),
+  envelope(
+    "connector.sessions.native.list",
+    z
+      .object({
+        requestId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        pageSize: z.number().int().min(1).max(100),
+        cursor: z.string().min(16).max(1_024).nullable(),
+        search: z.string().trim().max(200).nullable(),
+        archived: ProviderNativeSessionArchiveFilterSchema,
+      })
+      .strict(),
+  ),
 ]);
 
 export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   connectorEnvelope(
     "connector.hello",
-    z.object({
-      connectorId: id,
-      bootId: id,
-      runtime: RuntimeSchema,
-      commandReceipts: z.array(CommandReceiptSchema).max(1_000),
-    }),
+    z
+      .object({
+        connectorId: id,
+        bootId: id,
+        runtime: RuntimeSchema,
+        activeProviderId: providerSlug.nullable().optional(),
+        activeAccountId: providerSlug.nullable().optional(),
+        commandReceipts: z.array(CommandReceiptSchema).max(1_000),
+      })
+      .strict()
+      .superRefine((hello, context) => {
+        if (
+          (hello.activeProviderId ?? null) === null !==
+          ((hello.activeAccountId ?? null) === null)
+        ) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "active provider and account identities must be paired",
+          });
+        }
+      }),
   ),
   connectorEnvelope("connector.runtime.status", z.object({ runtime: RuntimeSchema })),
   connectorEnvelope(
@@ -1561,8 +1790,41 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
     z.object({ snapshot: ProviderFleetSnapshotSchema }).strict(),
   ),
   connectorEnvelope(
+    "connector.provider.account.capabilities.snapshot",
+    z.object({ snapshot: ProviderAccountCapabilitySnapshotSchema }).strict(),
+  ),
+  connectorEnvelope(
+    "connector.provider.account.activated",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        revision: z.number().int().positive(),
+        runtime: RuntimeSchema,
+      })
+      .strict(),
+  ),
+  connectorEnvelope(
+    "connector.provider.account.activation.rejected",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        code: displayText(96),
+      })
+      .strict(),
+  ),
+  connectorEnvelope(
     "connector.sessions.native.snapshot",
     z.object({ snapshot: ProviderNativeSessionSnapshotSchema }).strict(),
+  ),
+  connectorEnvelope(
+    "connector.sessions.native.page",
+    z
+      .object({ requestId: id, page: ProviderNativeSessionPageSchema })
+      .strict(),
   ),
   connectorEnvelope(
     "connector.session.prepared",
@@ -1734,9 +1996,18 @@ export type ProviderAccount = z.infer<typeof ProviderAccountSchema>;
 export type ProviderModel = z.infer<typeof ProviderModelSchema>;
 export type ProviderRecord = z.infer<typeof ProviderRecordSchema>;
 export type ProviderFleetSnapshot = z.infer<typeof ProviderFleetSnapshotSchema>;
+export type ProviderAccountCapabilitySnapshot = z.infer<
+  typeof ProviderAccountCapabilitySnapshotSchema
+>;
 export type ProviderNativeSession = z.infer<typeof ProviderNativeSessionSchema>;
 export type ProviderNativeSessionSnapshot = z.infer<
   typeof ProviderNativeSessionSnapshotSchema
+>;
+export type ProviderNativeSessionArchiveFilter = z.infer<
+  typeof ProviderNativeSessionArchiveFilterSchema
+>;
+export type ProviderNativeSessionPage = z.infer<
+  typeof ProviderNativeSessionPageSchema
 >;
 export type Turn = z.infer<typeof TurnSchema>;
 export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;

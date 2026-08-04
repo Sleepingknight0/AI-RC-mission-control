@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
+  ProviderNativeSessionPageSchema,
   ProviderNativeSessionSnapshotSchema,
   ServerEnvelopeSchema,
   makeEnvelope,
@@ -119,5 +120,36 @@ describe("provider-native Session protocol", () => {
         }),
       ).type,
     ).toBe("session.provider.status");
+  });
+
+  it("validates truthful bounded pages and rejects duplicate or foreign rows", () => {
+    const page = {
+      providerId: "codex",
+      accountId: "default",
+      observedAt: snapshot.observedAt,
+      freshness: "live" as const,
+      sessions: snapshot.sessions,
+      nextCursor: "native-cursor-opaque-value",
+      hasMore: true,
+      truncated: true,
+      cursorReset: false,
+      notice: "Discovery reached its bound",
+    };
+    expect(ProviderNativeSessionPageSchema.parse(page)).toMatchObject({
+      hasMore: true,
+      truncated: true,
+    });
+    expect(() => ProviderNativeSessionPageSchema.parse({
+      ...page,
+      nextCursor: null,
+    })).toThrow();
+    expect(() => ProviderNativeSessionPageSchema.parse({
+      ...page,
+      sessions: [snapshot.sessions[0], snapshot.sessions[0]],
+    })).toThrow();
+    expect(() => ProviderNativeSessionPageSchema.parse({
+      ...page,
+      sessions: [{ ...snapshot.sessions[0], accountId: "other" }],
+    })).toThrow();
   });
 });

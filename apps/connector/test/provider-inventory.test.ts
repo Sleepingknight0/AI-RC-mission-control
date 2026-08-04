@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DEFAULT_PROVIDER_REGISTRY_ROOT,
+  readProviderAccountProfiles,
   readProviderFleet,
 } from "../src/provider-inventory.js";
 
@@ -114,6 +115,68 @@ describe("terminal provider inventory", () => {
     expect(serialized).not.toContain(profileRoot);
     expect(serialized).not.toContain("auth.json");
     expect(serialized).not.toContain("credential-canary");
+  });
+
+  it("exposes three exact Codex profiles and never falls back to a default account", () => {
+    const { root, providers } = registry();
+    const providerRoot = provider(providers, "codex", codexManifest);
+    for (const accountId of ["blue", "green", "violet"]) {
+      const profileRoot = mkdtempSync(join(tmpdir(), `aicl-${accountId}-profile-`));
+      roots.push(profileRoot);
+      writeFileSync(join(profileRoot, "auth.json"), "sanitized-test-auth");
+      account(providerRoot, accountId, {
+        id: accountId,
+        displayName: `${accountId} account`,
+        profilePath: profileRoot,
+      });
+    }
+    const bin = mkdtempSync(join(tmpdir(), "aicl-provider-bin-"));
+    roots.push(bin);
+    writeFileSync(join(bin, "codex.exe"), "");
+
+    const profiles = readProviderAccountProfiles({ registryRoot: root });
+    expect(profiles.map(({ providerId, accountId }) => ({ providerId, accountId })))
+      .toEqual([
+        { providerId: "codex", accountId: "blue" },
+        { providerId: "codex", accountId: "green" },
+        { providerId: "codex", accountId: "violet" },
+      ]);
+
+    const snapshot = readProviderFleet({
+      registryRoot: root,
+      now,
+      pathValue: bin,
+      pathExtValue: ".EXE",
+      activeProviderId: "codex",
+      activeAccountId: "missing-account",
+      knownCompatibility: { codex: "compatible" },
+    });
+    expect(snapshot.providers[0]?.accounts).toHaveLength(3);
+    expect(snapshot.providers[0]?.accounts.every(
+      (entry) => entry.control === "inventory_only",
+    )).toBe(true);
+    expect(snapshot.providers[0]?.adapterSupport).toBe("inventory_only");
+  });
+
+  it("fails closed when two account records resolve to the same profile path", () => {
+    const { root, providers } = registry();
+    const providerRoot = provider(providers, "codex", codexManifest);
+    const profileRoot = mkdtempSync(join(tmpdir(), "aicl-shared-profile-"));
+    roots.push(profileRoot);
+    account(providerRoot, "blue", {
+      id: "blue",
+      displayName: "Blue",
+      profilePath: profileRoot,
+    });
+    account(providerRoot, "green", {
+      id: "green",
+      displayName: "Green",
+      profilePath: profileRoot,
+    });
+
+    expect(() => readProviderAccountProfiles({ registryRoot: root })).toThrow(
+      "Duplicate provider account identity",
+    );
   });
 
   it("never grants remote control to a non-Codex provider", () => {

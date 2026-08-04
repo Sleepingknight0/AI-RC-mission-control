@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import {
   CoreToConnectorEnvelopeSchema,
+  MAX_PROVIDER_NATIVE_SESSIONS,
   ProviderCapabilityKeySchema,
   ProviderFleetSnapshotSchema,
   makeEnvelope,
@@ -250,6 +251,46 @@ describe("Codex discovery", () => {
       providerStatus: "active",
       canResume: false,
     });
+  });
+
+  it("marks include-archive discovery truncated instead of issuing a zero-limit page", async () => {
+    const archivedCalls: boolean[] = [];
+    const snapshot = await discoverCodexNativeSessions(
+      {
+        async request(method, params) {
+          if (method !== "thread/list") throw new Error("Unexpected method");
+          const input = params as { archived: boolean; cursor: string | null };
+          archivedCalls.push(input.archived);
+          const page = input.cursor === null ? 0 : Number(input.cursor);
+          return {
+            data: Array.from({ length: 100 }, (_, index) => {
+              const ordinal = page * 100 + index;
+              return {
+                id: `native-${ordinal}`,
+                name: `Native ${ordinal}`,
+                preview: "bounded discovery",
+                cwd: process.cwd(),
+                createdAt: 1_700_000_000 + ordinal,
+                updatedAt: 1_700_000_000 + ordinal,
+                status: { type: "idle" },
+              };
+            }),
+            nextCursor: page < 4 ? String(page + 1) : null,
+          };
+        },
+      },
+      {
+        providerId: "codex",
+        accountId: "default",
+        allowedRoots: [process.cwd()],
+        revision: 1,
+        archived: "include",
+      },
+    );
+
+    expect(snapshot.sessions).toHaveLength(MAX_PROVIDER_NATIVE_SESSIONS);
+    expect(snapshot.truncated).toBe(true);
+    expect(archivedCalls).toEqual([false, false, false, false, false]);
   });
 
   it("creates and resumes explicit provider Sessions with verified selections", async () => {

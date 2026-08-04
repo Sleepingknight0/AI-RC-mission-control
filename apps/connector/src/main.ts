@@ -4,10 +4,11 @@ import { fileURLToPath } from "node:url";
 import { loadAiclConfig, webSocketOrigin } from "@aicl/config";
 
 import { startConnector } from "./client.js";
-import { CodexProvider } from "./codex/adapter.js";
+import { CodexAccountController } from "./codex/account-controller.js";
 import { probeInstalledCodex } from "./codex/compatibility.js";
 import { MockProvider } from "./mock-provider.js";
 import { readProviderFleet } from "./provider-inventory.js";
+import { UnavailableProvider } from "./provider.js";
 
 const repositoryRoot =
   process.env.AICL_REPOSITORY_ROOT ??
@@ -34,14 +35,14 @@ if (compatibility !== null && !compatibility.compatible) {
 }
 
 const provider =
-  providerName === "mock"
-    ? new MockProvider()
-    : new CodexProvider({
+  providerName === "mock" ? new MockProvider() : new UnavailableProvider();
+const providerAccountController =
+  providerName === "codex"
+    ? new CodexAccountController({
         cwd: projectPath,
         allowedRoots: config.workspace.allowedRoots,
-        accountId: config.provider.profile,
-        codexHome: config.provider.codexHome,
-      });
+      })
+    : undefined;
 
 const connector = startConnector({
   coreUrl,
@@ -50,11 +51,15 @@ const connector = startConnector({
   provider,
   providerName,
   journalPath,
-  providerInventory: async (revision) => {
-    const fleet = readProviderFleet({
+  providerInventory: (revision, active) =>
+    readProviderFleet({
       revision,
-      activeProviderId: providerName,
-      activeAccountId: config.provider.profile,
+      ...(active === null || active === undefined
+        ? {}
+        : {
+            activeProviderId: active.providerId,
+            activeAccountId: active.accountId,
+          }),
       ...(compatibility?.installedVersion === null || compatibility === null
         ? {}
         : { knownVersions: { codex: compatibility.installedVersion } }),
@@ -67,25 +72,10 @@ const connector = startConnector({
                 : ("incompatible" as const),
             },
           }),
-    });
-    return provider instanceof CodexProvider
-      ? provider.enrichProviderFleet(fleet, config.provider.profile)
-      : fleet;
-  },
-  ...(provider instanceof CodexProvider
-    ? {
-        providerNativeSessions: (revision: number) =>
-          provider.discoverNativeSessions({
-            accountId: config.provider.profile,
-            allowedRoots: config.workspace.allowedRoots,
-            revision,
-          }),
-        providerNativeSessionIdentity: {
-          providerId: "codex",
-          accountId: config.provider.profile,
-        },
-      }
-    : {}),
+    }),
+  ...(providerAccountController === undefined
+    ? {}
+    : { providerAccountController }),
   healthDetails:
     compatibility === null
       ? {}

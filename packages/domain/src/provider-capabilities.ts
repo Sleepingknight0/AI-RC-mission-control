@@ -1,5 +1,6 @@
 import type {
   ProviderAccount,
+  ProviderAccountCapabilitySnapshot,
   ProviderCapabilityKey,
   ProviderModel,
   ProviderRecord,
@@ -135,6 +136,74 @@ export function selectProviderExecution(
       ok: false,
       code: "INPUT_UNSUPPORTED",
       reason: "Selected model does not advertise this input modality",
+    };
+  }
+  return { ok: true, account, model };
+}
+
+export function selectProviderAccountExecution(
+  provider: ProviderRecord,
+  accountEvidence: ProviderAccountCapabilitySnapshot,
+  selection: ProviderExecutionSelection,
+): ProviderExecutionResult {
+  if (
+    accountEvidence.providerId !== provider.providerId ||
+    accountEvidence.accountId !== selection.accountId
+  ) {
+    return {
+      ok: false,
+      code: "ACCOUNT_UNAVAILABLE",
+      reason: "Account capability evidence does not match the selection",
+    };
+  }
+  const account = provider.accounts.find(
+    (candidate) => candidate.accountId === selection.accountId,
+  );
+  if (
+    account === undefined ||
+    accountEvidence.freshness !== "live" ||
+    Date.parse(accountEvidence.staleAt) <= Date.now() ||
+    !accountEvidence.active ||
+    accountEvidence.authentication !== "authenticated" ||
+    accountEvidence.control !== "remote_control" ||
+    !accountEvidence.capabilities.some(
+      (capability) =>
+        capability.key === "remote_control" && capability.state === "supported",
+    )
+  ) {
+    return {
+      ok: false,
+      code: "ACCOUNT_UNAVAILABLE",
+      reason: "Selected account lacks fresh active remote-control evidence",
+    };
+  }
+  const model = accountEvidence.models.find(
+    (candidate) => candidate.modelId === selection.modelId,
+  );
+  if (accountEvidence.modelsState !== "available" || model === undefined) {
+    return {
+      ok: false,
+      code: "MODEL_UNAVAILABLE",
+      reason: "Selected model was not advertised for this account",
+    };
+  }
+  if (
+    selection.reasoningEffort !== null &&
+    !model.reasoningEfforts.some(
+      (candidate) => candidate.value === selection.reasoningEffort,
+    )
+  ) {
+    return {
+      ok: false,
+      code: "REASONING_UNSUPPORTED",
+      reason: "Selected reasoning effort was not advertised for this account model",
+    };
+  }
+  if (!model.inputModalities.includes(selection.requiredInput)) {
+    return {
+      ok: false,
+      code: "INPUT_UNSUPPORTED",
+      reason: "Selected account model does not advertise this input modality",
     };
   }
   return { ok: true, account, model };

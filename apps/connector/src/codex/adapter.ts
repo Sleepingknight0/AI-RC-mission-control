@@ -14,6 +14,7 @@ import {
   type ArtifactReference,
   type ConnectorEnvelope,
   type ProviderCapabilityEvidence,
+  type ProviderAccountCapabilitySnapshot,
   type ProviderFleetSnapshot,
   type ProviderNativeSessionSnapshot,
   type ToolActivity,
@@ -458,6 +459,8 @@ export class CodexProvider implements ConnectorProvider {
     accountId: string;
     allowedRoots: readonly string[];
     revision: number;
+    search?: string | null;
+    archived?: "exclude" | "include" | "only";
   }): Promise<ProviderNativeSessionSnapshot> {
     return discoverCodexNativeSessions(await this.#ensureProcess(), {
       providerId: "codex",
@@ -465,7 +468,94 @@ export class CodexProvider implements ConnectorProvider {
       allowedRoots: input.allowedRoots,
       revision: input.revision,
       timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
+      search: input.search ?? null,
+      archived: input.archived ?? "include",
     });
+  }
+
+  async accountCapabilities(input: {
+    revision: number;
+    active: boolean;
+  }): Promise<ProviderAccountCapabilitySnapshot> {
+    const now = new Date();
+    const observedAt = now.toISOString();
+    try {
+      const probe = await probeCodexCapabilities(await this.#ensureProcess(), {
+        timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
+      });
+      const capabilities = updateCodexCapabilities([], observedAt, probe).map(
+        (capability) =>
+          capability.key === "remote_control" && !input.active
+            ? {
+                ...capability,
+                state: "unsupported" as const,
+                reason: "Account is not the active Connector runtime",
+              }
+            : capability,
+      );
+      return {
+        snapshotId: `account-capability-${crypto.randomUUID()}`,
+        revision: input.revision,
+        providerId: "codex",
+        accountId: this.#options.accountId ?? "default",
+        source: "provider_probe",
+        observedAt,
+        staleAt: new Date(now.getTime() + 5 * 60_000).toISOString(),
+        freshness: "live",
+        authentication: probe.authenticated
+          ? "authenticated"
+          : "not_authenticated",
+        control:
+          input.active && probe.authenticated
+            ? "remote_control"
+            : "inventory_only",
+        active: input.active,
+        capabilities,
+        models: probe.models,
+        modelsState: "available",
+        notice: probe.modelsTruncated
+          ? "Codex model discovery reached its configured bound"
+          : probe.authenticated
+            ? input.active
+              ? null
+              : "Activate this account before remote control"
+            : "Codex app-server reports no authenticated account",
+      };
+    } catch {
+      return {
+        snapshotId: `account-capability-${crypto.randomUUID()}`,
+        revision: input.revision,
+        providerId: "codex",
+        accountId: this.#options.accountId ?? "default",
+        source: "unavailable",
+        observedAt,
+        staleAt: new Date(now.getTime() + 60_000).toISOString(),
+        freshness: "unavailable",
+        authentication: "unknown",
+        control: "inventory_only",
+        active: input.active,
+        capabilities: updateCodexCapabilities([], observedAt, {
+          authenticated: false,
+          models: [],
+        modelsTruncated: false,
+          identityFingerprint: null,
+        }).map((capability) => ({
+          ...capability,
+          state: "unknown" as const,
+          reason: "Live Codex account probe is unavailable",
+        })),
+        models: [],
+        modelsState: "error",
+        notice: "Codex capability probe failed or timed out",
+      };
+    }
+  }
+
+  async accountIdentityFingerprint(): Promise<string | null> {
+    const probe = await probeCodexCapabilities(await this.#ensureProcess(), {
+      timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
+    });
+    return probe.identityFingerprint;
   }
 
   async startTurn(
@@ -1400,7 +1490,14 @@ function updateCodexCapabilities(
     "unsupported",
     "Network policy translation is not implemented",
   );
-  return current.map((capability) => updates.get(capability.key) ?? capability);
+  const result = current.map(
+    (capability) => updates.get(capability.key) ?? capability,
+  );
+  const existing = new Set(result.map((capability) => capability.key));
+  for (const capability of updates.values()) {
+    if (!existing.has(capability.key)) result.push(capability);
+  }
+  return result;
 }
 
 function executionModeInstruction(mode: "ask" | "plan" | "auto") {

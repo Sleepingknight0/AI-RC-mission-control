@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { ProviderRecord } from "@aicl/protocol";
+import type {
+  ProviderAccountCapabilitySnapshot,
+  ProviderRecord,
+} from "@aicl/protocol";
 
 import {
   capabilityDecision,
+  selectProviderAccountExecution,
   selectProviderExecution,
 } from "../src/index.js";
 
@@ -119,5 +123,45 @@ describe("provider capability decisions", () => {
         requiredInput: "text",
       }),
     ).toMatchObject({ ok: false, code: "REASONING_UNSUPPORTED" });
+  });
+
+  it("never inherits provider models and withdraws stale account control", () => {
+    const accountEvidence: ProviderAccountCapabilitySnapshot = {
+      snapshotId: "exact-account-snapshot",
+      revision: 1,
+      providerId: "codex",
+      accountId: "default",
+      source: "provider_probe",
+      observedAt,
+      staleAt: "2099-08-03T03:45:00.000Z",
+      freshness: "live",
+      authentication: "authenticated",
+      control: "remote_control",
+      active: true,
+      capabilities: provider.capabilities,
+      models: [{
+        ...provider.models[0]!,
+        modelId: "account-only-model",
+        displayName: "Account only",
+      }],
+      modelsState: "available",
+      notice: null,
+    };
+    const providerOnlySelection = {
+      accountId: "default",
+      modelId: "gpt-test",
+      reasoningEffort: "high",
+      requiredInput: "text" as const,
+    };
+    expect(
+      selectProviderAccountExecution(provider, accountEvidence, providerOnlySelection),
+    ).toMatchObject({ ok: false, code: "MODEL_UNAVAILABLE" });
+    expect(
+      selectProviderAccountExecution(
+        provider,
+        { ...accountEvidence, freshness: "stale", control: "inventory_only" },
+        { ...providerOnlySelection, modelId: "account-only-model" },
+      ),
+    ).toMatchObject({ ok: false, code: "ACCOUNT_UNAVAILABLE" });
   });
 });

@@ -131,6 +131,76 @@ describe("Connector SQLite journal", () => {
     expect(journal.pendingEvents()).toEqual(inserted);
     journal.close();
   });
+
+  it("deduplicates activation payloads and persists the exact active account/runtime", () => {
+    const path = journalPath();
+    const first = new ConnectorJournal({
+      path,
+      runtimeId: "runtime-before-activation",
+      runtimeGeneration: 4,
+    });
+    const activation = CoreToConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.provider.account.activate", {
+        commandId: "activate-blue",
+        providerId: "codex",
+        accountId: "blue",
+        expectedRevision: 7,
+        expectedRuntimeId: first.runtimeId,
+        expectedRuntimeGeneration: first.runtimeGeneration,
+        nextRuntimeId: "runtime-after-activation",
+        nextRuntimeGeneration: 5,
+      }),
+    );
+    const changed = CoreToConnectorEnvelopeSchema.parse({
+      ...activation,
+      payload: { ...activation.payload, accountId: "green" },
+    });
+    if (
+      activation.type !== "connector.provider.account.activate" ||
+      changed.type !== "connector.provider.account.activate"
+    ) {
+      throw new Error("Expected activation commands");
+    }
+    expect(first.recordCommand(activation)).toBe("new");
+    expect(first.recordCommand(activation)).toBe("same");
+    expect(first.recordCommand(changed)).toBe("conflict");
+    first.rotateRuntime({
+      expectedRuntimeId: "runtime-before-activation",
+      expectedRuntimeGeneration: 4,
+      nextRuntimeId: "runtime-after-activation",
+      nextRuntimeGeneration: 5,
+      providerId: "codex",
+      accountId: "blue",
+    });
+    const terminal = first.enqueue(
+      makeEnvelope("connector.provider.account.activated", {
+        commandId: "activate-blue",
+        providerId: "codex",
+        accountId: "blue",
+        revision: 8,
+        runtime: {
+          runtimeId: first.runtimeId,
+          generation: first.runtimeGeneration,
+          status: "ready",
+        },
+      }),
+      {
+        runtimeId: first.runtimeId,
+        generation: first.runtimeGeneration,
+        status: "ready",
+      },
+    );
+    first.markCommand("activate-blue", "completed");
+    first.close();
+
+    const second = new ConnectorJournal({ path });
+    expect(second.activeProviderId).toBe("codex");
+    expect(second.activeAccountId).toBe("blue");
+    expect(second.runtimeGeneration).toBe(6);
+    expect(second.recordCommand(activation)).toBe("same");
+    expect(second.pendingEvents()).toEqual([terminal]);
+    second.close();
+  });
 });
 
 function journalPath() {

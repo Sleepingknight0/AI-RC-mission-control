@@ -7,6 +7,7 @@ import {
   ClientEnvelopeSchema,
   ConnectorEnvelopeSchema,
   CoreToConnectorEnvelopeSchema,
+  ProviderAccountCapabilitySnapshotSchema,
   ProviderFleetSnapshotSchema,
   ProviderRecordSchema,
   ServerEnvelopeSchema,
@@ -255,6 +256,41 @@ describe("provider capability protocol", () => {
         makeEnvelope("providers.snapshot", { snapshot }),
       ).type,
     ).toBe("providers.snapshot");
+  });
+
+  it("requires exact active evidence before an account can claim remote control", () => {
+    const accountSnapshot = {
+      snapshotId: "account-capabilities-1",
+      revision: 1,
+      providerId: "codex",
+      accountId: "bwcx-bluewhalex",
+      source: "provider_probe" as const,
+      observedAt,
+      staleAt: "2026-08-03T03:45:00.000Z",
+      freshness: "live" as const,
+      authentication: "authenticated" as const,
+      control: "remote_control" as const,
+      active: true,
+      capabilities: provider.capabilities,
+      models: provider.models,
+      modelsState: "available" as const,
+      notice: null,
+    };
+    expect(ProviderAccountCapabilitySnapshotSchema.parse(accountSnapshot))
+      .toMatchObject({ active: true, control: "remote_control" });
+    for (const invalid of [
+      { ...accountSnapshot, active: false },
+      { ...accountSnapshot, freshness: "stale" as const },
+      { ...accountSnapshot, authentication: "unknown" as const },
+      {
+        ...accountSnapshot,
+        capabilities: accountSnapshot.capabilities.filter(
+          (capability) => capability.key !== "remote_control",
+        ),
+      },
+    ]) {
+      expect(() => ProviderAccountCapabilitySnapshotSchema.parse(invalid)).toThrow();
+    }
   });
 
   it("validates an authoritative per-Session capability projection", () => {

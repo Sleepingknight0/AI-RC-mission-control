@@ -1,4 +1,10 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 
@@ -42,6 +48,13 @@ export interface ProviderInventoryOptions {
   now?: () => Date;
   pathValue?: string;
   pathExtValue?: string;
+}
+
+export interface ProviderAccountProfile {
+  providerId: string;
+  accountId: string;
+  displayName: string;
+  profilePath: string;
 }
 
 interface RawProviderManifest {
@@ -181,8 +194,7 @@ function readProvider(
     options,
   );
   const authentication = aggregateAuthentication(accountResult.accounts);
-  const configuredProvider =
-    (options.activeProviderId ?? "codex") === providerId;
+  const configuredProvider = options.activeProviderId === providerId;
   const remotelyControllable =
     providerId === "codex" &&
     configuredProvider &&
@@ -294,18 +306,89 @@ function readAccounts(
   ).index;
   if (newest >= 0) candidates[newest]!.account.isDefault = true;
 
-  const requestedAccount = options.activeAccountId ?? "default";
-  const active =
-    candidates.find((candidate) => candidate.account.accountId === requestedAccount) ??
-    (requestedAccount === "default" && newest >= 0 ? candidates[newest] : undefined);
+  const requestedAccount = options.activeAccountId;
+  const active = candidates.find(
+    (candidate) => candidate.account.accountId === requestedAccount,
+  );
   if (
-    providerId === (options.activeProviderId ?? "codex") &&
+    providerId === options.activeProviderId &&
     active?.account.authentication === "authenticated" &&
     options.knownCompatibility?.[providerId] === "compatible"
   ) {
     active.account.control = "remote_control";
   }
   return { accounts: candidates.map((candidate) => candidate.account), total: names.length };
+}
+
+export function readProviderAccountProfiles(
+  options: Pick<ProviderInventoryOptions, "registryRoot"> = {},
+): ProviderAccountProfile[] {
+  const registryRoot = options.registryRoot ?? DEFAULT_PROVIDER_REGISTRY_ROOT;
+  const providersRoot = join(registryRoot, "providers");
+  if (!isDirectory(providersRoot)) return [];
+  const profiles: ProviderAccountProfile[] = [];
+  const identities = new Set<string>();
+  const paths = new Set<string>();
+  for (const providerDirectory of readdirSync(providersRoot, {
+    withFileTypes: true,
+  })) {
+    if (!providerDirectory.isDirectory()) continue;
+    const providerRoot = join(providersRoot, providerDirectory.name);
+    const manifestPath = join(providerRoot, "provider.json");
+    if (!existsSync(manifestPath)) continue;
+    const manifest = JSON.parse(
+      readFileSync(manifestPath, "utf8"),
+    ) as RawProviderManifest;
+    const providerId =
+      slug(asString(manifest.id) ?? providerDirectory.name) ??
+      slug(providerDirectory.name);
+    if (providerId === null) continue;
+    const accountsRoot = join(providerRoot, "accounts");
+    if (!isDirectory(accountsRoot)) continue;
+    for (const accountDirectory of readdirSync(accountsRoot, {
+      withFileTypes: true,
+    })
+      .filter((entry) => entry.isDirectory())
+      .slice(0, MAX_PROVIDER_ACCOUNTS)) {
+      const profileFile = join(accountsRoot, accountDirectory.name, "profile.json");
+      if (!existsSync(profileFile)) continue;
+      const profile = JSON.parse(
+        readFileSync(profileFile, "utf8"),
+      ) as RawAccountProfile;
+      const accountId =
+        slug(asString(profile.id) ?? accountDirectory.name) ??
+        slug(accountDirectory.name);
+      const rawPath = asString(profile.profilePath);
+      if (accountId === null || rawPath === null || !isAbsoluteLocal(rawPath)) {
+        continue;
+      }
+      let profilePath: string;
+      try {
+        profilePath = realpathSync(rawPath);
+      } catch {
+        continue;
+      }
+      const identity = `${providerId}\u0000${accountId}`;
+      const normalizedPath = profilePath.toLowerCase();
+      if (identities.has(identity) || paths.has(normalizedPath)) {
+        throw new Error("Duplicate provider account identity in terminal registry");
+      }
+      identities.add(identity);
+      paths.add(normalizedPath);
+      profiles.push({
+        providerId,
+        accountId,
+        displayName:
+          sanitizeText(asString(profile.displayName), 96) ?? accountId,
+        profilePath,
+      });
+    }
+  }
+  return profiles.sort(
+    (left, right) =>
+      left.providerId.localeCompare(right.providerId) ||
+      left.accountId.localeCompare(right.accountId),
+  );
 }
 
 function providerCapabilities(input: {
