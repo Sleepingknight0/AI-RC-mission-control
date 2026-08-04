@@ -23,6 +23,7 @@ import {
   supportedModelsForAccount,
   supportedReasoningForModel,
 } from "../src/mobile/state.js";
+import { activationResponseMatches } from "../src/mobile/activation.js";
 
 const observedAt = "2026-08-04T10:00:00.000Z";
 
@@ -163,6 +164,25 @@ const accountCapabilities = (
 });
 
 describe("M10 mobile provider/account/session selectors", () => {
+  it("correlates activation results to the exact pending command", () => {
+    const current = { epoch: 8, providerId: "codex", accountId: "blue-2" };
+    const pending = { epoch: 8, activationCommandId: "activation-new" };
+    expect(activationResponseMatches(pending, {
+      commandId: "activation-old",
+      providerId: "codex",
+      accountId: "blue-2",
+    }, current)).toBe(false);
+    expect(activationResponseMatches(pending, {
+      commandId: "activation-new",
+      providerId: "codex",
+      accountId: "blue-2",
+    }, current)).toBe(true);
+    expect(activationResponseMatches(null, {
+      commandId: "activation-new",
+      providerId: "codex",
+      accountId: "blue-2",
+    }, current)).toBe(false);
+  });
   it("groups three Codex accounts independently from authoritative inventory", () => {
     const groups = groupAccountsByProvider(fleet());
     expect(groups).toHaveLength(1);
@@ -253,6 +273,21 @@ describe("M10 mobile provider/account/session selectors", () => {
       }),
     );
     expect(status).toMatchObject({ canControl: false, state: "stale", active: true });
+  });
+
+  it("withdraws control and models when live evidence passes staleAt", () => {
+    const inventory = provider().accounts[0] ?? null;
+    const evidence = accountCapabilities("blue-1", {
+      active: true,
+      control: "remote_control",
+    });
+    const afterExpiry = Date.parse("2026-08-04T10:06:00.000Z");
+    expect(currentAccountStatus("codex", inventory, evidence, afterExpiry)).toMatchObject({
+      canControl: false,
+      label: "Evidence expired",
+      state: "stale",
+    });
+    expect(supportedModelsForAccount(evidence, "codex", "blue-1", afterExpiry)).toEqual([]);
   });
 
   it("returns honest empty states for empty provider, account, and Session inputs", () => {

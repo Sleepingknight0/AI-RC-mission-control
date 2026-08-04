@@ -48,7 +48,6 @@ import {
   FILTER_DEBOUNCE_MS,
   attachmentKindForMediaType,
   basenameOnly,
-  capabilitySupported,
   catalogRequestStarted,
   controllableProviders,
   defaultCatalogFilters,
@@ -89,8 +88,10 @@ import {
 } from "./m9/ui.js";
 import { MobileChatShell } from "./mobile/MobileChatShell.js";
 import { MobileCreateSessionForm } from "./mobile/MobileCreateSessionForm.js";
+import { activationResponseMatches } from "./mobile/activation.js";
 import { CloseIcon } from "./mobile/icons.js";
 import {
+  accountEvidenceIsCurrent,
   accountScopedCatalogFilters,
   currentAccountStatus,
   sessionsForProviderAccount,
@@ -127,9 +128,9 @@ const CORE_HTTP_ORIGIN = new URL(CORE_URL).origin.replace(/^ws/, "http");
 const DEVICE_KEY = "aicl:device-id";
 
 type PendingMobileAction =
-  | { kind: "create"; epoch: number }
-  | { kind: "resume_native"; providerSessionId: string; epoch: number }
-  | { kind: "resume_runtime"; sessionId: string; epoch: number };
+  | { kind: "create"; epoch: number; activationCommandId: string | null }
+  | { kind: "resume_native"; providerSessionId: string; epoch: number; activationCommandId: string | null }
+  | { kind: "resume_runtime"; sessionId: string; epoch: number; activationCommandId: string | null };
 type PendingMobileActionInput =
   | { kind: "create" }
   | { kind: "resume_native"; providerSessionId: string }
@@ -613,7 +614,15 @@ export function App() {
             }),
           ),
         );
-        subscribe(socket, selectedSessionRef.current);
+        if (SESSION_PATTERN.test(selectedSessionRef.current)) {
+          subscribe(socket, selectedSessionRef.current);
+        } else {
+          send(socket, makeEnvelope("sessions.list", {}));
+          send(socket, makeEnvelope("providers.refresh", {}));
+          requestCatalog(socket, null);
+          setConnection("online");
+          setNotice("Connected to account home. No Session is subscribed.");
+        }
       });
       socket.addEventListener("message", (event) => {
         if (typeof event.data !== "string") return;
@@ -719,10 +728,12 @@ export function App() {
           const pending = pendingMobileActionRef.current;
           if (
             pending !== null &&
-            pending.epoch === socketEpochRef.current &&
             socketRef.current === socket &&
-            message.payload.providerId === selectedProviderIdRef.current &&
-            message.payload.accountId === selectedAccountIdRef.current
+            activationResponseMatches(pending, message.payload, {
+              epoch: socketEpochRef.current,
+              providerId: selectedProviderIdRef.current,
+              accountId: selectedAccountIdRef.current,
+            })
           ) {
             pendingMobileActionRef.current = null;
             setActivationPrompt(null);
@@ -773,8 +784,11 @@ export function App() {
           const pending = pendingMobileActionRef.current;
           if (
             pending !== null &&
-            message.payload.providerId === selectedProviderIdRef.current &&
-            message.payload.accountId === selectedAccountIdRef.current
+            activationResponseMatches(pending, message.payload, {
+              epoch: socketEpochRef.current,
+              providerId: selectedProviderIdRef.current,
+              accountId: selectedAccountIdRef.current,
+            })
           ) {
             pendingMobileActionRef.current = null;
             setActivationPrompt(null);
@@ -1057,6 +1071,27 @@ export function App() {
   const selectMobileAccount = (providerId: string, accountId: string) => {
     // Selection is read-only: retain every Session draft and never dispatch a
     // provider command or prompt merely because the account changed.
+    const socket = socketRef.current;
+    const subscribedSessionId = selectedSessionRef.current;
+    if (
+      socket?.readyState === WebSocket.OPEN &&
+      SESSION_PATTERN.test(subscribedSessionId)
+    ) {
+      send(socket, makeEnvelope("session.unsubscribe", {
+        sessionId: subscribedSessionId,
+      }));
+    }
+    selectedSessionRef.current = "";
+    setSnapshot(null);
+    setSettingsUi(initialSettingsState());
+    setSessionCapabilitiesUi(initialSessionCapabilitiesState());
+    setLeaseUi(initialLeaseState());
+    setAttachmentsUi(initialAttachmentState());
+    setPendingAttachmentIds([]);
+    setPrompt("");
+    setSelectedFileChangeId(null);
+    setArtifactText(null);
+    setArtifactError(null);
     setSelectedProviderId(providerId);
     setSelectedAccountId(accountId);
     setMobileAccountHome(true);
@@ -1076,7 +1111,6 @@ export function App() {
     const url = new URL(window.location.href);
     url.searchParams.delete("session");
     window.history.replaceState(null, "", url);
-    const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) requestCatalog(socket, null);
   };
 
@@ -1130,6 +1164,7 @@ export function App() {
     selectedProviderId,
     selectedAccount,
     selectedAccountCapability,
+    now,
   );
   const mobileSessions = useMemo(
     () =>
@@ -1251,8 +1286,9 @@ export function App() {
         accountId: selectedAccountId,
       }),
     );
-    const remote = capabilitySupported(selectedProvider, "list_sessions");
-    if (!remote.ok) return;
+    // Native inventory is requested for the exact selected pair. Core and the
+    // Connector validate that pair; provider-level capability rows must never
+    // grant or suppress account-specific discovery authority.
     requestNativeSessions(
       socket,
       selectedProviderId,
@@ -1487,8 +1523,10 @@ export function App() {
     if (maintenanceNotice) return "Database maintenance required";
     if (!selectedProviderId || !selectedAccountId) return "Select provider and account";
     if (!selectedAccountCapability) return "Account capability evidence unavailable";
-    if (selectedAccountCapability.freshness !== "live") {
-      return `Account evidence is ${selectedAccountCapability.freshness}`;
+    if (!accountEvidenceIsCurrent(selectedAccountCapability, now)) {
+      return selectedAccountCapability.freshness === "live"
+        ? "Account capability evidence has expired"
+        : `Account evidence is ${selectedAccountCapability.freshness}`;
     }
     if (selectedAccountCapability.authentication !== "authenticated") {
       return "Authentication required";
@@ -1508,7 +1546,8 @@ export function App() {
     connection === "online" &&
     runtime !== null &&
     selectedProvider?.adapterSupport === "remote_control" &&
-    selectedAccountCapability?.freshness === "live" &&
+    selectedAccountCapability !== null &&
+    accountEvidenceIsCurrent(selectedAccountCapability, now) &&
     selectedAccountCapability.authentication === "authenticated";
 
   const resumeNativeNow = (providerSessionId: string) => {
@@ -1573,7 +1612,11 @@ export function App() {
       setNotice(mobileAccountStatus.reason ?? "This account cannot be activated");
       return;
     }
-    const pending = { ...action, epoch: socketEpochRef.current } as PendingMobileAction;
+    const pending = {
+      ...action,
+      epoch: socketEpochRef.current,
+      activationCommandId: null,
+    } as PendingMobileAction;
     pendingMobileActionRef.current = pending;
     setActivationPrompt({ action: pending, busy: false });
   };
@@ -1595,11 +1638,14 @@ export function App() {
       setNotice("Account switch was cancelled because connection authority changed.");
       return;
     }
-    setActivationPrompt({ action: pending, busy: true });
+    const activationCommandId = crypto.randomUUID();
+    const correlatedPending = { ...pending, activationCommandId };
+    pendingMobileActionRef.current = correlatedPending;
+    setActivationPrompt({ action: correlatedPending, busy: true });
     send(
       socket,
       makeEnvelope("provider.account.activate", {
-        commandId: crypto.randomUUID(),
+        commandId: activationCommandId,
         deviceId: deviceIdRef.current,
         providerId: selectedProviderId,
         accountId: selectedAccountId,
@@ -1732,6 +1778,7 @@ export function App() {
     selectedAccountCapability,
     selectedProviderId,
     selectedAccountId,
+    now,
   );
   const mobileModelLabel =
     mobileModels.find((model) => model.modelId === settingsUi.snapshot?.settings.model)
@@ -1799,7 +1846,7 @@ export function App() {
     <TimelineEntry key={item.id} item={item} onInspectFileChange={inspectFileChange} position={index + 1} setSize={timelineItems.length} />
   ));
   const mobileApprovals = pendingApprovals.length === 0 ? null : (
-    <section className="mobile-approval-list" aria-label="Pending approvals">
+    <section className="mobile-approval-list" aria-label="Pending approvals" tabIndex={-1}>
       {pendingApprovals.map((approval) => {
         const disabled = connection !== "online" || resolving.has(approval.approvalId);
         return (

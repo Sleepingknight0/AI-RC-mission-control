@@ -60,6 +60,7 @@ export function MobileComposer({
         <button
           type="button"
           className="mobile-icon-button mobile-plus-button"
+          data-testid="mobile-attachment-trigger"
           aria-label="Add attachment"
           aria-expanded={plusOpen}
           disabled={!canAttachText && !canAttachImage}

@@ -18,6 +18,7 @@ import { supportedModelsForAccount } from "../src/mobile/state.js";
 
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const overlaySource = readFileSync(new URL("../src/mobile/MobileOverlay.tsx", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const observedAt = "2026-08-04T10:00:00.000Z";
 
 const fleet: ProviderFleetSnapshot = {
@@ -178,12 +179,21 @@ describe("M10 mobile visible contracts", () => {
       onOpenActions: () => undefined,
       onLoadMore: () => undefined,
       onOpenStatus: () => undefined,
+      approvalDestinationAvailable: false,
+      attachmentDestinationAvailable: false,
+      settingsDestinationAvailable: true,
+      onOpenApprovals: () => undefined,
+      onOpenAttachments: () => undefined,
+      onOpenSettings: () => undefined,
     }));
     expect(html.match(/data-testid="mobile-account-codex-/g)).toHaveLength(3);
     expect(html).toContain('role="dialog"');
     expect(html).toContain('aria-modal="true"');
     expect(html).toContain('data-testid="mobile-session-search"');
     expect(html).toContain('data-testid="mobile-session-load-more"');
+    expect(html).toContain("Approvals");
+    expect(html).toContain("Attachments");
+    expect(html).toContain("Settings");
     expect(html).not.toContain("More options for Account");
   });
 
@@ -237,5 +247,19 @@ describe("M10 mobile visible contracts", () => {
     expect(overlaySource).toContain('event.key === "Escape"');
     expect(overlaySource).toContain("returnTarget?.focus");
     expect(overlaySource).toContain('event.key !== "Tab"');
+    expect(overlaySource).toContain("onCloseRef.current()");
+    expect(overlaySource).toContain("}, [open])");
+    expect(overlaySource).not.toContain("[onClose, open]");
+  });
+
+  it("requests native inventory for the exact selected account without provider-level gating", () => {
+    expect(appSource).toContain("requestNativeSessions(");
+    expect(appSource).not.toContain('const remote = capabilitySupported(selectedProvider, "list_sessions")');
+  });
+
+  it("withdraws the prior Session subscription when an account is selected", () => {
+    expect(appSource).toContain('makeEnvelope("session.unsubscribe"');
+    expect(appSource).toContain('selectedSessionRef.current = ""');
+    expect(appSource).toContain("No Session is subscribed");
   });
 });

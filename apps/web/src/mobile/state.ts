@@ -60,6 +60,15 @@ export interface AccountStatus {
   reason: string | null;
 }
 
+export function accountEvidenceIsCurrent(
+  evidence: ProviderAccountCapabilitySnapshot | null,
+  now = Date.now(),
+): boolean {
+  if (evidence === null || evidence.freshness !== "live") return false;
+  const staleAt = Date.parse(evidence.staleAt);
+  return Number.isFinite(staleAt) && staleAt > now;
+}
+
 export function providerAccountKey(providerId: string, accountId: string): AccountKey {
   return `${providerId}\u0000${accountId}`;
 }
@@ -213,6 +222,7 @@ export function currentAccountStatus(
   providerId: string | null,
   account: ProviderAccount | null,
   evidence: ProviderAccountCapabilitySnapshot | null,
+  now = Date.now(),
 ): AccountStatus {
   if (
     providerId === null ||
@@ -229,13 +239,16 @@ export function currentAccountStatus(
       reason: "Authoritative provider/account inventory is unavailable",
     };
   }
-  if (evidence.freshness !== "live") {
+  if (!accountEvidenceIsCurrent(evidence, now)) {
+    const expired = evidence.freshness === "live";
     return {
-      label: `Evidence ${evidence.freshness}`,
+      label: expired ? "Evidence expired" : `Evidence ${evidence.freshness}`,
       state: "stale",
       canControl: false,
       active: evidence.active,
-      reason: `Account evidence is ${evidence.freshness}`,
+      reason: expired
+        ? "Account capability evidence has expired"
+        : `Account evidence is ${evidence.freshness}`,
     };
   }
   if (evidence.authentication !== "authenticated") {
@@ -297,6 +310,7 @@ export function supportedModelsForAccount(
   evidence: ProviderAccountCapabilitySnapshot | null,
   providerId: string | null,
   accountId: string | null,
+  now = Date.now(),
 ): ProviderModel[] {
   if (
     evidence === null ||
@@ -305,7 +319,7 @@ export function supportedModelsForAccount(
     evidence.providerId !== providerId ||
     evidence.accountId !== accountId ||
     evidence.modelsState !== "available" ||
-    evidence.freshness !== "live"
+    !accountEvidenceIsCurrent(evidence, now)
   ) {
     return [];
   }

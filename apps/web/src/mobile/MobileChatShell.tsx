@@ -206,6 +206,18 @@ export function MobileChatShell(props: MobileChatShellProps) {
         onOpenActions={(session) => closeAnd(() => setActionSession(session))}
         onLoadMore={props.onLoadMore}
         onOpenStatus={() => closeAnd(() => setStatusOpen(true))}
+        approvalDestinationAvailable={!props.showAccountHome && props.approvals !== null}
+        attachmentDestinationAvailable={!props.showAccountHome && (props.canAttachText || props.canAttachImage)}
+        settingsDestinationAvailable={!props.showAccountHome && props.settings !== null}
+        onOpenApprovals={() => closeAnd(() => {
+          const approvals = document.querySelector<HTMLElement>(".mobile-approval-list");
+          approvals?.scrollIntoView({ block: "nearest" });
+          approvals?.focus({ preventScroll: true });
+        })}
+        onOpenAttachments={() => closeAnd(() => {
+          document.querySelector<HTMLButtonElement>("[data-testid=mobile-attachment-trigger]")?.click();
+        })}
+        onOpenSettings={() => closeAnd(() => setModelOpen(true))}
       />
       <SystemStatusSheet open={statusOpen} facts={props.statusFacts} onClose={() => setStatusOpen(false)} />
       <MobileEvidenceSheet

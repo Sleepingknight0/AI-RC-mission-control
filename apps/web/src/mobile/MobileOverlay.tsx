@@ -26,6 +26,8 @@ export function MobileOverlay({
   children,
 }: MobileOverlayProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -42,7 +44,7 @@ export function MobileOverlay({
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab" || panelRef.current === null) return;
@@ -71,7 +73,7 @@ export function MobileOverlay({
       document.body.style.overflow = previousOverflow;
       window.requestAnimationFrame(() => returnTarget?.focus({ preventScroll: true }));
     };
-  }, [onClose, open]);
+  }, [open]);
 
   if (!open) return null;
   return (
