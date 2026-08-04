@@ -2274,3 +2274,78 @@ and Tailscale automation also passed.
 ```text
 85ae1cf  fix(core,web): close live production acceptance defects
 ```
+
+---
+
+### 2026-08-04 11:55 — Codex — M10 account recovery and acceptance complete
+
+**Outcome**
+
+- Recovered M10 as 13 intact local commits on
+  `codex/m10-mobile-account-session-shell`; base and `origin/master` remained
+  `50e2d90e5bf9b2a5bccfd5f750da2ceb7919a5ce`, with no active Git operation.
+- Preserved the existing stash and other worktrees. No reset, clean, restore,
+  stash mutation, merge, rebase, credential copy, database reset, or provider
+  fallback was used.
+- Proved current operator account C maps to exact AICL profile
+  `easy-bluewhalex`. Operator accounts A and B are confirmed exhausted, but
+  their individual mapping across `bwcx-bluewhalex` and `not-bluewhalex`
+  remains unknown and is not inferred.
+- Classified the recovered third-profile lifecycle as incomplete/failing at
+  fresh authority after restart. Diagnosis showed the M10 test had not adopted
+  the explicit fenced Runtime-resume command already required by protocol and
+  UI.
+- Added a fast Core/Connector regression and updated the real lifecycle to
+  observe current exact-account capabilities, issue `session.runtime.resume`,
+  verify the ready binding in the new generation, regain normalized control,
+  and prove zero prompt replay.
+- Removed the real test's legacy account-directory fallback. The configured
+  stable profile ID must exist in inventory or the test aborts.
+- Completed two-browser Model/Reasoning CAS: revision 3→4 accepted in browser A,
+  stale revision 3 rejected as `SESSION_SETTINGS_CONFLICT` in browser B, both
+  reconciled to authoritative revision 4, and a bounded Turn used immutable
+  `gpt-5.6-sol` / `medium` settings.
+- Reused compiled Mobile evidence at source `dce1363bca85` because the final
+  diff is test/documentation only. Seven viewports, 200% text, reduced motion,
+  focus/Escape, scoped drafts/search, reconnect without dispatch, cross-account
+  rejection, inventory-only providers, and console 0/0 remain PASS.
+
+**Verification**
+
+```text
+pnpm exec vitest run test/durability-reconnect.test.ts      PASS (6 tests)
+Account-isolation targeted matrix                           PASS (121 tests)
+Exact easy-bluewhalex Real Codex E2E                        PASS (79.84 s body)
+pnpm install --frozen-lockfile                              PASS
+pnpm migrate                                                PASS
+pnpm migrate                                                PASS (idempotent)
+pnpm build                                                  PASS
+pnpm check                                                  PASS (253 tests; 1 opt-in skip)
+git diff --check                                            PASS
+Compiled lifecycle / maintenance / clean install / Serve   PASS
+```
+
+**Files changed**
+
+- `apps/core/test/durability-reconnect.test.ts`
+- `apps/core/test/real-codex.e2e.test.ts`
+- `reviews/codex/M10-MOBILE-ACCOUNT-SESSION-RECOVERY.md`
+- M10 status, handoff, and execution-plan documents
+
+**Observable result**
+
+Start compiled production, select the exact Codex Account, then use the
+Account → Session shell. Account or reconnect navigation never submits a draft;
+cross-account links fail closed; settings use authoritative revisions; a lost
+Runtime must be explicitly resumed against current account/Runtime authority.
+
+**Known limitations / next action**
+
+- Only one of three configured Codex profiles is currently usable. Do not claim
+  either rejected/exhausted profile passed.
+- Individual operator A/B profile mapping remains unknown. The first profile's
+  rejection is checkpoint-supported and was not reprobed.
+- Large live pagination was unavailable at 18 Sessions; 1,000-Session Core and
+  350-Session Web coverage remains automated.
+- Next single milestone: M8.5 real second-device acceptance only if the operator
+  explicitly removes its deferral; otherwise define the next post-M10 milestone.

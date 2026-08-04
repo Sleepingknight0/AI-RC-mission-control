@@ -66,36 +66,50 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M9.10 security, recovery, fault, and performance gate
 - [x] M9.11 non-visual final gate and Grok integration handoff
 
+## M10 — Mobile Account/Session Mission Control
+
+- [x] M10.1 mobile Account → Session shell and responsive acceptance
+- [x] M10.2 exact-profile routing and no-fallback recovery
+- [x] M10.3 account-scoped search, pagination, drafts, and deep-link isolation
+- [x] M10.4 two-browser Model/Reasoning settings CAS
+- [x] M10.5 Runtime-generation fencing, explicit native resume, and no replay
+- [x] M10.6 sanitized recovery evidence and final production gate
+
 ## Current milestone
 
-**M9.11, the accepted Claude backend audit remediation, P1 frontend
-integration, and real live-production browser acceptance are complete.** The
-installed account schema is handled nullishly, and only a valid present account
-plus a fresh successful capability probe grants control; no semantics are
-invented for `requiresOpenaiAuth`. Schema 13 fails legacy and unconfigured
-Sessions closed, Turn submission requires authoritative Session creation,
-Catalog cursors use catalog-visible revision changes, and Core publishes an
-authoritative per-Session capability projection. Catalog control uses that same
-Session-specific authority, and invalid durable Connector evidence is consumed
-with bounded stable diagnostics. Live production acceptance additionally fixed
-the browser-valid Session ID pattern, authoritative Catalog refresh after a
-binding transition, matching settings/capability broadcasts across subscribers,
-and a 43.34 px compact-control target. Frozen install, backup-backed 12→13
-migration, repeat no-op, build, 207 automated tests, compiled production
-lifecycle, maintenance/restore, clean-install, diff checks, and the unchanged
-Real Codex E2E all pass. The selected-Session capability projection and exact
-Catalog authority now gate the integrated Web; stale evidence, cross-Session
-snapshots, unsupported attachments, and a missing clean-install placeholder
-Session all fail closed. Independent post-integration Standards and Spec
-reviews pass. Real compiled-production Playwright acceptance covers Session
-creation, streaming, approval/write/diff, interrupt, refresh/replay, duplicate
-attachments, authority loss, and an empty Catalog from 375×812 through
-2560×1440, at 200% text and reduced motion, with no stable-context console
-errors or horizontal overflow. Evidence is recorded in
-`reviews/codex/M9-LIVE-PRODUCTION-ACCEPTANCE.md`. M8.5,
+**M10 recovery and acceptance are complete.** Thirteen local M10 commits were
+preserved on `codex/m10-mobile-account-session-shell` from base `50e2d90`.
+Compiled Mobile acceptance passes seven viewports from 320×568 through
+768×1024, 200% text, reduced motion, focus/Escape restoration, account-scoped
+search and drafts, reconnect without dispatch, cross-account deep-link
+rejection, inventory-only providers, and a stable 0-error/0-warning console.
+Exact provider routing resolves the stable configured profile ID and now fails
+closed if inventory does not contain it; no list-position, directory, default,
+or cross-account fallback remains in the real lifecycle gate. One of three
+configured Codex profiles completed the full lifecycle, while two are
+truthfully recorded as provider-rejected/exhausted rather than passed. Two
+independent browsers proved settings revision CAS and immutable effective Turn
+model/reasoning. Runtime restart now has regression evidence for explicit,
+revision-fenced native resume in a new generation with no prompt replay. Frozen
+install, two migrations, build, 253 automated tests, compiled lifecycle,
+maintenance/restore, clean install, Tailscale automation, diff checks, and the
+exact-profile Real Codex E2E all pass. Evidence is in
+`reviews/codex/M10-MOBILE-ACCOUNT-SESSION-RECOVERY.md`. M8.5,
 Google/Cloudflare identity, and a product retention policy remain deferred.
 
 ## Last verified demo
+
+- M10 recovery gate: exact profile `easy-bluewhalex` completed the real
+  lifecycle in 79.84 s; restart authority was re-established only through a
+  fenced `session.runtime.resume`, and the previous prompt was not replayed.
+- M10 Mobile acceptance: compiled production at `dce1363bca85` passed 320, 360,
+  375, 390, 412, 430, and 768 px widths, 200% text, reduced motion, focus/Escape,
+  exact-account drafts/search/deep-link isolation, reconnect without dispatch,
+  and inventory-only provider behavior. The final source change was test-only,
+  so this browser evidence was reused without spending another provider Turn.
+- M10 final repository gate: frozen install, Core 13 / Connector 3 migration
+  twice, build, `pnpm check` (253 tests plus compiled operational gates), and
+  `git diff --check` passed. The opt-in exact-profile lifecycle passed separately.
 
 - Toolchain: `.\scripts\Check-Toolchain.ps1` — required tools OK (Git 2.54.0, Node v24.16.0, Codex 0.146.0).
 - Mock spike harness: `pnpm run spike:mock` — pass after Windows spawn quoting fix.

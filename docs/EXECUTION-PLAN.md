@@ -448,3 +448,33 @@ deferred and incomplete.
 Prototype 0 remains complete. Grok visual refinement, Claude independent audit,
 and Codex integration of reproducible feedback remain optional P1–P3 work and
 do not replace the active M8 operationalization sequence.
+
+## M10 recovery execution result — 2026-08-04
+
+M10 Mobile Account/Session Mission Control is complete on
+`codex/m10-mobile-account-session-shell`.
+
+1. Local-state recovery preserved 13 local M10 commits from `50e2d90` and the
+   pre-existing stash; remote master did not move.
+2. Exact provider selection resolves stable profile ID `easy-bluewhalex` through
+   the supported config and profile-specific Codex home. Missing inventory is a
+   hard failure; list position and account fallback are forbidden.
+3. Compiled-production Mobile evidence passes seven viewports, accessibility,
+   account-scoped navigation/search/drafts, reconnect without dispatch,
+   cross-account rejection, and inventory-only provider behavior.
+4. Two-browser Session-settings CAS passes with authoritative revision
+   reconciliation and immutable effective Turn model/reasoning.
+5. Runtime recovery requires an explicit, account-revision and
+   Runtime-generation-fenced native resume. The new regression verifies fresh
+   authority in generation 2 and zero prompt replay.
+6. The exact available profile passes the complete real lifecycle; the other two
+   profiles remain rejected/exhausted and are not relabeled as passed.
+7. Frozen install, migrations twice, build, 253 automated tests, all compiled
+   operational gates, diff hygiene, and the separately enabled real lifecycle
+   pass.
+
+Durable evidence: `reviews/codex/M10-MOBILE-ACCOUNT-SESSION-RECOVERY.md`.
+
+The next single milestone is M8.5 real second-device acceptance only if its
+operator deferral is removed. Otherwise the operator should define the next
+post-M10 milestone; no additional Prototype 0 implementation is implied.
