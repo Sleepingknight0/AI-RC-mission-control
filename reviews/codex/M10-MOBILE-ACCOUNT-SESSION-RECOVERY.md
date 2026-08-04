@@ -1,7 +1,9 @@
 # M10 Mobile Account/Session Recovery Acceptance
 
-Date: 2026-08-04  
-Git base: `50e2d90e5bf9b2a5bccfd5f750da2ceb7919a5ce`  
+Date: 2026-08-04
+
+Git base: `50e2d90e5bf9b2a5bccfd5f750da2ceb7919a5ce`
+
 Recovery branch: `codex/m10-mobile-account-session-shell`
 
 ## Verdict
