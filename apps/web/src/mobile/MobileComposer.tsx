@@ -44,6 +44,7 @@ export function MobileComposer({
       event.currentTarget.form?.requestSubmit();
     }
   };
+  const modelMode = `${modelLabel} · ${modeLabel}`;
   return (
     <form className="mobile-composer" data-testid="mobile-composer" onSubmit={onSubmit}>
       {attachmentChips}
@@ -62,6 +63,7 @@ export function MobileComposer({
           className="mobile-icon-button mobile-plus-button"
           data-testid="mobile-attachment-trigger"
           aria-label="Add attachment"
+          title="Add attachment"
           aria-expanded={plusOpen}
           disabled={!canAttachText && !canAttachImage}
           onClick={() => setPlusOpen((open) => !open)}
@@ -83,17 +85,17 @@ export function MobileComposer({
           }}
         />
         <label className="mobile-prompt-field">
-          <span className="sr-only">Mission prompt</span>
+          <span className="sr-only">Prompt</span>
           <textarea
             value={value}
             rows={1}
-            placeholder="Transmit a prompt…"
+            placeholder="Message…"
             aria-describedby="mobile-composer-help"
             onChange={(event) => {
               onChange(event.target.value);
               const target = event.currentTarget;
               target.style.height = "auto";
-              target.style.height = `${Math.min(target.scrollHeight, 132)}px`;
+              target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
             }}
             onKeyDown={handleKeyDown}
           />
@@ -104,19 +106,32 @@ export function MobileComposer({
           data-testid={busy ? "mobile-abort" : "mobile-send"}
           disabled={busy ? false : !canSubmit || value.trim() === ""}
           aria-label={busy ? "Abort active Turn" : "Send prompt"}
+          title={busy ? "Abort" : "Send"}
           onClick={busy ? onAbort : undefined}
         >
           {busy ? <StopIcon /> : <SendIcon />}
         </button>
       </div>
       <div className="mobile-composer-settings">
-        <button type="button" data-testid="mobile-model-mode-trigger" onClick={onOpenModelMode}>
-          <span title={modelLabel}>{modelLabel}</span>
-          <span aria-hidden="true">·</span>
-          <span>{modeLabel}</span>
+        <button
+          type="button"
+          data-testid="mobile-model-mode-trigger"
+          title="Model and mode"
+          aria-label={`Model and mode: ${modelMode}`}
+          onClick={onOpenModelMode}
+        >
+          <span>{modelMode}</span>
         </button>
-        <small id="mobile-composer-help">{disabledReason} Drafts never auto-send.</small>
+        <small id="mobile-composer-help" title={`${disabledReason} Drafts never auto-send.`}>
+          {shortReason(disabledReason)}
+        </small>
       </div>
     </form>
   );
+}
+
+function shortReason(reason: string): string {
+  const trimmed = reason.trim();
+  if (trimmed.length <= 42) return trimmed;
+  return `${trimmed.slice(0, 39)}…`;
 }
