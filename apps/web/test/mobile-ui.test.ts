@@ -19,6 +19,7 @@ import { supportedModelsForAccount } from "../src/mobile/state.js";
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const overlaySource = readFileSync(new URL("../src/mobile/MobileOverlay.tsx", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const createFormSource = readFileSync(new URL("../src/mobile/MobileCreateSessionForm.tsx", import.meta.url), "utf8");
 const observedAt = "2026-08-04T10:00:00.000Z";
 
 const fleet: ProviderFleetSnapshot = {
@@ -261,5 +262,10 @@ describe("M10 mobile visible contracts", () => {
     expect(appSource).toContain('makeEnvelope("session.unsubscribe"');
     expect(appSource).toContain('selectedSessionRef.current = ""');
     expect(appSource).toContain("No Session is subscribed");
+  });
+
+  it("uses an HTML pattern valid under the browser regex v flag", () => {
+    expect(createFormSource).toContain('pattern="[A-Za-z0-9._\\\\-]{1,100}"');
+    expect(createFormSource).not.toContain('pattern="[A-Za-z0-9._-]{1,100}"');
   });
 });
