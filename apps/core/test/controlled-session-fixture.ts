@@ -1,6 +1,7 @@
 import {
   makeEnvelope,
   type ProviderCapabilityKey,
+  type ProviderAccountCapabilitySnapshot,
   type ProviderFleetSnapshot,
   type ServerEnvelope,
 } from "@aicl/protocol";
@@ -71,6 +72,43 @@ export function controlledProviderFleet(
         usageMeters: [],
       },
     ],
+    notice: null,
+  };
+}
+
+export function controlledAccountCapabilities(
+  revision: number,
+  providerId = "test-provider",
+  accountId = "default",
+): ProviderAccountCapabilitySnapshot {
+  const fleet = controlledProviderFleet(revision, providerId, accountId);
+  const provider = fleet.providers[0]!;
+  return {
+    snapshotId: `controlled-account-${revision}`,
+    revision,
+    providerId,
+    accountId,
+    source: "provider_probe",
+    observedAt: fleet.observedAt,
+    staleAt: fleet.staleAt,
+    freshness: "live",
+    authentication: "authenticated",
+    control: "remote_control",
+    active: true,
+    capabilities: provider.capabilities,
+    models: [
+      {
+        modelId: "test-default",
+        displayName: "Test default",
+        description: "Controlled test model",
+        hidden: false,
+        isDefault: true,
+        inputModalities: ["text"],
+        defaultReasoningEffort: null,
+        reasoningEfforts: [],
+      },
+    ],
+    modelsState: "available",
     notice: null,
   };
 }

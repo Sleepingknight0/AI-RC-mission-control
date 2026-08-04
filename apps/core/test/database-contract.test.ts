@@ -28,10 +28,10 @@ afterEach(async () => {
 });
 
 describe("Core SQLite contract", () => {
-  it("applies schema v13 idempotently with checksummed migrations and required indexes", async () => {
+  it("applies schema v14 idempotently with checksummed migrations and required indexes", async () => {
     const path = databasePath();
     const first = open(path);
-    expect(first.schemaVersion).toBe(13);
+    expect(first.schemaVersion).toBe(14);
     expect(Object.values(first.pragma("journal_mode"))).toContain("wal");
     expect(Object.values(first.pragma("foreign_keys"))).toContain(1);
     expect(Object.values(first.pragma("busy_timeout"))).toContain(5000);
@@ -39,7 +39,7 @@ describe("Core SQLite contract", () => {
     openDatabases.splice(openDatabases.indexOf(first), 1);
 
     const second = open(path);
-    expect(second.schemaVersion).toBe(13);
+    expect(second.schemaVersion).toBe(14);
     await second.close();
     openDatabases.splice(openDatabases.indexOf(second), 1);
 
@@ -47,7 +47,7 @@ describe("Core SQLite contract", () => {
     const migrations = raw
       .prepare("SELECT checksum FROM schema_migrations ORDER BY version")
       .all() as unknown as Array<{ checksum: string | null }>;
-    expect(migrations).toHaveLength(13);
+    expect(migrations).toHaveLength(14);
     expect(migrations.every((migration) => /^[a-f0-9]{64}$/u.test(migration.checksum ?? ""))).toBe(true);
     const indexes = raw
       .prepare(

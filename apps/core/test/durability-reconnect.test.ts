@@ -26,6 +26,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { startCoreServer } from "../src/server.js";
 import {
+  controlledAccountCapabilities,
   controlledProviderFleet,
   createControlledSession,
 } from "./controlled-session-fixture.js";
@@ -618,7 +619,15 @@ async function openRawConnector(
     socket.once("open", resolve);
     socket.once("error", reject);
   });
-  socket.send(JSON.stringify(makeEnvelope("connector.hello", identity)));
+  socket.send(
+    JSON.stringify(
+      makeEnvelope("connector.hello", {
+        ...identity,
+        activeProviderId: "test-provider",
+        activeAccountId: "default",
+      }),
+    ),
+  );
   socket.send(
     JSON.stringify(
       ConnectorEnvelopeSchema.parse({
@@ -628,6 +637,19 @@ async function openRawConnector(
         connectorId: identity.connectorId,
         bootId: identity.bootId,
         sourceEventId: `providers-${identity.bootId}`,
+        runtimeId: identity.runtime.runtimeId,
+        runtimeGeneration: identity.runtime.generation,
+      }),
+    ),
+  );
+  socket.send(
+    JSON.stringify(
+      ConnectorEnvelopeSchema.parse({
+        ...makeEnvelope("connector.provider.account.capabilities.snapshot", {
+          snapshot: controlledAccountCapabilities(1),
+        }),
+        connectorId: identity.connectorId,
+        bootId: identity.bootId,
         runtimeId: identity.runtime.runtimeId,
         runtimeGeneration: identity.runtime.generation,
       }),

@@ -267,12 +267,20 @@ function errorCode(result: { kind: string; result?: ServerEnvelope }) {
     : null;
 }
 
-function reject(message: Extract<ClientEnvelope, { payload: { commandId: string } }>) {
+function reject(
+  message: Extract<
+    ClientEnvelope,
+    { payload: { commandId: string; sessionId: string } }
+  >,
+) {
   return (code: string, detail: string) => rejection(message, code, detail);
 }
 
 function rejection(
-  message: Extract<ClientEnvelope, { payload: { commandId: string } }>,
+  message: Extract<
+    ClientEnvelope,
+    { payload: { commandId: string; sessionId: string } }
+  >,
   code: string,
   detail = code,
 ): ServerEnvelope {

@@ -20,6 +20,7 @@ import {
   INPUT_ATTACHMENT_CHUNK_BYTES,
   MAX_WEBSOCKET_MESSAGE_BYTES,
   ProviderFleetSnapshotSchema,
+  ProviderAccountCapabilitySnapshotSchema,
   ProviderNativeSessionSnapshotSchema,
   ServerEnvelopeSchema,
   decodeJson,
@@ -34,6 +35,8 @@ import {
   type InputAttachment,
   type ProtocolError,
   type ProviderFleetSnapshot,
+  type ProviderAccountCapabilitySnapshot,
+  type ProviderNativeSession,
   type ProviderNativeSessionSnapshot,
   type ProviderRecord,
   type Runtime,
@@ -102,6 +105,8 @@ interface ConnectorConnection {
   connectorId: string;
   bootId: string;
   runtime: Runtime;
+  activeProviderId: string | null;
+  activeAccountId: string | null;
 }
 
 function validatedServerEnvelope(value: unknown): ServerEnvelope {
@@ -120,6 +125,8 @@ export function projectSessionCapabilities(
   settingsSnapshot: SessionSettingsSnapshot,
   authority: SessionProviderAuthority,
   fleet: ProviderFleetSnapshot | undefined,
+  accountEvidence?: ProviderAccountCapabilitySnapshot,
+  currentRuntime?: Runtime,
 ): SessionCapabilitiesSnapshot {
   const { settings } = settingsSnapshot;
   const provider = fleet?.providers.find(
@@ -128,19 +135,21 @@ export function projectSessionCapabilities(
   const account = provider?.accounts.find(
     (candidate) => candidate.accountId === settings.accountId,
   );
+  const accountModels = accountEvidence?.models ?? [];
+  const accountModelsState = accountEvidence?.modelsState ?? "unavailable";
   const model =
     settings.model === null
-      ? provider?.models.find((candidate) => candidate.isDefault) ??
-        provider?.models[0]
-      : provider?.models.find((candidate) => candidate.modelId === settings.model);
-  const freshness =
+      ? accountModels.find((candidate) => candidate.isDefault) ?? accountModels[0]
+      : accountModels.find((candidate) => candidate.modelId === settings.model);
+  const providerFreshness =
     fleet === undefined
       ? "unavailable"
       : provider !== undefined &&
           ["stale", "offline", "unavailable"].includes(provider.freshness)
         ? provider.freshness
         : fleet.freshness;
-  const fresh = ["live", "local"].includes(freshness);
+  const freshness = accountEvidence?.freshness ?? "unavailable";
+  const fresh = ["live", "local"].includes(providerFreshness);
   const providerState =
     provider === undefined || !fresh
       ? "unknown"
@@ -167,8 +176,12 @@ export function projectSessionCapabilities(
       : providerState === "unknown"
         ? "unknown"
         : account === undefined ||
-            account.authentication === "not_authenticated" ||
-            account.control !== "remote_control"
+            accountEvidence === undefined ||
+            accountEvidence.freshness !== "live" ||
+            Date.parse(accountEvidence.staleAt) <= Date.now() ||
+            !accountEvidence.active ||
+            accountEvidence.authentication !== "authenticated" ||
+            accountEvidence.control !== "remote_control"
           ? "unsupported"
           : account.authentication === "authenticated"
             ? "supported"
@@ -182,30 +195,39 @@ export function projectSessionCapabilities(
           ? "Bound provider account is absent from current inventory."
           : account.authentication !== "authenticated"
             ? "Bound provider account is not currently authenticated."
-            : account.control !== "remote_control"
-              ? "Bound provider account is inventory-only."
+            : accountEvidence === undefined
+              ? "Bound provider account capability evidence is unavailable."
+              : !accountEvidence.active
+                ? "Bound provider account is not the active Connector account."
+                : accountEvidence.freshness !== "live" ||
+                    Date.parse(accountEvidence.staleAt) <= Date.now()
+                  ? "Bound provider account capability evidence is stale."
+                  : accountEvidence.control !== "remote_control"
+                    ? "Bound provider account is inventory-only."
               : null;
   const modelSupported =
-    providerState === "supported" &&
-    (settings.model === null ||
-      (provider?.modelsState === "available" && model !== undefined));
+    accountState === "supported" &&
+    accountModelsState === "available" &&
+    model !== undefined;
   const modelState =
     modelSupported
       ? "supported"
-      : providerState === "unknown" || provider?.modelsState !== "available"
+      : accountState === "unknown" || accountModelsState !== "available"
         ? "unknown"
         : "unsupported";
   const modelReason = modelSupported
     ? null
     : providerState === "unknown"
       ? providerReason
-      : provider?.modelsState !== "available"
+      : accountModelsState !== "available"
         ? "Provider model evidence is unavailable."
         : "Selected model is not advertised by the provider.";
   const controlError = validateTurnControlAuthority(
     settings,
     authority,
     fleet,
+    accountEvidence,
+    currentRuntime,
   );
   const canControl = controlError === undefined;
   const featureSupport = (
@@ -220,7 +242,7 @@ export function projectSessionCapabilities(
         reason: controlError?.message ?? unavailableReason,
       };
     }
-    const evidence = provider?.capabilities.find(
+    const evidence = accountEvidence?.capabilities.find(
       (capability) => capability.key === key,
     );
     return evidence?.state === "supported"
@@ -260,7 +282,7 @@ export function projectSessionCapabilities(
   return {
     sessionId: settingsSnapshot.sessionId,
     settingsRevision: settingsSnapshot.revision,
-    observedAt: fleet?.observedAt ?? new Date().toISOString(),
+    observedAt: accountEvidence?.observedAt ?? new Date().toISOString(),
     freshness,
     provider: {
       providerId: settings.providerId,
@@ -392,9 +414,22 @@ export async function startCoreServer(
   let lastRuntime: Runtime | undefined = store.latestRuntime();
   let providerFleetSnapshot: ProviderFleetSnapshot | undefined;
   let providerSnapshotBootId: string | undefined;
+  const providerAccountSnapshots = new Map<
+    string,
+    { snapshot: ProviderAccountCapabilitySnapshot; bootId: string }
+  >();
   const nativeSessionSnapshots = new Map<
     string,
     { snapshot: ProviderNativeSessionSnapshot; bootId: string }
+  >();
+  const nativeSessionRows = new Map<string, Map<string, ProviderNativeSession>>();
+  const pendingNativeSessionRequests = new Map<
+    string,
+    {
+      socket: WebSocket;
+      providerId: string;
+      accountId: string;
+    }
   >();
   let closing = false;
   const rateWindows = new WeakMap<
@@ -608,6 +643,15 @@ export async function startCoreServer(
       settings,
       store.sessionProviderAuthority(sessionId),
       providerFleetSnapshot,
+      settings.settings.accountId === null
+        ? undefined
+        : providerAccountSnapshots.get(
+            nativeSnapshotKey(
+              settings.settings.providerId,
+              settings.settings.accountId,
+            ),
+          )?.snapshot,
+      connectorConnection?.runtime,
     );
     const envelope = makeEnvelope("session.capabilities.snapshot", { snapshot });
     broadcast(sessionId, envelope);
@@ -626,21 +670,22 @@ export async function startCoreServer(
   };
 
   const markProviderFleetStale = () => {
-    if (providerFleetSnapshot === undefined) return;
-    providerFleetSnapshot = ProviderFleetSnapshotSchema.parse({
-      ...providerFleetSnapshot,
-      freshness: "stale",
-      degraded: true,
-      providers: providerFleetSnapshot.providers.map((provider) => ({
-        ...provider,
+    if (providerFleetSnapshot !== undefined) {
+      providerFleetSnapshot = ProviderFleetSnapshotSchema.parse({
+        ...providerFleetSnapshot,
         freshness: "stale",
-      })),
-      notice: "Connector offline; provider inventory may be stale",
-    });
-    broadcast(
-      null,
-      makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
-    );
+        degraded: true,
+        providers: providerFleetSnapshot.providers.map((provider) => ({
+          ...provider,
+          freshness: "stale",
+        })),
+        notice: "Connector offline; provider inventory may be stale",
+      });
+      broadcast(
+        null,
+        makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
+      );
+    }
     for (const [key, retained] of nativeSessionSnapshots) {
       const snapshot = ProviderNativeSessionSnapshotSchema.parse({
         ...retained.snapshot,
@@ -649,6 +694,20 @@ export async function startCoreServer(
       });
       nativeSessionSnapshots.set(key, { ...retained, snapshot });
       broadcast(null, makeEnvelope("sessions.native.snapshot", { snapshot }));
+    }
+    for (const [key, retained] of providerAccountSnapshots) {
+      const snapshot = ProviderAccountCapabilitySnapshotSchema.parse({
+        ...retained.snapshot,
+        freshness: "stale",
+        control: "inventory_only",
+        active: false,
+        notice: "Connector offline; account capability evidence is stale",
+      });
+      providerAccountSnapshots.set(key, { ...retained, snapshot });
+      broadcast(
+        null,
+        makeEnvelope("provider.account.capabilities.snapshot", { snapshot }),
+      );
     }
     refreshSelectedCapabilities();
   };
@@ -659,6 +718,16 @@ export async function startCoreServer(
       settings?.settings,
       store.sessionProviderAuthority(sessionId),
       providerFleetSnapshot,
+      settings?.settings.accountId === null ||
+      settings?.settings.accountId === undefined
+        ? undefined
+        : providerAccountSnapshots.get(
+            nativeSnapshotKey(
+              settings.settings.providerId,
+              settings.settings.accountId,
+            ),
+          )?.snapshot,
+      connectorConnection?.runtime,
     ) === undefined;
   };
 
@@ -719,6 +788,7 @@ export async function startCoreServer(
           | "session.read.mark"
           | "session.create"
           | "session.resume"
+          | "session.runtime.resume"
           | "session.settings.update"
           | "approval.lease.create"
           | "approval.lease.revoke"
@@ -940,6 +1010,189 @@ export async function startCoreServer(
         }
         return;
       }
+      case "provider.account.capabilities.refresh": {
+        const key = nativeSnapshotKey(
+          message.payload.providerId,
+          message.payload.accountId,
+        );
+        const retained = providerAccountSnapshots.get(key);
+        if (retained !== undefined) {
+          send(
+            socket,
+            makeEnvelope("provider.account.capabilities.snapshot", {
+              snapshot: retained.snapshot,
+            }),
+          );
+        }
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        const account = provider?.accounts.find(
+          (candidate) => candidate.accountId === message.payload.accountId,
+        );
+        const connection = connectorConnection;
+        if (
+          connection?.socket.readyState !== WebSocket.OPEN ||
+          provider === undefined ||
+          account === undefined
+        ) {
+          if (retained === undefined) {
+            send(
+              socket,
+              makeEnvelope("protocol.error", {
+                error: protocolError(
+                  "PROVIDER_ACCOUNT_UNAVAILABLE",
+                  "Provider account capability evidence is unavailable.",
+                  { retryable: connection?.socket.readyState !== WebSocket.OPEN },
+                ),
+              }),
+            );
+          }
+          return;
+        }
+        sendConnector(
+          connection.socket,
+          makeEnvelope(
+            "connector.provider.account.capabilities.refresh",
+            message.payload,
+          ),
+        );
+        return;
+      }
+      case "provider.account.activate": {
+        const key = nativeSnapshotKey(
+          message.payload.providerId,
+          message.payload.accountId,
+        );
+        const accountSnapshot = providerAccountSnapshots.get(key)?.snapshot;
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        const account = provider?.accounts.find(
+          (candidate) => candidate.accountId === message.payload.accountId,
+        );
+        const connection = connectorConnection;
+        const activationRejection = (code: string, detail: string) =>
+          validatedServerEnvelope(
+            makeEnvelope("provider.account.activation.rejected", {
+              commandId: message.payload.commandId,
+              providerId: message.payload.providerId,
+              accountId: message.payload.accountId,
+              error: protocolError(code, detail, {
+                commandId: message.payload.commandId,
+              }),
+            }),
+          );
+        const preconditionError =
+          connection?.socket.readyState !== WebSocket.OPEN ||
+          connection.runtime.status !== "ready"
+            ? {
+                code: "CONNECTOR_OFFLINE",
+                detail: "Connector Runtime is not ready for account activation.",
+              }
+            :
+          provider === undefined ||
+          !provider.enabled ||
+          provider.installation !== "installed" ||
+          provider.compatibility !== "compatible" ||
+          account === undefined ||
+          accountSnapshot === undefined ||
+          accountSnapshot.revision !== message.payload.expectedRevision ||
+          accountSnapshot.freshness !== "live" ||
+          Date.parse(accountSnapshot.staleAt) <= Date.now() ||
+          accountSnapshot.authentication !== "authenticated"
+              ? {
+                  code: "PROVIDER_ACCOUNT_UNAVAILABLE",
+                  detail: "Refresh the exact provider account before activation.",
+                }
+              : undefined;
+        const result = await store.acceptProviderAccountActivation({
+          message,
+          runtime:
+            connection?.runtime ?? {
+              runtimeId: message.payload.expectedRuntimeId,
+              generation: message.payload.expectedRuntimeGeneration,
+              status: "lost",
+            },
+          sameActiveAccount:
+            connection?.activeProviderId === message.payload.providerId &&
+            connection.activeAccountId === message.payload.accountId,
+          ...(preconditionError === undefined ? {} : { preconditionError }),
+          rejection: activationRejection,
+        });
+        if (result.kind === "conflict") {
+          send(
+            socket,
+            activationRejection(
+              "IDEMPOTENCY_KEY_REUSE",
+              "The command ID was already used with a different payload.",
+            ),
+          );
+          return;
+        }
+        if (result.kind === "same") {
+          send(socket, result.result);
+          return;
+        }
+        if (result.kind === "pending") return;
+        if (result.result !== undefined) {
+          send(socket, result.result);
+          return;
+        }
+        if (result.dispatch === undefined) return;
+        if (connection === undefined) return;
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.provider.account.activate", {
+            commandId: message.payload.commandId,
+            providerId: message.payload.providerId,
+            accountId: message.payload.accountId,
+            expectedRevision: message.payload.expectedRevision,
+            expectedRuntimeId: message.payload.expectedRuntimeId,
+            expectedRuntimeGeneration:
+              message.payload.expectedRuntimeGeneration,
+            nextRuntimeId: result.dispatch.nextRuntimeId,
+            nextRuntimeGeneration: result.dispatch.nextRuntimeGeneration,
+          }),
+        );
+        return;
+      }
+      case "sessions.native.list": {
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        const account = provider?.accounts.find(
+          (candidate) => candidate.accountId === message.payload.accountId,
+        );
+        const connection = connectorConnection;
+        if (
+          connection?.socket.readyState !== WebSocket.OPEN ||
+          provider === undefined ||
+          account === undefined
+        ) {
+          send(
+            socket,
+            makeEnvelope("protocol.error", {
+              error: protocolError(
+                "NATIVE_SESSION_DISCOVERY_UNAVAILABLE",
+                "Provider Session discovery is unavailable for this account.",
+                { retryable: connection?.socket.readyState !== WebSocket.OPEN },
+              ),
+            }),
+          );
+          return;
+        }
+        pendingNativeSessionRequests.set(message.payload.requestId, {
+          socket,
+          providerId: message.payload.providerId,
+          accountId: message.payload.accountId,
+        });
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.sessions.native.list", message.payload),
+        );
+        return;
+      }
       case "sessions.native.refresh": {
         const key = nativeSnapshotKey(
           message.payload.providerId,
@@ -1026,18 +1279,33 @@ export async function startCoreServer(
         const account = provider?.accounts.find(
           (candidate) => candidate.accountId === message.payload.accountId,
         );
+        const accountEvidence = providerAccountSnapshots.get(
+          nativeSnapshotKey(
+            message.payload.providerId,
+            message.payload.accountId,
+          ),
+        )?.snapshot;
         const capabilityKey =
           message.type === "session.create" ? "create_session" : "resume_session";
-        const capability = provider?.capabilities.find(
-          (candidate) => candidate.key === capabilityKey,
-        );
         if (
           provider === undefined ||
           !["live", "local"].includes(provider.freshness) ||
-          provider.adapterSupport !== "remote_control" ||
-          account?.authentication !== "authenticated" ||
-          account.control !== "remote_control" ||
-          capability?.state !== "supported"
+          account === undefined ||
+          accountEvidence === undefined ||
+          accountEvidence.freshness !== "live" ||
+          Date.parse(accountEvidence.staleAt) <= Date.now() ||
+          !accountEvidence.active ||
+          accountEvidence.authentication !== "authenticated" ||
+          accountEvidence.control !== "remote_control" ||
+          accountEvidence.providerId !== message.payload.providerId ||
+          accountEvidence.accountId !== message.payload.accountId ||
+          connection.activeProviderId !== message.payload.providerId ||
+          connection.activeAccountId !== message.payload.accountId ||
+          !accountEvidence.capabilities.some(
+            (candidate) =>
+              candidate.key === capabilityKey &&
+              candidate.state === "supported",
+          )
         ) {
           send(
             socket,
@@ -1061,8 +1329,8 @@ export async function startCoreServer(
         };
         if (message.type === "session.create") {
           if (
-            !validProviderModel(
-              provider,
+            !validProviderAccountModel(
+              accountEvidence,
               message.payload.model,
               message.payload.reasoningLevel,
             )
@@ -1087,20 +1355,22 @@ export async function startCoreServer(
             providerSessionId: null,
           };
         } else {
-          const native = nativeSessionSnapshots
-            .get(
-              nativeSnapshotKey(
-                message.payload.providerId,
-                message.payload.accountId,
-              ),
-            )
-            ?.snapshot;
-          const discovered = native?.sessions.find(
-            (candidate) =>
-              candidate.providerSessionId === message.payload.providerSessionId,
+          const nativeKey = nativeSnapshotKey(
+            message.payload.providerId,
+            message.payload.accountId,
           );
+          const legacyNative = nativeSessionSnapshots.get(nativeKey)?.snapshot;
+          const discovered =
+            nativeSessionRows
+              .get(nativeKey)
+              ?.get(message.payload.providerSessionId) ??
+            legacyNative?.sessions.find(
+              (candidate) =>
+                candidate.providerSessionId === message.payload.providerSessionId,
+            );
           if (
-            native?.freshness !== "live" ||
+            (legacyNative === undefined && discovered === undefined) ||
+            (legacyNative !== undefined && legacyNative.freshness !== "live") ||
             discovered === undefined ||
             !discovered.canResume
           ) {
@@ -1189,6 +1459,98 @@ export async function startCoreServer(
                 runtimeId: connection.runtime.runtimeId,
                 runtimeGeneration: connection.runtime.generation,
               }),
+        );
+        return;
+      }
+      case "session.runtime.resume": {
+        const connection = connectorConnection;
+        const authority = store.sessionProviderAuthority(
+          message.payload.sessionId,
+        );
+        const accountEvidence =
+          authority === undefined
+            ? undefined
+            : providerAccountSnapshots.get(
+                nativeSnapshotKey(authority.providerId, authority.accountId),
+              )?.snapshot;
+        const preconditionError =
+          connection?.socket.readyState !== WebSocket.OPEN ||
+          connection.runtime.status !== "ready"
+            ? {
+                code: "RUNTIME_NOT_READY",
+                detail: "Connector Runtime is not ready for Session resume.",
+              }
+            :
+          authority === undefined ||
+          authority.providerSessionId === null ||
+          accountEvidence === undefined ||
+          accountEvidence.revision !== message.payload.expectedAccountRevision ||
+          accountEvidence.freshness !== "live" ||
+          Date.parse(accountEvidence.staleAt) <= Date.now() ||
+          !accountEvidence.active ||
+          accountEvidence.control !== "remote_control" ||
+          accountEvidence.authentication !== "authenticated" ||
+          connection.activeProviderId !== authority.providerId ||
+          connection.activeAccountId !== authority.accountId ||
+          !accountEvidence.capabilities.some(
+            (capability) =>
+              capability.key === "resume_session" &&
+              capability.state === "supported",
+          )
+              ? {
+                  code: "SESSION_NOT_CONTROLLABLE",
+                  detail:
+                    "The stored provider binding is not resumable by the active account.",
+                }
+              : undefined;
+        const result = await store.acceptSessionRuntimeResume({
+          message,
+          runtime:
+            connection?.runtime ?? {
+              runtimeId: message.payload.expectedRuntimeId,
+              generation: message.payload.expectedRuntimeGeneration,
+              status: "lost",
+            },
+          connectorId: connection?.connectorId ?? "connector-unavailable",
+          bootId: connection?.bootId ?? "boot-unavailable",
+          expectedBindingRevision: authority?.revision ?? -1,
+          ...(preconditionError === undefined ? {} : { preconditionError }),
+          rejection: (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        if (result.kind !== "new" || result.dispatch === undefined) return;
+        if (
+          connection === undefined ||
+          authority === undefined ||
+          authority.providerSessionId === null
+        ) {
+          return;
+        }
+        await store.markDispatched(message.payload.commandId);
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.session.resume", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            providerId: authority.providerId,
+            accountId: authority.accountId,
+            providerSessionId: authority.providerSessionId,
+            projectPath: result.dispatch.projectPath,
+            model: result.dispatch.model,
+            reasoningLevel: result.dispatch.reasoningLevel,
+            runtimeId: connection.runtime.runtimeId,
+            runtimeGeneration: connection.runtime.generation,
+          }),
         );
         return;
       }
@@ -1286,6 +1648,16 @@ export async function startCoreServer(
               requested,
               current,
               providerFleetSnapshot,
+              requested.accountId === null
+                ? undefined
+                : providerAccountSnapshots.get(
+                    nativeSnapshotKey(
+                      requested.providerId,
+                      requested.accountId,
+                    ),
+                  )?.snapshot,
+              connectorConnection?.runtime,
+              store.sessionProviderAuthority(message.payload.sessionId),
             ),
           (code, detail) =>
             rejection({
@@ -1552,10 +1924,27 @@ export async function startCoreServer(
         }
         const settings = store.sessionSettings(message.payload.sessionId);
         const authority = store.sessionProviderAuthority(message.payload.sessionId);
+        const connection = connectorConnection;
+        if (connection?.socket.readyState !== WebSocket.OPEN) {
+          await recordOfflineRejection(socket, message);
+          return;
+        }
+        const accountEvidence =
+          settings?.settings.accountId === null ||
+          settings?.settings.accountId === undefined
+            ? undefined
+            : providerAccountSnapshots.get(
+                nativeSnapshotKey(
+                  settings.settings.providerId,
+                  settings.settings.accountId,
+                ),
+              )?.snapshot;
         const controlError = validateTurnControlAuthority(
           settings?.settings,
           authority,
           providerFleetSnapshot,
+          accountEvidence,
+          connection.runtime,
         );
         if (controlError !== undefined) {
           const denied = await store.recordRejectedCommand(
@@ -1569,11 +1958,6 @@ export async function startCoreServer(
           );
           if (denied.kind === "conflict") sendConflict(socket, message);
           else send(socket, denied.result);
-          return;
-        }
-        const connection = connectorConnection;
-        if (connection?.socket.readyState !== WebSocket.OPEN) {
-          await recordOfflineRejection(socket, message);
           return;
         }
         if (
@@ -1603,8 +1987,8 @@ export async function startCoreServer(
           candidateAttachments.length === attachmentIds.length &&
           !supportsTurnAttachments(
             candidateAttachments,
-            store.sessionSettings(message.payload.sessionId)?.settings,
-            providerFleetSnapshot,
+            settings?.settings,
+            accountEvidence,
           )
         ) {
           const unsupported = await store.recordRejectedCommand(
@@ -1909,6 +2293,8 @@ export async function startCoreServer(
         connectorId: message.payload.connectorId,
         bootId: message.payload.bootId,
         runtime: message.payload.runtime,
+        activeProviderId: message.payload.activeProviderId ?? null,
+        activeAccountId: message.payload.activeAccountId ?? null,
       };
       if (
         providerFleetSnapshot !== undefined &&
@@ -2018,6 +2404,81 @@ export async function startCoreServer(
       return;
     }
 
+    if (message.type === "connector.provider.account.capabilities.snapshot") {
+      if (
+        connectorConnection?.socket !== socket ||
+        connectorConnection.connectorId !== message.connectorId ||
+        connectorConnection.bootId !== message.bootId ||
+        connectorConnection.runtime.runtimeId !== message.runtimeId ||
+        connectorConnection.runtime.generation !== message.runtimeGeneration
+      ) {
+        return;
+      }
+      const snapshot = message.payload.snapshot;
+      if (
+        snapshot.active !==
+          (connectorConnection.activeProviderId === snapshot.providerId &&
+            connectorConnection.activeAccountId === snapshot.accountId) ||
+        (snapshot.control === "remote_control" && !snapshot.active)
+      ) {
+        return;
+      }
+      const key = nativeSnapshotKey(snapshot.providerId, snapshot.accountId);
+      const retained = providerAccountSnapshots.get(key);
+      if (
+        retained?.bootId === message.bootId &&
+        snapshot.revision <= retained.snapshot.revision
+      ) {
+        return;
+      }
+      providerAccountSnapshots.set(key, {
+        snapshot,
+        bootId: message.bootId!,
+      });
+      broadcast(
+        null,
+        makeEnvelope("provider.account.capabilities.snapshot", { snapshot }),
+      );
+      refreshSelectedCapabilities();
+      return;
+    }
+
+    if (message.type === "connector.sessions.native.page") {
+      const request = pendingNativeSessionRequests.get(message.payload.requestId);
+      pendingNativeSessionRequests.delete(message.payload.requestId);
+      if (
+        request === undefined ||
+        request.providerId !== message.payload.page.providerId ||
+        request.accountId !== message.payload.page.accountId ||
+        connectorConnection?.socket !== socket ||
+        connectorConnection.connectorId !== message.connectorId ||
+        connectorConnection.bootId !== message.bootId ||
+        connectorConnection.runtime.runtimeId !== message.runtimeId ||
+        connectorConnection.runtime.generation !== message.runtimeGeneration
+      ) {
+        return;
+      }
+      const key = nativeSnapshotKey(request.providerId, request.accountId);
+      let rows = nativeSessionRows.get(key);
+      if (rows === undefined) {
+        rows = new Map();
+        nativeSessionRows.set(key, rows);
+      }
+      for (const session of message.payload.page.sessions) {
+        rows.set(session.providerSessionId, session);
+      }
+      if (request.socket.readyState === WebSocket.OPEN) {
+        send(
+          request.socket,
+          makeEnvelope("sessions.native.page", {
+            requestId: message.payload.requestId,
+            page: message.payload.page,
+          }),
+        );
+      }
+      return;
+    }
+
     if (message.type === "connector.turn.delta") {
       if (
         connectorConnection?.socket === socket &&
@@ -2067,6 +2528,55 @@ export async function startCoreServer(
       connectorConnection?.socket !== socket ||
       connectorConnection.connectorId !== source.connectorId
     ) {
+      return;
+    }
+
+    if (
+      message.type === "connector.provider.account.activated" ||
+      message.type === "connector.provider.account.activation.rejected"
+    ) {
+      const result = await store.recordProviderAccountActivation(message, source);
+      if (
+        result !== undefined &&
+        message.type === "connector.provider.account.activated" &&
+        connectorConnection?.socket === socket
+      ) {
+        for (const [key, retained] of providerAccountSnapshots) {
+          if (
+            retained.snapshot.active &&
+            (retained.snapshot.providerId !== message.payload.providerId ||
+              retained.snapshot.accountId !== message.payload.accountId)
+          ) {
+            const inactive = ProviderAccountCapabilitySnapshotSchema.parse({
+              ...retained.snapshot,
+              control: "inventory_only",
+              active: false,
+              notice: "Another provider account is active",
+            });
+            providerAccountSnapshots.set(key, {
+              ...retained,
+              snapshot: inactive,
+            });
+            broadcast(
+              null,
+              makeEnvelope("provider.account.capabilities.snapshot", {
+                snapshot: inactive,
+              }),
+            );
+          }
+        }
+        connectorConnection.runtime = message.payload.runtime;
+        connectorConnection.activeProviderId = message.payload.providerId;
+        connectorConnection.activeAccountId = message.payload.accountId;
+        lastRuntime = message.payload.runtime;
+        broadcast(
+          null,
+          makeEnvelope("runtime.status", { runtime: message.payload.runtime }),
+        );
+      }
+      acknowledge(socket, source.sourceEventId);
+      if (result !== undefined) broadcast(null, result);
+      refreshSelectedCapabilities();
       return;
     }
 
@@ -2210,6 +2720,14 @@ export async function startCoreServer(
         makeEnvelope("providers.snapshot", { snapshot: providerFleetSnapshot }),
       );
     }
+    for (const retained of providerAccountSnapshots.values()) {
+      send(
+        socket,
+        makeEnvelope("provider.account.capabilities.snapshot", {
+          snapshot: retained.snapshot,
+        }),
+      );
+    }
     for (const retained of nativeSessionSnapshots.values()) {
       send(
         socket,
@@ -2254,6 +2772,9 @@ export async function startCoreServer(
     socket.on("close", () => {
       clients.delete(socket);
       liveSockets.delete(socket);
+      for (const [requestId, request] of pendingNativeSessionRequests) {
+        if (request.socket === socket) pendingNativeSessionRequests.delete(requestId);
+      }
     });
   };
 
@@ -2267,6 +2788,9 @@ export async function startCoreServer(
         }
         const events = await store.markRuntimeLost(connection.runtime);
         for (const event of events) broadcastDurable(event);
+        const activations =
+          await store.markPendingProviderAccountActivationsOutcomeUnknown();
+        for (const result of activations) broadcast(null, result);
         lastRuntime = { ...connection.runtime, status: "lost" };
         broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
       })();
@@ -2338,6 +2862,7 @@ export async function startCoreServer(
   const attachConnector = (socket: WebSocket) => {
     if (connector?.readyState === WebSocket.OPEN) connector.close(1012);
     connector = socket;
+    let ingestTail: Promise<void> = Promise.resolve();
     liveSockets.set(socket, true);
     socket.on("pong", () => liveSockets.set(socket, true));
     socket.on("message", (data) => {
@@ -2359,12 +2884,17 @@ export async function startCoreServer(
         }
         return;
       }
-      void handleConnector(socket, parsed.data).catch((error) => {
-        console.error(
-          "Core Connector ingest failed:",
-          redactSensitiveText(error instanceof Error ? error.message : error),
-        );
-      });
+      // WebSocket preserves frame order, so preserve that order across async
+      // database ingestion too. Runtime-rotation evidence must be committed
+      // before capability messages fenced by the new Runtime are evaluated.
+      ingestTail = ingestTail
+        .then(() => handleConnector(socket, parsed.data))
+        .catch((error) => {
+          console.error(
+            "Core Connector ingest failed:",
+            redactSensitiveText(error instanceof Error ? error.message : error),
+          );
+        });
     });
     socket.on("close", () => {
       liveSockets.delete(socket);
@@ -2453,27 +2983,30 @@ export async function startCoreServer(
 function supportsTurnAttachments(
   attachments: readonly InputAttachment[],
   settings: SessionSettings | undefined,
-  fleet: ProviderFleetSnapshot | undefined,
+  accountEvidence: ProviderAccountCapabilitySnapshot | undefined,
 ) {
   if (attachments.length === 0) return true;
-  if (settings === undefined) return false;
-  const provider = fleet?.providers.find(
-    (candidate) => candidate.providerId === settings.providerId,
-  );
   if (
-    provider === undefined ||
-    provider.adapterSupport !== "remote_control" ||
-    !["live", "local"].includes(provider.freshness)
+    settings === undefined ||
+    settings.accountId === null ||
+    accountEvidence === undefined ||
+    accountEvidence.providerId !== settings.providerId ||
+    accountEvidence.accountId !== settings.accountId ||
+    !accountEvidence.active ||
+    accountEvidence.freshness !== "live" ||
+    Date.parse(accountEvidence.staleAt) <= Date.now() ||
+    accountEvidence.authentication !== "authenticated" ||
+    accountEvidence.control !== "remote_control"
   ) {
     return false;
   }
   const hasCapability = (key: "text_input" | "image_input") =>
-    provider.capabilities.some(
+    accountEvidence.capabilities.some(
       (capability) => capability.key === key && capability.state === "supported",
     );
   const selectedModel =
-    provider.models.find((model) => model.modelId === settings.model) ??
-    provider.models.find((model) => model.isDefault);
+    accountEvidence.models.find((model) => model.modelId === settings.model) ??
+    accountEvidence.models.find((model) => model.isDefault);
   return attachments.every((attachment) => {
     if (attachment.kind === "text") return hasCapability("text_input");
     if (attachment.kind === "image") {
@@ -2523,14 +3056,17 @@ function nativeSnapshotKey(providerId: string, accountId: string) {
   return `${providerId}\u0000${accountId}`;
 }
 
-function validProviderModel(
-  provider: ProviderRecord,
+function validProviderAccountModel(
+  account: ProviderAccountCapabilitySnapshot,
   modelId: string | null,
   reasoningLevel: string | null,
 ) {
-  if (modelId === null) return reasoningLevel === null;
-  if (provider.modelsState !== "available") return false;
-  const model = provider.models.find((candidate) => candidate.modelId === modelId);
+  if (account.modelsState !== "available") return false;
+  const model =
+    modelId === null
+      ? account.models.find((candidate) => candidate.isDefault) ??
+        account.models[0]
+      : account.models.find((candidate) => candidate.modelId === modelId);
   return (
     model !== undefined &&
     (reasoningLevel === null ||
@@ -2542,6 +3078,9 @@ function validateSessionSettingsSelection(
   requested: SessionSettings,
   current: SessionSettings,
   snapshot: ProviderFleetSnapshot | undefined,
+  accountEvidence: ProviderAccountCapabilitySnapshot | undefined,
+  currentRuntime: Runtime | undefined,
+  authority: ReturnType<CoreDatabase["sessionProviderAuthority"]>,
 ): { code: string; message: string } | undefined {
   if (
     snapshot === undefined ||
@@ -2556,23 +3095,41 @@ function validateSessionSettingsSelection(
     (candidate) => candidate.providerId === requested.providerId,
   );
   const account = provider?.accounts.find((candidate) =>
-    requested.accountId === null
-      ? candidate.isDefault && candidate.control === "remote_control"
-      : candidate.accountId === requested.accountId,
+    candidate.accountId === requested.accountId,
   );
   if (
     provider === undefined ||
     provider.freshness === "stale" ||
-    provider.adapterSupport !== "remote_control" ||
-    account?.authentication !== "authenticated" ||
-    account.control !== "remote_control"
+    requested.accountId === null ||
+    account === undefined ||
+    accountEvidence === undefined ||
+    accountEvidence.providerId !== requested.providerId ||
+    accountEvidence.accountId !== requested.accountId ||
+    accountEvidence.freshness !== "live" ||
+    Date.parse(accountEvidence.staleAt) <= Date.now() ||
+    !accountEvidence.active ||
+    accountEvidence.authentication !== "authenticated" ||
+    accountEvidence.control !== "remote_control" ||
+    currentRuntime === undefined ||
+    authority === undefined ||
+    authority.state !== "ready" ||
+    authority.providerId !== requested.providerId ||
+    authority.accountId !== requested.accountId ||
+    authority.runtimeId !== currentRuntime.runtimeId ||
+    authority.runtimeGeneration !== currentRuntime.generation
   ) {
     return {
       code: "PROVIDER_ACCOUNT_UNAVAILABLE",
       message: "The selected provider account is not currently controllable.",
     };
   }
-  if (!validProviderModel(provider, requested.model, requested.reasoningLevel)) {
+  if (
+    !validProviderAccountModel(
+      accountEvidence,
+      requested.model,
+      requested.reasoningLevel,
+    )
+  ) {
     return {
       code: "PROVIDER_MODEL_UNAVAILABLE",
       message: "Selected model or reasoning level is unavailable.",
@@ -2580,7 +3137,7 @@ function validateSessionSettingsSelection(
   }
   if (
     requested.executionMode !== current.executionMode &&
-    !provider.capabilities.some(
+    !accountEvidence.capabilities.some(
       (capability) =>
         capability.key === "execution_modes" &&
         capability.state === "supported",
@@ -2593,7 +3150,7 @@ function validateSessionSettingsSelection(
   }
   if (
     requested.approvalPolicy !== current.approvalPolicy &&
-    !provider.capabilities.some(
+    !accountEvidence.capabilities.some(
       (capability) =>
         capability.key === "approval_policies" &&
         capability.state === "supported",
@@ -2606,7 +3163,7 @@ function validateSessionSettingsSelection(
   }
   if (
     requested.sandboxPolicy !== current.sandboxPolicy &&
-    !provider.capabilities.some(
+    !accountEvidence.capabilities.some(
       (capability) =>
         capability.key === "sandbox_policies" &&
         capability.state === "supported",
@@ -2620,7 +3177,7 @@ function validateSessionSettingsSelection(
   if (
     requested.networkPolicy !== current.networkPolicy &&
     requested.networkPolicy !== "denied" &&
-    !provider.capabilities.some(
+    !accountEvidence.capabilities.some(
       (capability) =>
         capability.key === "network_policies" &&
         capability.state === "supported",
@@ -2649,6 +3206,8 @@ function validateTurnControlAuthority(
   settings: SessionSettings | undefined,
   authority: ReturnType<CoreDatabase["sessionProviderAuthority"]>,
   snapshot: ProviderFleetSnapshot | undefined,
+  accountEvidence: ProviderAccountCapabilitySnapshot | undefined,
+  currentRuntime: Runtime | undefined,
 ): { code: string; message: string } | undefined {
   if (
     settings === undefined ||
@@ -2657,7 +3216,11 @@ function validateTurnControlAuthority(
     settings.accountId === null ||
     settings.projectPath === null ||
     authority.providerId !== settings.providerId ||
-    authority.accountId !== settings.accountId
+    authority.accountId !== settings.accountId ||
+    authority.providerSessionId === null ||
+    currentRuntime === undefined ||
+    authority.runtimeId !== currentRuntime.runtimeId ||
+    authority.runtimeGeneration !== currentRuntime.generation
   ) {
     return {
       code: "SESSION_NOT_CONTROLLABLE",
@@ -2689,13 +3252,18 @@ function validateTurnControlAuthority(
   if (
     provider === undefined ||
     provider.freshness === "stale" ||
-    provider.adapterSupport !== "remote_control" ||
-    provider.authentication !== "authenticated" ||
-    account?.authentication !== "authenticated" ||
-    account.control !== "remote_control" ||
+    account === undefined ||
+    accountEvidence === undefined ||
+    accountEvidence.providerId !== settings.providerId ||
+    accountEvidence.accountId !== settings.accountId ||
+    accountEvidence.freshness !== "live" ||
+    Date.parse(accountEvidence.staleAt) <= Date.now() ||
+    !accountEvidence.active ||
+    accountEvidence.authentication !== "authenticated" ||
+    accountEvidence.control !== "remote_control" ||
     requiredCapabilities.some(
       (key) =>
-        !provider.capabilities.some(
+        !accountEvidence.capabilities.some(
           (capability) => capability.key === key && capability.state === "supported",
         ),
     )
@@ -2705,7 +3273,13 @@ function validateTurnControlAuthority(
       message: "Selected provider/account is not currently controllable.",
     };
   }
-  if (!validProviderModel(provider, settings.model, settings.reasoningLevel)) {
+  if (
+    !validProviderAccountModel(
+      accountEvidence,
+      settings.model,
+      settings.reasoningLevel,
+    )
+  ) {
     return {
       code: "PROVIDER_MODEL_UNAVAILABLE",
       message: "Selected model or reasoning level is unavailable.",
@@ -2713,7 +3287,7 @@ function validateTurnControlAuthority(
   }
   if (
     settings.networkPolicy !== "denied" &&
-    !provider.capabilities.some(
+    !accountEvidence.capabilities.some(
       (capability) =>
         capability.key === "network_policies" && capability.state === "supported",
     )

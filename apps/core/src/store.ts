@@ -42,7 +42,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 13;
+export const CORE_SCHEMA_VERSION = 14;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -75,6 +75,7 @@ type MutatingClientEnvelope = Extract<
       | "session.read.mark"
       | "session.create"
       | "session.resume"
+      | "session.runtime.resume"
       | "session.settings.update"
       | "approval.lease.create"
       | "approval.lease.revoke"
@@ -106,6 +107,19 @@ export type SessionPreparationResult =
         model: string | null;
         reasoningLevel: string | null;
         providerSessionId: string | null;
+      };
+    };
+
+export type ProviderAccountActivationResult =
+  | { kind: "same"; result: ServerEnvelope }
+  | { kind: "pending" }
+  | { kind: "conflict" }
+  | {
+      kind: "new";
+      result?: ServerEnvelope;
+      dispatch?: {
+        nextRuntimeId: string;
+        nextRuntimeGeneration: number;
       };
     };
 
@@ -413,7 +427,11 @@ export interface StoredTurnAttachment {
 export interface SessionProviderAuthority {
   providerId: string;
   accountId: string;
+  providerSessionId: string | null;
   state: "pending" | "ready" | "failed" | "outcome_unknown";
+  runtimeId: string;
+  runtimeGeneration: number;
+  revision: number;
 }
 
 export class InputAttachmentMutationError extends Error {
@@ -1276,14 +1294,22 @@ export class CoreDatabase {
   sessionProviderAuthority(sessionId: string): SessionProviderAuthority | undefined {
     const row = this.#database
       .prepare(
-        `SELECT provider_id, account_id, state
+        `SELECT provider_id, account_id,
+                COALESCE(provider_session_id, requested_provider_session_id)
+                  AS provider_session_id,
+                state,
+                runtime_id, runtime_generation, revision
            FROM session_provider_bindings WHERE session_id = ?`,
       )
       .get(sessionId) as
       | {
           provider_id: string;
           account_id: string;
+          provider_session_id: string | null;
           state: SessionProviderAuthority["state"];
+          runtime_id: string;
+          runtime_generation: number;
+          revision: number;
         }
       | undefined;
     return row === undefined
@@ -1291,8 +1317,283 @@ export class CoreDatabase {
       : {
           providerId: row.provider_id,
           accountId: row.account_id,
+          providerSessionId: row.provider_session_id,
           state: row.state,
+          runtimeId: row.runtime_id,
+          runtimeGeneration: row.runtime_generation,
+          revision: row.revision,
         };
+  }
+
+  async acceptProviderAccountActivation(input: {
+    message: Extract<ClientEnvelope, { type: "provider.account.activate" }>;
+    runtime: Runtime;
+    sameActiveAccount?: boolean;
+    preconditionError?: { code: string; detail: string };
+    rejection: (code: string, detail: string) => ServerEnvelope;
+  }): Promise<ProviderAccountActivationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(input.message);
+      const prior = this.#database
+        .prepare(
+          `SELECT payload_hash, state, result_json
+             FROM provider_account_commands WHERE command_id = ?`,
+        )
+        .get(input.message.payload.commandId) as
+        | { payload_hash: string; state: string; result_json: string | null }
+        | undefined;
+      if (prior !== undefined) {
+        if (prior.payload_hash !== payloadHash) return { kind: "conflict" };
+        return prior.result_json === null
+          ? { kind: "pending" }
+          : { kind: "same", result: parseServer(prior.result_json) };
+      }
+      const now = new Date().toISOString();
+      const reject = (code: string, detail: string) => {
+        const result = input.rejection(code, detail);
+        this.#database
+          .prepare(
+            `INSERT INTO provider_account_commands (
+               command_id, provider_id, account_id, device_id, payload_json,
+               payload_hash, expected_account_revision, expected_runtime_id,
+               expected_runtime_generation, next_runtime_id,
+               next_runtime_generation, state, result_json, created_at,
+               updated_at, terminal_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'rejected', ?, ?, ?, ?)`,
+          )
+          .run(
+            input.message.payload.commandId,
+            input.message.payload.providerId,
+            input.message.payload.accountId,
+            input.message.payload.deviceId,
+            JSON.stringify(input.message.payload),
+            payloadHash,
+            input.message.payload.expectedRevision,
+            input.message.payload.expectedRuntimeId,
+            input.message.payload.expectedRuntimeGeneration,
+            `runtime-${crypto.randomUUID()}`,
+            input.runtime.generation + 1,
+            JSON.stringify(result),
+            now,
+            now,
+            now,
+          );
+        return { kind: "new" as const, result };
+      };
+      if (input.preconditionError !== undefined) {
+        return reject(
+          input.preconditionError.code,
+          input.preconditionError.detail,
+        );
+      }
+      if (
+        input.message.payload.expectedRuntimeId !== input.runtime.runtimeId ||
+        input.message.payload.expectedRuntimeGeneration !== input.runtime.generation
+      ) {
+        return reject(
+          "STALE_RUNTIME_GENERATION",
+          "The active Connector Runtime changed; refresh before activating an account.",
+        );
+      }
+      if (
+        this.#database
+          .prepare(
+            "SELECT 1 FROM approval_requests WHERE state = 'pending' LIMIT 1",
+          )
+          .get() !== undefined
+      ) {
+        return reject(
+          "ACCOUNT_ACTIVATION_BLOCKED",
+          "Resolve or invalidate pending approvals before activating an account.",
+        );
+      }
+      if (
+        this.#database
+          .prepare("SELECT 1 FROM turns WHERE state = 'running' LIMIT 1")
+          .get() !== undefined
+      ) {
+        return reject(
+          "ACCOUNT_ACTIVATION_BLOCKED",
+          "An account cannot be activated while a Turn is running.",
+        );
+      }
+      if (
+        this.#database
+          .prepare("SELECT 1 FROM approval_leases WHERE state = 'active' LIMIT 1")
+          .get() !== undefined
+      ) {
+        return reject(
+          "ACCOUNT_ACTIVATION_BLOCKED",
+          "Revoke active approval leases before activating an account.",
+        );
+      }
+      const nextRuntimeId = input.sameActiveAccount
+        ? input.runtime.runtimeId
+        : `runtime-${crypto.randomUUID()}`;
+      const nextRuntimeGeneration = input.sameActiveAccount
+        ? input.runtime.generation
+        : input.runtime.generation + 1;
+      this.#database
+        .prepare(
+          `INSERT INTO provider_account_commands (
+             command_id, provider_id, account_id, device_id, payload_json,
+             payload_hash, expected_account_revision, expected_runtime_id,
+             expected_runtime_generation, next_runtime_id,
+             next_runtime_generation, state, result_json, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?)`,
+        )
+        .run(
+          input.message.payload.commandId,
+          input.message.payload.providerId,
+          input.message.payload.accountId,
+          input.message.payload.deviceId,
+          JSON.stringify(input.message.payload),
+          payloadHash,
+          input.message.payload.expectedRevision,
+          input.message.payload.expectedRuntimeId,
+          input.message.payload.expectedRuntimeGeneration,
+          nextRuntimeId,
+          nextRuntimeGeneration,
+          now,
+          now,
+        );
+      return {
+        kind: "new",
+        dispatch: { nextRuntimeId, nextRuntimeGeneration },
+      };
+    });
+  }
+
+  async recordProviderAccountActivation(
+    message: Extract<
+      ConnectorEnvelope,
+      {
+        type:
+          | "connector.provider.account.activated"
+          | "connector.provider.account.activation.rejected";
+      }
+    >,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const row = this.#database
+        .prepare(
+          `SELECT provider_id, account_id, next_runtime_id,
+                  next_runtime_generation, state
+             FROM provider_account_commands WHERE command_id = ?`,
+        )
+        .get(message.payload.commandId) as
+        | {
+            provider_id: string;
+            account_id: string;
+            next_runtime_id: string;
+            next_runtime_generation: number;
+            state: string;
+          }
+        | undefined;
+      if (
+        row === undefined ||
+        row.state !== "pending" ||
+        row.provider_id !== message.payload.providerId ||
+        row.account_id !== message.payload.accountId
+      ) {
+        return undefined;
+      }
+      const now = new Date().toISOString();
+      let result: ServerEnvelope;
+      let state: "accepted" | "rejected";
+      if (message.type === "connector.provider.account.activated") {
+        if (
+          message.payload.runtime.runtimeId !== row.next_runtime_id ||
+          message.payload.runtime.generation !== row.next_runtime_generation ||
+          source.runtimeId !== row.next_runtime_id ||
+          source.runtimeGeneration !== row.next_runtime_generation
+        ) {
+          return undefined;
+        }
+        state = "accepted";
+        result = parseServer(
+          JSON.stringify(
+            makeEnvelope("provider.account.activation.accepted", {
+              commandId: message.payload.commandId,
+              providerId: message.payload.providerId,
+              accountId: message.payload.accountId,
+              revision: message.payload.revision,
+              runtime: message.payload.runtime,
+            }),
+          ),
+        );
+      } else {
+        state = "rejected";
+        result = parseServer(
+          JSON.stringify(
+            makeEnvelope("provider.account.activation.rejected", {
+              commandId: message.payload.commandId,
+              providerId: message.payload.providerId,
+              accountId: message.payload.accountId,
+              error: {
+                code: message.payload.code,
+                message: "Provider account activation was rejected.",
+                retryable: false,
+                detail: null,
+              },
+            }),
+          ),
+        );
+      }
+      this.#database
+        .prepare(
+          `UPDATE provider_account_commands SET state = ?, result_json = ?,
+             updated_at = ?, terminal_at = ?
+           WHERE command_id = ? AND state = 'pending'`,
+        )
+        .run(state, JSON.stringify(result), now, now, message.payload.commandId);
+      return result;
+    });
+  }
+
+  async markPendingProviderAccountActivationsOutcomeUnknown() {
+    return this.#write(() => {
+      const rows = this.#database
+        .prepare(
+          `SELECT command_id, provider_id, account_id
+             FROM provider_account_commands WHERE state = 'pending'`,
+        )
+        .all() as unknown as Array<{
+          command_id: string;
+          provider_id: string;
+          account_id: string;
+        }>;
+      const now = new Date().toISOString();
+      const results: ServerEnvelope[] = [];
+      for (const row of rows) {
+        const result = parseServer(
+          JSON.stringify(
+            makeEnvelope("provider.account.activation.rejected", {
+              commandId: row.command_id,
+              providerId: row.provider_id,
+              accountId: row.account_id,
+              error: {
+                code: "OUTCOME_UNKNOWN",
+                message:
+                  "Connector ownership was lost while account activation was in flight.",
+                retryable: false,
+                detail: null,
+              },
+            }),
+          ),
+        );
+        this.#database
+          .prepare(
+            `UPDATE provider_account_commands SET state = 'outcome_unknown',
+               result_json = ?, updated_at = ?, terminal_at = ?
+             WHERE command_id = ? AND state = 'pending'`,
+          )
+          .run(JSON.stringify(result), now, now, row.command_id);
+        results.push(result);
+      }
+      return results;
+    });
   }
 
   async acceptSessionPreparation(input: {
@@ -1404,6 +1705,166 @@ export class CoreDatabase {
     });
   }
 
+  async acceptSessionRuntimeResume(input: {
+    message: Extract<ClientEnvelope, { type: "session.runtime.resume" }>;
+    runtime: Runtime;
+    connectorId: string;
+    bootId: string;
+    expectedBindingRevision: number;
+    preconditionError?: { code: string; detail: string };
+    rejection: (code: string, detail: string) => ServerEnvelope;
+  }): Promise<SessionPreparationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(input.message);
+      const prior = this.#command(input.message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const now = new Date().toISOString();
+      const reject = (code: string, detail: string) => {
+        const result = input.rejection(code, detail);
+        this.#insertCommand(input.message, payloadHash, "rejected", result, now);
+        return { kind: "new" as const, result };
+      };
+      if (input.preconditionError !== undefined) {
+        return reject(
+          input.preconditionError.code,
+          input.preconditionError.detail,
+        );
+      }
+      if (!this.hasSession(input.message.payload.sessionId)) {
+        return reject("SESSION_NOT_FOUND", "The managed Session does not exist.");
+      }
+      if (
+        input.message.payload.expectedRuntimeId !== input.runtime.runtimeId ||
+        input.message.payload.expectedRuntimeGeneration !== input.runtime.generation
+      ) {
+        return reject(
+          "STALE_RUNTIME_GENERATION",
+          "The active Connector Runtime changed; refresh before resuming.",
+        );
+      }
+      const binding = this.#database
+        .prepare(
+          `SELECT provider_id, account_id,
+                  COALESCE(provider_session_id, requested_provider_session_id)
+                    AS provider_session_id,
+                  state, revision
+             FROM session_provider_bindings WHERE session_id = ?`,
+        )
+        .get(input.message.payload.sessionId) as
+        | {
+            provider_id: string;
+            account_id: string;
+            provider_session_id: string | null;
+            state: SessionProviderAuthority["state"];
+            revision: number;
+          }
+        | undefined;
+      if (binding === undefined || binding.provider_session_id === null) {
+        return reject(
+          "SESSION_BINDING_UNAVAILABLE",
+          "The Session has no exact provider-native binding to resume.",
+        );
+      }
+      if (binding.revision !== input.expectedBindingRevision) {
+        return reject(
+          "SESSION_BINDING_REVISION_CONFLICT",
+          "The Session provider binding changed; refresh before resuming.",
+        );
+      }
+      if (binding.state === "pending") {
+        return reject(
+          "SESSION_BINDING_PENDING",
+          "The Session binding is already being prepared.",
+        );
+      }
+      if (
+        this.#database
+          .prepare(
+            "SELECT 1 FROM turns WHERE session_id = ? AND state = 'running'",
+          )
+          .get(input.message.payload.sessionId) !== undefined ||
+        this.#database
+          .prepare(
+            `SELECT 1 FROM approval_requests
+              WHERE session_id = ? AND state = 'pending'`,
+          )
+          .get(input.message.payload.sessionId) !== undefined ||
+        this.#database
+          .prepare(
+            `SELECT 1 FROM approval_leases
+              WHERE session_id = ? AND state = 'active'`,
+          )
+          .get(input.message.payload.sessionId) !== undefined
+      ) {
+        return reject(
+          "SESSION_BUSY",
+          "Resolve active work, approvals, and leases before resuming the Runtime.",
+        );
+      }
+      const settings = this.sessionSettings(input.message.payload.sessionId);
+      if (
+        settings === undefined ||
+        settings.settings.providerId !== binding.provider_id ||
+        settings.settings.accountId !== binding.account_id ||
+        settings.settings.projectPath === null
+      ) {
+        return reject(
+          "SESSION_BINDING_MISMATCH",
+          "Session settings do not match the stored provider binding.",
+        );
+      }
+      this.#attachRuntime(
+        input.message.payload.sessionId,
+        input.runtime,
+        input.connectorId,
+        input.bootId,
+        now,
+      );
+      const result = parseServer(
+        JSON.stringify(
+          makeEnvelope("session.command.accepted", {
+            commandId: input.message.payload.commandId,
+            sessionId: input.message.payload.sessionId,
+            revision: binding.revision + 1,
+          }),
+        ),
+      );
+      this.#insertCommand(input.message, payloadHash, "committed", result, now);
+      this.#database
+        .prepare(
+          `UPDATE session_provider_bindings
+              SET command_id = ?, requested_provider_session_id = ?,
+                  provider_session_id = NULL, state = 'pending',
+                  failure_code = NULL, runtime_id = ?, runtime_generation = ?,
+                  revision = revision + 1, updated_at = ?
+            WHERE session_id = ? AND revision = ? AND state <> 'pending'`,
+        )
+        .run(
+          input.message.payload.commandId,
+          binding.provider_session_id,
+          input.runtime.runtimeId,
+          input.runtime.generation,
+          now,
+          input.message.payload.sessionId,
+          binding.revision,
+        );
+      return {
+        kind: "new",
+        result,
+        dispatch: {
+          projectPath: settings.settings.projectPath,
+          model: settings.settings.model,
+          reasoningLevel: settings.settings.reasoningLevel,
+          providerSessionId: binding.provider_session_id,
+        },
+      };
+    });
+  }
+
   async recordSessionPreparation(
     message: Extract<
       ConnectorEnvelope,
@@ -1494,7 +1955,7 @@ export class CoreDatabase {
       this.#database
         .prepare(
           `UPDATE session_provider_bindings SET state = ?, provider_session_id = ?,
-             failure_code = ?, updated_at = ?
+             failure_code = ?, revision = revision + 1, updated_at = ?
            WHERE session_id = ? AND command_id = ? AND state = 'pending'`,
         )
         .run(

@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { startCoreServer, type CoreServerHandle } from "../src/server.js";
 import {
+  controlledAccountCapabilities,
   controlledProviderFleet,
   createControlledSession,
 } from "./controlled-session-fixture.js";
@@ -232,6 +233,8 @@ describe("mock Connector to Core to browser flow", () => {
             generation: 7,
             status: "ready",
           },
+          activeProviderId: "test-provider",
+          activeAccountId: "default",
           commandReceipts: [],
         }),
       ),
@@ -245,6 +248,19 @@ describe("mock Connector to Core to browser flow", () => {
           connectorId: "connector-loss-test",
           bootId: "boot-loss-test",
           sourceEventId: "loss-provider-snapshot",
+          runtimeId: "runtime-loss-test",
+          runtimeGeneration: 7,
+        }),
+      ),
+    );
+    connector.send(
+      JSON.stringify(
+        ConnectorEnvelopeSchema.parse({
+          ...makeEnvelope("connector.provider.account.capabilities.snapshot", {
+            snapshot: controlledAccountCapabilities(1),
+          }),
+          connectorId: "connector-loss-test",
+          bootId: "boot-loss-test",
           runtimeId: "runtime-loss-test",
           runtimeGeneration: 7,
         }),
