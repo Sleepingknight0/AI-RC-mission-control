@@ -110,6 +110,7 @@ export interface PendingUploadBytes {
 export function defaultCatalogFilters(): SessionCatalogFilter {
   return {
     search: null,
+    sessionIds: [],
     providerIds: [],
     accountIds: [],
     states: [],

@@ -122,9 +122,11 @@ export function accountScopedCatalogFilters(
   providerId: string,
   accountId: string,
   search: string,
+  sessionId: string | null = null,
 ): SessionCatalogFilter {
   return {
     search: search.trim() === "" ? null : search.trim(),
+    sessionIds: sessionId === null ? [] : [sessionId],
     providerIds: [providerId],
     accountIds: [accountId],
     states: [],

@@ -1159,6 +1159,7 @@ export class CoreDatabase {
       filterClauses.push("catalog.pinned = ?");
       filterValues.push(filters.pinned ? 1 : 0);
     }
+    addInFilter(filterClauses, filterValues, "catalog.id", filters.sessionIds ?? []);
     addInFilter(filterClauses, filterValues, "catalog.provider_id", filters.providerIds);
     addInFilter(filterClauses, filterValues, "catalog.account_id", filters.accountIds);
     addInFilter(filterClauses, filterValues, "catalog.operational_state", filters.states);

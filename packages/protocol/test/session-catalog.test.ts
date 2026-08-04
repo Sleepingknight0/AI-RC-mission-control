@@ -8,6 +8,7 @@ import {
 
 const filters = {
   search: null,
+  sessionIds: [],
   providerIds: [],
   accountIds: [],
   states: [],
@@ -51,6 +52,13 @@ describe("Session Catalog protocol", () => {
         pageSize: 100,
         cursor: null,
         filters: { ...filters, providerIds: ["codex", "codex"] },
+      },
+      {
+        requestId: "a",
+        deviceId: "d",
+        pageSize: 100,
+        cursor: null,
+        filters: { ...filters, sessionIds: ["session-1", "session-1"] },
       },
       {
         requestId: "a",

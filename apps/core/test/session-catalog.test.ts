@@ -339,6 +339,16 @@ describe("Session Catalog V2", () => {
       turnCount: 1,
       pendingApprovalCount: 1,
     });
+    const exact = catalog(
+      database,
+      { search: "scale", sessionIds: ["scale-0999"] },
+      "scale-device",
+      10,
+    );
+    expect(exact).toMatchObject({ total: 1, nextCursor: null });
+    expect(exact.sessions.map((session) => session.sessionId)).toEqual([
+      "scale-0999",
+    ]);
     expect(elapsedMs).toBeLessThan(2_000);
     expect(heapGrowthBytes).toBeLessThan(256 * 1024 * 1024);
   });
@@ -389,6 +399,7 @@ function catalog(
 function catalogQuery(
   overrides: Partial<{
     search: string | null;
+    sessionIds: string[];
     archived: "exclude" | "include" | "only";
   }> = {},
   deviceId = "device-a",
@@ -402,6 +413,7 @@ function catalogQuery(
     cursor,
     filters: {
       search: overrides.search ?? null,
+      sessionIds: overrides.sessionIds ?? [],
       providerIds: [],
       accountIds: [],
       states: [],

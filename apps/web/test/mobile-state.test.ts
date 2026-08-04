@@ -406,6 +406,14 @@ describe("M10 mobile provider/account/session selectors", () => {
       accountIds: ["blue-2"],
       archived: "exclude",
     });
+    expect(
+      accountScopedCatalogFilters("codex", "blue-2", "", "managed-b"),
+    ).toMatchObject({
+      search: null,
+      sessionIds: ["managed-b"],
+      providerIds: ["codex"],
+      accountIds: ["blue-2"],
+    });
   });
 
   it("keeps duplicate provider Session IDs distinct across account keys", () => {

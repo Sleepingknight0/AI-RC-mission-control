@@ -994,6 +994,7 @@ export const SessionSummaryV2Schema = z
 export const SessionCatalogFilterSchema = z
   .object({
     search: z.string().trim().max(200).nullable(),
+    sessionIds: z.array(id).max(50).optional(),
     providerIds: z.array(providerSlug).max(16),
     accountIds: z.array(providerSlug).max(32),
     states: z.array(SessionOperationalStateSchema).max(
@@ -1005,6 +1006,7 @@ export const SessionCatalogFilterSchema = z
   })
   .strict()
   .superRefine((filters, context) => {
+    addDuplicateIssue(filters.sessionIds ?? [], "Session filter", context);
     addDuplicateIssue(filters.providerIds, "provider filter", context);
     addDuplicateIssue(filters.accountIds, "account filter", context);
     addDuplicateIssue(filters.states, "state filter", context);

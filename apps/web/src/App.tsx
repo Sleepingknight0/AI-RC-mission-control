@@ -485,7 +485,8 @@ export function App() {
       ? accountScopedCatalogFilters(
           restoredProviderId,
           restoredAccountId,
-          initialMobileSessionId ?? "",
+          "",
+          initialMobileSessionId,
         )
       : defaultCatalogFilters(),
   );
