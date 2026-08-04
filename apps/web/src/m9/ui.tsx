@@ -178,9 +178,12 @@ export function SessionCatalogPanel({
   const filters = catalog.filters;
   const nativeIsCurrent =
     native.status === "ready" &&
-    native.snapshot?.freshness === "live" &&
-    native.snapshot.providerId === selectedProviderId &&
-    native.snapshot.accountId === selectedAccountId;
+    ((native.page?.freshness === "live" &&
+      native.page.providerId === selectedProviderId &&
+      native.page.accountId === selectedAccountId) ||
+      (native.snapshot?.freshness === "live" &&
+        native.snapshot.providerId === selectedProviderId &&
+        native.snapshot.accountId === selectedAccountId));
   return (
     <section className="m9-panel catalog-panel" aria-labelledby="catalog-title">
       <div className="panel-heading">
@@ -416,12 +419,12 @@ export function SessionCatalogPanel({
           </button>
         </div>
         <FreshnessBadge status={native.status} />
-        {native.snapshot?.notice && <p className="panel-notice">{native.snapshot.notice}</p>}
-        {(native.snapshot?.sessions ?? []).length === 0 ? (
+        {(native.page?.notice ?? native.snapshot?.notice) && <p className="panel-notice">{native.page?.notice ?? native.snapshot?.notice}</p>}
+        {native.sessions.length === 0 ? (
           <p className="empty-state">No native Sessions in current snapshot.</p>
         ) : (
           <ul className="native-list">
-            {native.snapshot!.sessions.map((session) => (
+            {native.sessions.map((session) => (
               <li key={session.providerSessionId}>
                 <span title={session.title}>{session.title}</span>
                 <span className="mono-meta" title={session.projectPath}>
