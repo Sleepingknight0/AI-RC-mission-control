@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import { startConnector, type ConnectorHandle } from "@aicl/connector";
 import { CodexProvider } from "@aicl/connector/codex";
@@ -57,16 +57,10 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     const inventoryAccounts =
       initialFleet.providers.find((candidate) => candidate.providerId === "codex")
         ?.accounts ?? [];
-    const codexHomeAccountId = basename(config.provider.codexHome);
-    const accountId = inventoryAccounts.some(
-      (candidate) => candidate.accountId === config.provider.profile,
-    )
-      ? config.provider.profile
-      : inventoryAccounts.some(
-            (candidate) => candidate.accountId === codexHomeAccountId,
-          )
-        ? codexHomeAccountId
-        : config.provider.profile;
+    const accountId = config.provider.profile;
+    if (!inventoryAccounts.some((candidate) => candidate.accountId === accountId)) {
+      throw new Error("The exact configured Codex profile is absent from inventory");
+    }
     const provider = new CodexProvider({
       cwd: projectPath,
       allowedRoots: [projectPath],
@@ -258,6 +252,40 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
     await waitFor(browser, "runtime.status", (message) =>
       message.payload.runtime.generation === connector.identity.generation &&
       message.payload.runtime.status === "ready",
+    );
+    const resumedAccount = await waitFor(
+      browser,
+      "provider.account.capabilities.snapshot",
+      (message) =>
+        message.payload.snapshot.providerId === "codex" &&
+        message.payload.snapshot.accountId === accountId &&
+        message.payload.snapshot.active &&
+        message.payload.snapshot.authentication === "authenticated" &&
+        message.payload.snapshot.control === "remote_control" &&
+        message.payload.snapshot.freshness === "live" &&
+        message.payload.snapshot.revision >= 2,
+      90_000,
+      restartMessageIndex,
+    );
+    send(
+      browser,
+      makeEnvelope("session.runtime.resume", {
+        commandId: "real-runtime-resume",
+        sessionId: "real-codex-session",
+        deviceId: "real-codex-device",
+        expectedAccountRevision: resumedAccount.payload.snapshot.revision,
+        expectedRuntimeId: connector.identity.runtimeId,
+        expectedRuntimeGeneration: connector.identity.generation,
+      }),
+    );
+    await waitFor(browser, "session.command.accepted", (message) =>
+      message.payload.commandId === "real-runtime-resume",
+    );
+    await waitFor(browser, "session.provider.status", (message) =>
+      message.payload.commandId === "real-runtime-resume" &&
+      message.payload.status === "ready" &&
+      message.payload.runtimeId === connector.identity.runtimeId &&
+      message.payload.runtimeGeneration === connector.identity.generation,
     );
     await waitFor(
       browser,

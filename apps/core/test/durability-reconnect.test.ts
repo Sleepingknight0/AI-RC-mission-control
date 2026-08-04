@@ -436,6 +436,190 @@ describe("durability and reconnect", () => {
     expect(secondProvider.startCalls).toBe(0);
     browser.socket.close();
   });
+
+  it("restores exact-account Session control after provider loss and Connector restart", async () => {
+    const directory = temporaryDirectory();
+    const core = await startCoreServer({
+      port: 0,
+      dbPath: join(directory, "core.db"),
+      connectorLossGraceMs: 500,
+    });
+    handles.push(core);
+    const firstProvider = new HeldProvider();
+    const journalPath = join(directory, "connector.db");
+    const firstConnector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider: firstProvider,
+      providerName: "test-provider",
+      journalPath,
+      reconnectDelayMs: 20,
+      providerInventory: (revision) => controlledProviderFleet(revision),
+    });
+    handles.push(firstConnector);
+    await firstConnector.ready;
+    const browser = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "restart-control-session",
+      0,
+      true,
+    );
+    await waitUntil(() =>
+      browser.messages.some(
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          message.payload.snapshot.sessionId === "restart-control-session" &&
+          message.payload.snapshot.controlAuthority.canControl,
+      ),
+    );
+    send(
+      browser,
+      makeEnvelope("turn.submit", {
+        commandId: "restart-control-turn",
+        sessionId: "restart-control-session",
+        prompt: "hold until provider loss",
+      }),
+    );
+    await waitFor(browser, "assistant.message.delta");
+    firstProvider.lose();
+    await firstConnector.close();
+    handles.splice(handles.indexOf(firstConnector), 1);
+    await waitFor(browser, "turn.outcome_unknown");
+
+    const restartIndex = browser.messages.length;
+    const secondProvider = new HeldProvider();
+    const secondConnector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider: secondProvider,
+      providerName: "test-provider",
+      journalPath,
+      reconnectDelayMs: 20,
+      providerInventory: (revision) => controlledProviderFleet(revision),
+    });
+    handles.push(secondConnector);
+    await secondConnector.ready;
+    await waitUntil(() =>
+      browser.messages.slice(restartIndex).some(
+        (message) =>
+          message.type === "provider.account.capabilities.snapshot" &&
+          message.payload.snapshot.providerId === "test-provider" &&
+          message.payload.snapshot.accountId === "default" &&
+          message.payload.snapshot.active &&
+          message.payload.snapshot.control === "remote_control" &&
+          message.payload.snapshot.freshness === "live" &&
+          message.payload.snapshot.revision >= 2,
+      ),
+    );
+    const accountSnapshot = browser.messages
+      .slice(restartIndex)
+      .reverse()
+      .find(
+        (message) =>
+          message.type === "provider.account.capabilities.snapshot" &&
+          message.payload.snapshot.providerId === "test-provider" &&
+          message.payload.snapshot.accountId === "default" &&
+          message.payload.snapshot.active &&
+          message.payload.snapshot.control === "remote_control" &&
+          message.payload.snapshot.freshness === "live" &&
+          message.payload.snapshot.revision >= 2,
+      );
+    if (accountSnapshot?.type !== "provider.account.capabilities.snapshot") {
+      throw new Error("Expected fresh exact-account capability evidence");
+    }
+    expect(
+      browser.messages.slice(restartIndex).some(
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          message.payload.snapshot.sessionId === "restart-control-session" &&
+          !message.payload.snapshot.controlAuthority.canControl,
+      ),
+    ).toBe(true);
+    send(
+      browser,
+      makeEnvelope("session.runtime.resume", {
+        commandId: "restart-control-resume",
+        sessionId: "restart-control-session",
+        deviceId: "restart-control-device",
+        expectedAccountRevision: accountSnapshot.payload.snapshot.revision,
+        expectedRuntimeId: secondConnector.identity.runtimeId,
+        expectedRuntimeGeneration: secondConnector.identity.generation,
+      }),
+    );
+    await waitUntil(() =>
+      browser.messages.slice(restartIndex).some(
+        (message) =>
+          message.type === "protocol.error" ||
+          ((message.type === "session.command.accepted" ||
+            message.type === "command.rejected") &&
+            message.payload.commandId === "restart-control-resume"),
+      ),
+    );
+    const protocolFailure = browser.messages
+      .slice(restartIndex)
+      .reverse()
+      .find((message) => message.type === "protocol.error");
+    expect(protocolFailure).toBeUndefined();
+    const resumeResponse = browser.messages
+      .slice(restartIndex)
+      .reverse()
+      .find(
+        (message) =>
+          (message.type === "session.command.accepted" ||
+            message.type === "command.rejected") &&
+          message.payload.commandId === "restart-control-resume",
+    );
+    expect(resumeResponse?.type).toBe("session.command.accepted");
+    await waitUntil(() =>
+      browser.messages.slice(restartIndex).some(
+        (message) =>
+          message.type === "session.provider.status" &&
+          message.payload.commandId === "restart-control-resume",
+      ),
+    );
+    const resumeStatus = browser.messages
+      .slice(restartIndex)
+      .reverse()
+      .find(
+        (message) =>
+          message.type === "session.provider.status" &&
+          message.payload.commandId === "restart-control-resume",
+      );
+    expect(resumeStatus).toMatchObject({
+      type: "session.provider.status",
+      payload: {
+        status: "ready",
+        runtimeGeneration: secondConnector.identity.generation,
+      },
+    });
+    await waitUntil(() =>
+      browser.messages.slice(restartIndex).some(
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          message.payload.snapshot.sessionId === "restart-control-session" &&
+          message.payload.snapshot.controlAuthority.canControl,
+      ),
+    );
+    const resumedCapabilities = browser.messages
+      .slice(restartIndex)
+      .reverse()
+      .find(
+        (message) =>
+          message.type === "session.capabilities.snapshot" &&
+          message.payload.snapshot.sessionId === "restart-control-session",
+      );
+    expect(resumedCapabilities).toMatchObject({
+      type: "session.capabilities.snapshot",
+      payload: {
+        snapshot: {
+          controlAuthority: { canControl: true },
+        },
+      },
+    });
+    expect(secondProvider.startCalls).toBe(0);
+    browser.socket.close();
+  }, 15_000);
 });
 
 class HeldProvider implements ConnectorProvider {
@@ -446,12 +630,16 @@ class HeldProvider implements ConnectorProvider {
     this.#release = resolve;
   });
   #deltaReady: () => void = () => undefined;
+  #lostListener: () => void = () => undefined;
   readonly deltaReady = new Promise<void>((resolve) => {
     this.#deltaReady = resolve;
   });
 
-  onLost() {
-    return () => undefined;
+  onLost(listener: () => void) {
+    this.#lostListener = listener;
+    return () => {
+      if (this.#lostListener === listener) this.#lostListener = () => undefined;
+    };
   }
 
   async prepareSession(
@@ -529,6 +717,10 @@ class HeldProvider implements ConnectorProvider {
 
   release() {
     this.#release();
+  }
+
+  lose() {
+    this.#lostListener();
   }
 }
 
