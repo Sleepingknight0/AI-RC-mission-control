@@ -158,6 +158,35 @@ describe("terminal provider inventory", () => {
     expect(snapshot.providers[0]?.adapterSupport).toBe("inventory_only");
   });
 
+  it("isolates malformed profile manifests and unreadable account roots", () => {
+    const { root, providers } = registry();
+    const brokenManifest = join(providers, "broken-manifest");
+    mkdirSync(brokenManifest);
+    writeFileSync(join(brokenManifest, "provider.json"), "{");
+
+    const brokenAccounts = provider(providers, "broken-accounts", {
+      ...codexManifest,
+      id: "broken-accounts",
+    });
+    writeFileSync(join(brokenAccounts, "accounts"), "not-a-directory");
+
+    const validProvider = provider(providers, "codex", codexManifest);
+    const malformedAccount = join(validProvider, "accounts", "malformed");
+    mkdirSync(malformedAccount, { recursive: true });
+    writeFileSync(join(malformedAccount, "profile.json"), "[");
+    const profileRoot = mkdtempSync(join(tmpdir(), "aicl-valid-profile-"));
+    roots.push(profileRoot);
+    account(validProvider, "valid", {
+      id: "valid",
+      displayName: "Valid account",
+      profilePath: profileRoot,
+    });
+
+    expect(readProviderAccountProfiles({ registryRoot: root })).toEqual([
+      expect.objectContaining({ providerId: "codex", accountId: "valid" }),
+    ]);
+  });
+
   it("fails closed when two account records resolve to the same profile path", () => {
     const { root, providers } = registry();
     const providerRoot = provider(providers, "codex", codexManifest);

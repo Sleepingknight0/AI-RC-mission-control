@@ -4,6 +4,7 @@ import {
   readdirSync,
   realpathSync,
   statSync,
+  type Dirent,
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
@@ -329,32 +330,54 @@ export function readProviderAccountProfiles(
   const profiles: ProviderAccountProfile[] = [];
   const identities = new Set<string>();
   const paths = new Set<string>();
-  for (const providerDirectory of readdirSync(providersRoot, {
-    withFileTypes: true,
-  })) {
+  let providerDirectories: Dirent[];
+  try {
+    providerDirectories = readdirSync(providersRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const providerDirectory of providerDirectories) {
     if (!providerDirectory.isDirectory()) continue;
     const providerRoot = join(providersRoot, providerDirectory.name);
     const manifestPath = join(providerRoot, "provider.json");
     if (!existsSync(manifestPath)) continue;
-    const manifest = JSON.parse(
-      readFileSync(manifestPath, "utf8"),
-    ) as RawProviderManifest;
+    let manifest: RawProviderManifest;
+    try {
+      const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as unknown;
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        continue;
+      }
+      manifest = parsed as RawProviderManifest;
+    } catch {
+      continue;
+    }
     const providerId =
       slug(asString(manifest.id) ?? providerDirectory.name) ??
       slug(providerDirectory.name);
     if (providerId === null) continue;
     const accountsRoot = join(providerRoot, "accounts");
     if (!isDirectory(accountsRoot)) continue;
-    for (const accountDirectory of readdirSync(accountsRoot, {
-      withFileTypes: true,
-    })
+    let accountDirectories: Dirent[];
+    try {
+      accountDirectories = readdirSync(accountsRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const accountDirectory of accountDirectories
       .filter((entry) => entry.isDirectory())
       .slice(0, MAX_PROVIDER_ACCOUNTS)) {
       const profileFile = join(accountsRoot, accountDirectory.name, "profile.json");
       if (!existsSync(profileFile)) continue;
-      const profile = JSON.parse(
-        readFileSync(profileFile, "utf8"),
-      ) as RawAccountProfile;
+      let profile: RawAccountProfile;
+      try {
+        const parsed = JSON.parse(readFileSync(profileFile, "utf8")) as unknown;
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          continue;
+        }
+        profile = parsed as RawAccountProfile;
+      } catch {
+        continue;
+      }
       const accountId =
         slug(asString(profile.id) ?? accountDirectory.name) ??
         slug(accountDirectory.name);

@@ -36,7 +36,6 @@ import {
   type ProtocolError,
   type ProviderFleetSnapshot,
   type ProviderAccountCapabilitySnapshot,
-  type ProviderNativeSession,
   type ProviderNativeSessionSnapshot,
   type ProviderRecord,
   type Runtime,
@@ -55,6 +54,7 @@ import {
   type ConnectorSource,
 } from "./store.js";
 import { BrowserTicketRegistry } from "./browser-tickets.js";
+import { NativeSessionEvidenceStore } from "./native-session-evidence.js";
 import { isReservedHttpPath, serveWebRequest } from "./static-host.js";
 
 export const DEFAULT_CORE_DB_PATH = resolve(
@@ -422,13 +422,16 @@ export async function startCoreServer(
     string,
     { snapshot: ProviderNativeSessionSnapshot; bootId: string }
   >();
-  const nativeSessionRows = new Map<string, Map<string, ProviderNativeSession>>();
+  const nativeSessionEvidence = new NativeSessionEvidenceStore();
   const pendingNativeSessionRequests = new Map<
     string,
     {
       socket: WebSocket;
       providerId: string;
       accountId: string;
+      cursor: string | null;
+      search: string | null;
+      archived: "exclude" | "include" | "only";
     }
   >();
   let closing = false;
@@ -1186,6 +1189,9 @@ export async function startCoreServer(
           socket,
           providerId: message.payload.providerId,
           accountId: message.payload.accountId,
+          cursor: message.payload.cursor,
+          search: message.payload.search,
+          archived: message.payload.archived,
         });
         sendConnector(
           connection.socket,
@@ -1359,21 +1365,32 @@ export async function startCoreServer(
             message.payload.providerId,
             message.payload.accountId,
           );
-          const legacyNative = nativeSessionSnapshots.get(nativeKey)?.snapshot;
-          const discovered =
-            nativeSessionRows
-              .get(nativeKey)
-              ?.get(message.payload.providerSessionId) ??
-            legacyNative?.sessions.find(
-              (candidate) =>
-                candidate.providerSessionId === message.payload.providerSessionId,
-            );
-          if (
-            (legacyNative === undefined && discovered === undefined) ||
-            (legacyNative !== undefined && legacyNative.freshness !== "live") ||
-            discovered === undefined ||
-            !discovered.canResume
-          ) {
+          const runtimeIdentity = {
+            bootId: connection.bootId,
+            runtimeId: connection.runtime.runtimeId,
+            runtimeGeneration: connection.runtime.generation,
+          };
+          const discoveredPageRow = nativeSessionEvidence.resumable(
+            message.payload.providerId,
+            message.payload.accountId,
+            message.payload.providerSessionId,
+            runtimeIdentity,
+          );
+          const legacyRetained = nativeSessionSnapshots.get(nativeKey);
+          const legacyNative = legacyRetained?.snapshot;
+          const legacyIsCurrent =
+            legacyRetained?.bootId === connection.bootId &&
+            legacyNative?.freshness === "live" &&
+            Date.parse(legacyNative.staleAt) > Date.now();
+          const discoveredLegacyRow = legacyIsCurrent
+            ? legacyNative.sessions.find(
+                (candidate) =>
+                  candidate.providerSessionId === message.payload.providerSessionId &&
+                  candidate.canResume,
+              ) ?? null
+            : null;
+          const discovered = discoveredPageRow ?? discoveredLegacyRow;
+          if (discovered === null) {
             send(
               socket,
               rejection({
@@ -1759,6 +1776,12 @@ export async function startCoreServer(
         }
         if (result.activeTurnId !== undefined && result.activeTurnId !== null) {
           await interruptActiveTurn(message.payload.sessionId);
+        }
+        return;
+      }
+      case "session.unsubscribe": {
+        if (clients.get(socket) === message.payload.sessionId) {
+          clients.set(socket, null);
         }
         return;
       }
@@ -2458,15 +2481,15 @@ export async function startCoreServer(
       ) {
         return;
       }
-      const key = nativeSnapshotKey(request.providerId, request.accountId);
-      let rows = nativeSessionRows.get(key);
-      if (rows === undefined) {
-        rows = new Map();
-        nativeSessionRows.set(key, rows);
-      }
-      for (const session of message.payload.page.sessions) {
-        rows.set(session.providerSessionId, session);
-      }
+      nativeSessionEvidence.record(
+        request,
+        message.payload.page,
+        {
+          bootId: connectorConnection.bootId,
+          runtimeId: connectorConnection.runtime.runtimeId,
+          runtimeGeneration: connectorConnection.runtime.generation,
+        },
+      );
       if (request.socket.readyState === WebSocket.OPEN) {
         send(
           request.socket,

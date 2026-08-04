@@ -51,6 +51,16 @@ describe("normalized protocol validation", () => {
     expect(result.success).toBe(true);
   });
 
+  it("validates an exact Session unsubscribe without mutation authority", () => {
+    expect(ClientEnvelopeSchema.safeParse(
+      makeEnvelope("session.unsubscribe", { sessionId: "session-1" }),
+    ).success).toBe(true);
+    expect(ClientEnvelopeSchema.safeParse({
+      ...makeEnvelope("session.unsubscribe", { sessionId: "session-1" }),
+      payload: { sessionId: "session-1", prompt: "must-not-send" },
+    }).success).toBe(false);
+  });
+
   it("validates the normalized Session catalog without provider fields", () => {
     expect(ClientEnvelopeSchema.safeParse(makeEnvelope("sessions.list", {})).success).toBe(
       true,

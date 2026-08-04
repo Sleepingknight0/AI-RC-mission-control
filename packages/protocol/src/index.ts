@@ -1038,6 +1038,10 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       afterSeq: z.number().int().nonnegative(),
     }),
   ),
+  envelope(
+    "session.unsubscribe",
+    z.object({ sessionId: id }).strict(),
+  ),
   envelope("sessions.list", z.object({}).strict()),
   envelope(
     "sessions.catalog.list",
