@@ -64,6 +64,10 @@ export function AccountSessionDrawer({
     <MobileOverlay open={open} variant="drawer" title="Accounts and Sessions" testId="mobile-account-drawer" onClose={onClose}>
       <MobileOverlayHeading title="AI Accounts" detail="Provider → Account → Session" onClose={onClose} />
       <div className="mobile-drawer-scroll">
+        <div className="mobile-drawer-section-heading">
+          <h2>Providers</h2>
+          <span>Sanitized inventory</span>
+        </div>
         <ProviderAccountTree
           fleet={fleet}
           selectedProviderId={selectedProviderId}

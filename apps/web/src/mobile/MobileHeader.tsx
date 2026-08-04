@@ -12,8 +12,10 @@ export interface MobileHeaderProps {
 }
 
 export function MobileHeader(props: MobileHeaderProps) {
+  const identity = `${props.providerLabel} · ${props.accountLabel}`;
   return (
     <header className="mobile-header">
+      <div className="mobile-header-rail" aria-hidden="true" />
       <button
         type="button"
         className="mobile-icon-button"
@@ -24,10 +26,10 @@ export function MobileHeader(props: MobileHeaderProps) {
         <MenuIcon />
       </button>
       <div className="mobile-header-copy">
-        <strong title={`${props.providerLabel} · ${props.accountLabel}`}>
-          {props.providerLabel} <span aria-hidden="true">·</span> {props.accountLabel}
-        </strong>
-        <span title={props.sessionTitle ?? "Account home"}>{props.sessionTitle ?? "Account home"}</span>
+        <strong title={identity}>{identity}</strong>
+        <span title={props.sessionTitle ?? "Account home"}>
+          {props.sessionTitle ?? "Account home"}
+        </span>
       </div>
       <button
         type="button"
