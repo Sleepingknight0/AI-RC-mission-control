@@ -253,6 +253,62 @@ describe("M10 mobile visible contracts", () => {
     expect(overlaySource).not.toContain("[onClose, open]");
   });
 
+  it("pins the composer with flex layout and drops forced uppercase on mobile controls", () => {
+    expect(styles).toMatch(/\.mobile-chat-main\s*\{[^}]*display:\s*flex/s);
+    expect(styles).toMatch(/\.mobile-chat-main\s*\{[^}]*flex-direction:\s*column/s);
+    expect(styles).toMatch(/\.mobile-chat-timeline\s*\{[^}]*flex:\s*1 1 auto/s);
+    expect(styles).toMatch(/\.mobile-composer\s*\{[^}]*flex:\s*0 0 auto/s);
+    expect(styles).not.toMatch(/\.mobile-chat-main\s*\{[^}]*grid-template-rows:\s*auto auto auto minmax/s);
+    expect(styles).toMatch(/\.mobile-chat-shell button\s*\{[^}]*text-transform:\s*none/s);
+  });
+
+  it("applies restrained aerospace visual tokens without neon excess", () => {
+    expect(styles).toMatch(/--mobile-ice:/);
+    expect(styles).toMatch(/--mobile-void:/);
+    expect(styles).toMatch(/mobile-header-rail/);
+    expect(styles).toMatch(/mobile-flight-link/);
+    expect(styles).toMatch(/mobile-link-pulse/);
+    expect(styles).toMatch(/prefers-reduced-motion: reduce/);
+    expect(styles).not.toMatch(/neon|rainbow|#ff00ff/i);
+  });
+
+  it("surfaces shared model-sheet blockers once instead of on every choice", () => {
+    const html = renderToStaticMarkup(createElement(ModelModeSheet, {
+      open: true,
+      models: accountCapabilities.models,
+      settings: { ...settings, mutable: false },
+      capabilities,
+      evidenceNotice: null,
+      onClose: () => undefined,
+      onUpdate: () => undefined,
+    }));
+    expect(html).toContain("Settings are not mutable");
+    expect(html).toContain("Account-specific model");
+    expect(html.match(/Settings are not mutable/g)?.length).toBe(3);
+    expect(html).not.toMatch(/title="Settings are not mutable"/);
+  });
+
+  it("hides the native file control from the accessibility tree", () => {
+    const html = renderToStaticMarkup(createElement(MobileComposer, {
+      value: "",
+      modelLabel: "GPT Mobile",
+      modeLabel: "Ask",
+      busy: false,
+      canSubmit: false,
+      disabledReason: "Ready",
+      canAttachText: true,
+      canAttachImage: false,
+      attachmentChips: null,
+      onChange: () => undefined,
+      onSubmit: () => undefined,
+      onAbort: () => undefined,
+      onOpenModelMode: () => undefined,
+      onPickFiles: () => undefined,
+    }));
+    expect(html).toContain('aria-hidden="true"');
+    expect(html).toContain('type="file"');
+  });
+
   it("requests native inventory for the exact selected account without provider-level gating", () => {
     expect(appSource).toContain("requestNativeSessions(");
     expect(appSource).not.toContain('const remote = capabilitySupported(selectedProvider, "list_sessions")');

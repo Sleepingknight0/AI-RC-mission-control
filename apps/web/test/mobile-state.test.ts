@@ -21,6 +21,7 @@ import {
   accountScopedCatalogFilters,
   canActivateAccount,
   currentAccountStatus,
+  displaySessionTitle,
   groupAccountsByProvider,
   recentSessionsByPeriod,
   sessionBelongsToProviderAccount,
@@ -246,6 +247,26 @@ describe("M10 mobile provider/account/session selectors", () => {
       "blue-2",
       "blue-3",
     ]);
+  });
+
+  it("normalizes multi-line Session titles for single-line mobile display", () => {
+    expect(displaySessionTitle("STATE\nYou are Codex")).toBe("STATE You are Codex");
+    expect(displaySessionTitle("boundary.\nDo not use tools")).toBe("boundary. Do not use tools");
+    expect(displaySessionTitle("boundary.Do not use tools")).toBe("boundary. Do not use tools");
+    expect(displaySessionTitle("  already   single  ")).toBe("already single");
+  });
+
+  it("collapses prompt newlines when building account Session rows", () => {
+    const rows = sessionsForProviderAccount(
+      [{
+        ...catalogSession("managed-a", "blue-1", null),
+        title: "RECOVERY\nLOCAL STATE FIRST",
+      }],
+      [],
+      "codex",
+      "blue-1",
+    );
+    expect(rows[0]?.title).toBe("RECOVERY LOCAL STATE FIRST");
   });
 
   it("never falls back from a restored account during partial inventory", () => {
