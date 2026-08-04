@@ -68,7 +68,7 @@ const accountCapabilities: ProviderAccountCapabilitySnapshot = {
   accountId: "one",
   source: "provider_probe",
   observedAt,
-  staleAt: "2026-08-04T10:05:00.000Z",
+  staleAt: "2099-01-01T00:00:00.000Z",
   freshness: "live",
   authentication: "authenticated",
   control: "remote_control",
@@ -242,8 +242,10 @@ describe("M10 mobile visible contracts", () => {
   it("keeps mobile at below 768px with safe areas, 100dvh and 44px targets", () => {
     expect(styles).toMatch(/@media \(max-width: 767px\)/);
     expect(styles).toMatch(/\.mobile-chat-shell\s*\{[^}]*height:\s*100dvh/s);
-    expect(styles).toMatch(/\.mobile-composer\s*\{[^}]*safe-area-inset-bottom/s);
-    expect(styles).toMatch(/\.mobile-chat-shell button,[\s\S]*min-height:\s*44px/);
+    expect(styles).toMatch(/--safe-b:\s*env\(safe-area-inset-bottom/);
+    expect(styles).toMatch(/\.mobile-composer\s*\{[^}]*var\(--safe-b\)/s);
+    expect(styles).toMatch(/\.mobile-chat-shell button,[\s\S]*min-height:\s*var\(--touch\)/);
+    expect(styles).toMatch(/--touch:\s*44px/);
     expect(styles).not.toMatch(/\.mobile-return-live\s*\{[^}]*min-height:\s*(?:3[0-9]|[0-9])px/s);
     expect(overlaySource).toContain('event.key === "Escape"');
     expect(overlaySource).toContain("returnTarget?.focus");
@@ -262,14 +264,40 @@ describe("M10 mobile visible contracts", () => {
     expect(styles).toMatch(/\.mobile-chat-shell button\s*\{[^}]*text-transform:\s*none/s);
   });
 
-  it("applies restrained aerospace visual tokens without neon excess", () => {
-    expect(styles).toMatch(/--mobile-ice:/);
-    expect(styles).toMatch(/--mobile-void:/);
-    expect(styles).toMatch(/mobile-header-rail/);
+  it("applies monochrome flight-deck tokens without neon excess", () => {
+    expect(styles).toMatch(/--void:\s*#000000/);
+    expect(styles).toMatch(/--signal:\s*#ffffff/i);
+    expect(styles).toMatch(/--line-subtle:/);
     expect(styles).toMatch(/mobile-flight-link/);
     expect(styles).toMatch(/mobile-link-pulse/);
     expect(styles).toMatch(/prefers-reduced-motion: reduce/);
+    expect(styles).toMatch(/\.mobile-header-identity/);
     expect(styles).not.toMatch(/neon|rainbow|#ff00ff/i);
+  });
+
+  it("uses compact header identity and single link-state control", () => {
+    const html = renderToStaticMarkup(createElement(MobileHeader, {
+      providerLabel: "Codex",
+      accountLabel: "Account 1",
+      sessionTitle: "Mission Control",
+      statusLabel: "Connected",
+      statusTone: "ready",
+      activityLabel: "Ready",
+      onOpenDrawer: () => undefined,
+      onOpenStatus: () => undefined,
+    }));
+    expect(html).toContain("mobile-header-identity");
+    expect(html).toContain("Codex / Account 1");
+    expect(html).toContain("LINK");
+    expect(html).not.toMatch(/Core online|Connector ready/i);
+  });
+
+  it("contracts scroll containers to primary timeline, drawer, and sheet only", () => {
+    expect(styles).toMatch(/\.mobile-timeline-scroll\s*\{[^}]*overflow-y:\s*auto/s);
+    expect(styles).toMatch(/\.mobile-drawer-scroll,\s*\n\s*\.mobile-sheet-scroll\s*\{[^}]*overflow-y:\s*auto/s);
+    expect(styles).toMatch(/\.mobile-chat-timeline\s*\{[^}]*min-height:\s*0/s);
+    expect(styles).toMatch(/\.mobile-overlay-panel\s*\{[^}]*min-height:\s*0/s);
+    expect(styles).toMatch(/scroll-padding-bottom:\s*28px/);
   });
 
   it("surfaces shared model-sheet blockers once instead of on every choice", () => {

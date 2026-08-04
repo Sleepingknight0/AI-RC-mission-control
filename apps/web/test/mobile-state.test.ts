@@ -35,6 +35,8 @@ import {
 } from "../src/mobile/activation.js";
 
 const observedAt = "2026-08-04T10:00:00.000Z";
+/** Deterministic clock for evidence freshness (must predate fixture staleAt). */
+const fixedNow = Date.parse("2026-08-04T10:00:30.000Z");
 
 const account = (accountId: string, displayName: string, isDefault = false) => ({
   accountId,
@@ -331,27 +333,28 @@ describe("M10 mobile provider/account/session selectors", () => {
 
   it("uses exact live account evidence and never promotes fleet-local control", () => {
     const inventory = provider().accounts[0] ?? null;
-    const unavailable = currentAccountStatus("codex", inventory, null);
+    const unavailable = currentAccountStatus("codex", inventory, null, fixedNow);
     expect(unavailable.canControl).toBe(false);
-    const inactive = currentAccountStatus("codex", inventory, accountCapabilities("blue-1"));
+    const inactive = currentAccountStatus("codex", inventory, accountCapabilities("blue-1"), fixedNow);
     expect(inactive).toMatchObject({ canControl: false, active: false, label: "Ready to activate" });
     const active = currentAccountStatus(
       "codex",
       inventory,
       accountCapabilities("blue-1", { active: true, control: "remote_control" }),
+      fixedNow,
     );
     expect(active).toMatchObject({ canControl: true, active: true });
-    expect(currentAccountStatus("other", inventory, accountCapabilities("blue-1")).canControl).toBe(false);
+    expect(currentAccountStatus("other", inventory, accountCapabilities("blue-1"), fixedNow).canControl).toBe(false);
   });
 
   it("switches account-specific models and never invents xhigh", () => {
     const first = accountCapabilities("blue-1", { models: [model("gpt-a", ["low", "high"])] });
     const second = accountCapabilities("blue-2", { models: [model("gpt-b", ["medium"])] });
-    const firstModels = supportedModelsForAccount(first, "codex", "blue-1");
+    const firstModels = supportedModelsForAccount(first, "codex", "blue-1", fixedNow);
     expect(firstModels.map((item) => item.modelId)).toEqual(["gpt-a"]);
     expect(supportedReasoningForModel(firstModels, "gpt-a").map((item) => item.value)).toEqual(["low", "high"]);
-    expect(supportedModelsForAccount(first, "codex", "blue-2")).toEqual([]);
-    expect(supportedModelsForAccount(second, "codex", "blue-2").map((item) => item.modelId)).toEqual(["gpt-b"]);
+    expect(supportedModelsForAccount(first, "codex", "blue-2", fixedNow)).toEqual([]);
+    expect(supportedModelsForAccount(second, "codex", "blue-2", fixedNow).map((item) => item.modelId)).toEqual(["gpt-b"]);
   });
 
   it("withdraws control when exact account evidence becomes stale", () => {
@@ -364,6 +367,7 @@ describe("M10 mobile provider/account/session selectors", () => {
         active: true,
         control: "inventory_only",
       }),
+      fixedNow,
     );
     expect(status).toMatchObject({ canControl: false, state: "stale", active: true });
   });
