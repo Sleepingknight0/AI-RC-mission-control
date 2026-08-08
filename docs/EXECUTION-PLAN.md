@@ -45,6 +45,7 @@ and must rebase and adapt to `docs/M9-WEB-INTEGRATION-CONTRACT.md` before merge.
 - M8.6 backup/restore and clean-install gate — **done**
 - M9.0 architecture, Web contract, and exact-head baseline — **done**
 - M9.1–M9.11 Remote AI Workspace non-visual implementation — **done**
+- M10.1 post-M10 provider visibility and disabled-provider optimization — **done**
 
 ## Non-goals
 
@@ -73,10 +74,11 @@ and must rebase and adapt to `docs/M9-WEB-INTEGRATION-CONTRACT.md` before merge.
 - Connector owns a separate inbox/outbox journal under the same configured data
   directory, never the Core database file
 - Browser reconnect uses durable sequence replay plus a current projection snapshot
-- Core schema v13 projects tool activities, file changes, approvals, artifacts,
+- Core schema v15 projects tool activities, file changes, approvals, artifacts,
   Catalog/settings/provider bindings, attachments, terminal evidence,
   cross-type display sequence, guarded transitions, terminal work settlement,
-  fail-closed legacy settings, and catalog-visible-only pagination revisions
+  fail-closed legacy settings, catalog-visible-only pagination revisions, and
+  audited provider-enablement command outcomes
 - Connector schema v3 batches ephemeral UTF-8 command output, journals
   large-diff chunks in FIFO order, and reports durable command receipts
 - Both migration ledgers bind applied SQL names and contents to SHA-256; startup
@@ -478,3 +480,36 @@ Durable evidence: `reviews/codex/M10-MOBILE-ACCOUNT-SESSION-RECOVERY.md`.
 The next single milestone is M8.5 real second-device acceptance only if its
 operator deferral is removed. Otherwise the operator should define the next
 post-M10 milestone; no additional Prototype 0 implementation is implied.
+
+## M10.1 provider visibility execution result — 2026-08-09
+
+1. Reused each provider manifest's durable `enabled` field as the only
+   visibility preference; no universal five-provider product default or browser
+   filesystem write was added.
+2. Added normalized Browser → Core → Connector enablement CAS with stable
+   command IDs, duplicate-payload validation, Connector journal dedupe, atomic
+   manifest replacement, and Core schema-15 audit/results.
+3. The Mobile drawer filters strictly to enabled providers. Manage Providers
+   exposes five active and ten available/disabled providers with accessible
+   switches and stored-account counts.
+4. Disabled providers perform only bounded manifest and account-directory
+   counting. Provider process launch, installation/authentication probes,
+   models/usage, native Sessions, activation, create/resume, and Session
+   authority are all gated.
+5. Real-registry compiled acceptance passed 375×812, 390×844, 430×932, 200%
+   text, focus/Escape restoration, no horizontal overflow, and console 0/0.
+   Amp retained one stored account while toggled on/off across refresh and two
+   application restarts; Session and Turn counts remained zero.
+6. Resource measurement after disabled-state restart found zero matching
+   processes for all ten disabled providers and zero isolated Connector child
+   processes. Connector inventory has no recurring provider poll; refresh is
+   startup/reconnect/operator-command driven.
+7. `pnpm build`, 85 targeted tests, `pnpm check` (251 automated tests plus all
+   compiled operational gates), and diff hygiene pass. The Real Codex lifecycle
+   was not rerun because exact Codex routing and Turn dispatch were unchanged.
+
+Durable evidence: `reviews/codex/M10.1-PROVIDER-VISIBILITY.md`.
+
+The next single milestone remains M8.5 real second-device acceptance only if
+the operator removes its deferral; otherwise the operator should define the
+next post-M10 milestone.
