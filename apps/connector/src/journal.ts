@@ -144,6 +144,7 @@ export class ConnectorJournal {
           | "connector.approval.resolve"
           | "connector.session.create"
           | "connector.session.resume"
+          | "connector.provider.enablement.set"
           | "connector.provider.account.activate";
       }
     >,

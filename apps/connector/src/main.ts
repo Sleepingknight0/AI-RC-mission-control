@@ -7,7 +7,11 @@ import { startConnector } from "./client.js";
 import { CodexAccountController } from "./codex/account-controller.js";
 import { probeInstalledCodex } from "./codex/compatibility.js";
 import { MockProvider } from "./mock-provider.js";
-import { readProviderFleet } from "./provider-inventory.js";
+import {
+  providerEnabled,
+  readProviderFleet,
+  setProviderEnabled,
+} from "./provider-inventory.js";
 import { UnavailableProvider } from "./provider.js";
 
 const repositoryRoot =
@@ -28,7 +32,18 @@ if (connectorToken === undefined) {
   throw new Error("AICL_CONNECTOR_TOKEN is required");
 }
 
-const compatibility = providerName === "codex" ? probeInstalledCodex() : null;
+const configuredProviderEnabled = (() => {
+  if (providerName !== "codex") return true;
+  try {
+    return providerEnabled("codex");
+  } catch {
+    return false;
+  }
+})();
+const compatibility =
+  providerName === "codex" && configuredProviderEnabled
+    ? probeInstalledCodex()
+    : null;
 if (compatibility !== null && !compatibility.compatible) {
   console.error(`Codex compatibility gate failed: ${compatibility.reason}`);
   process.exit(1);
@@ -37,7 +52,7 @@ if (compatibility !== null && !compatibility.compatible) {
 const provider =
   providerName === "mock" ? new MockProvider() : new UnavailableProvider();
 const providerAccountController =
-  providerName === "codex"
+  providerName === "codex" && configuredProviderEnabled
     ? new CodexAccountController({
         cwd: projectPath,
         allowedRoots: config.workspace.allowedRoots,
@@ -73,6 +88,9 @@ const connector = startConnector({
             },
           }),
     }),
+  setProviderEnabled: (input) => {
+    setProviderEnabled(input);
+  },
   ...(providerAccountController === undefined
     ? {}
     : { providerAccountController }),

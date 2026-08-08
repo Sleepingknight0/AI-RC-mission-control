@@ -1059,6 +1059,21 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
   ),
   envelope("providers.refresh", z.object({}).strict()),
   envelope(
+    "provider.enablement.set",
+    z
+      .object({
+        commandId: id,
+        deviceId: id,
+        providerId: providerSlug,
+        expectedEnabled: z.boolean(),
+        enabled: z.boolean(),
+      })
+      .strict()
+      .refine((value) => value.expectedEnabled !== value.enabled, {
+        message: "provider enablement command must change the current value",
+      }),
+  ),
+  envelope(
     "provider.account.capabilities.refresh",
     z.object({ providerId: providerSlug, accountId: providerSlug }).strict(),
   ),
@@ -1454,6 +1469,26 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
     z.object({ snapshot: ProviderFleetSnapshotSchema }).strict(),
   ),
   envelope(
+    "provider.enablement.changed",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        enabled: z.boolean(),
+      })
+      .strict(),
+  ),
+  envelope(
+    "provider.enablement.rejected",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        error: ProtocolErrorSchema,
+      })
+      .strict(),
+  ),
+  envelope(
     "provider.account.capabilities.snapshot",
     z.object({ snapshot: ProviderAccountCapabilitySnapshotSchema }).strict(),
   ),
@@ -1722,6 +1757,20 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   ),
   envelope("connector.providers.refresh", z.object({}).strict()),
   envelope(
+    "connector.provider.enablement.set",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        expectedEnabled: z.boolean(),
+        enabled: z.boolean(),
+      })
+      .strict()
+      .refine((value) => value.expectedEnabled !== value.enabled, {
+        message: "provider enablement command must change the current value",
+      }),
+  ),
+  envelope(
     "connector.provider.account.capabilities.refresh",
     z.object({ providerId: providerSlug, accountId: providerSlug }).strict(),
   ),
@@ -1794,6 +1843,26 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
   connectorEnvelope(
     "connector.providers.snapshot",
     z.object({ snapshot: ProviderFleetSnapshotSchema }).strict(),
+  ),
+  connectorEnvelope(
+    "connector.provider.enablement.changed",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        enabled: z.boolean(),
+      })
+      .strict(),
+  ),
+  connectorEnvelope(
+    "connector.provider.enablement.rejected",
+    z
+      .object({
+        commandId: id,
+        providerId: providerSlug,
+        code: displayText(96),
+      })
+      .strict(),
   ),
   connectorEnvelope(
     "connector.provider.account.capabilities.snapshot",

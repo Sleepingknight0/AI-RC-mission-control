@@ -50,8 +50,8 @@ export class CodexAccountController implements ProviderAccountController {
     this.#profiles = new Map(
       readProviderAccountProfiles(
         options.registryRoot === undefined
-          ? {}
-          : { registryRoot: options.registryRoot },
+          ? { enabledOnly: true }
+          : { registryRoot: options.registryRoot, enabledOnly: true },
       )
         .filter((profile) => profile.providerId === "codex")
         .map((profile) => [this.#key(profile.providerId, profile.accountId), profile]),

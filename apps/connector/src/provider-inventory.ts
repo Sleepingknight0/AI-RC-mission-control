@@ -3,11 +3,14 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
+  rmSync,
   statSync,
+  writeFileSync,
   type Dirent,
 } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, relative, resolve } from "node:path";
 
 import {
   MAX_PROVIDER_ACCOUNTS,
@@ -56,6 +59,20 @@ export interface ProviderAccountProfile {
   accountId: string;
   displayName: string;
   profilePath: string;
+}
+
+export class ProviderEnablementMutationError extends Error {
+  constructor(
+    readonly code:
+      | "PROVIDER_NOT_FOUND"
+      | "PROVIDER_ENABLEMENT_CONFLICT"
+      | "PROVIDER_REGISTRY_UNAVAILABLE"
+      | "PROVIDER_MANIFEST_INVALID",
+    message: string,
+  ) {
+    super(message);
+    this.name = "ProviderEnablementMutationError";
+  }
 }
 
 interface RawProviderManifest {
@@ -182,8 +199,37 @@ function readProvider(
   if (providerId === null) return unreadableProvider(directory, observedAt);
 
   const enabled = manifest.enabled === true;
-  const installed = isInstalled(manifest, options);
   const compatibility = options.knownCompatibility?.[providerId] ?? "unknown";
+  if (!enabled) {
+    return {
+      providerId,
+      displayName: sanitizeText(asString(manifest.displayName), 96) ?? providerId,
+      enabled: false,
+      installation: "unknown",
+      authentication: "unknown",
+      compatibility,
+      adapterSupport: "inventory_only",
+      version: sanitizeText(options.knownVersions?.[providerId] ?? null, 64),
+      freshness: "local",
+      observedAt,
+      notice: "Disabled; installation, authentication, models, usage, and Sessions were not probed",
+      capabilities: providerCapabilities({
+        observedAt,
+        enabled: false,
+        loginProbe: false,
+        usageSupported: false,
+        remotelyControllable: false,
+      }),
+      accounts: [],
+      accountCount: accountDirectoryCount(providerRoot),
+      models: [],
+      modelsState: "not_supported",
+      usageState: "not_supported",
+      usageMeters: [],
+    };
+  }
+
+  const installed = isInstalled(manifest, options);
   const loginFiles = safeRelativePaths(
     asStringArray(manifest.loginDetection?.relativePaths),
   );
@@ -212,6 +258,7 @@ function readProvider(
     manifest.usage?.enabled === true && strategy !== "unsupported";
   const capabilities = providerCapabilities({
     observedAt,
+    enabled: true,
     loginProbe: loginFiles.length > 0,
     usageSupported,
     remotelyControllable,
@@ -322,7 +369,9 @@ function readAccounts(
 }
 
 export function readProviderAccountProfiles(
-  options: Pick<ProviderInventoryOptions, "registryRoot"> = {},
+  options: Pick<ProviderInventoryOptions, "registryRoot"> & {
+    enabledOnly?: boolean;
+  } = {},
 ): ProviderAccountProfile[] {
   const registryRoot = options.registryRoot ?? DEFAULT_PROVIDER_REGISTRY_ROOT;
   const providersRoot = join(registryRoot, "providers");
@@ -351,6 +400,7 @@ export function readProviderAccountProfiles(
     } catch {
       continue;
     }
+    if (options.enabledOnly === true && manifest.enabled !== true) continue;
     const providerId =
       slug(asString(manifest.id) ?? providerDirectory.name) ??
       slug(providerDirectory.name);
@@ -416,6 +466,7 @@ export function readProviderAccountProfiles(
 
 function providerCapabilities(input: {
   observedAt: string;
+  enabled: boolean;
   loginProbe: boolean;
   usageSupported: boolean;
   remotelyControllable: boolean;
@@ -434,18 +485,31 @@ function providerCapabilities(input: {
   });
   const result: ProviderCapabilityEvidence[] = [
     evidence("inventory", "supported", "terminal_registry"),
-    evidence("installation_probe", "supported", "terminal_registry"),
+    evidence(
+      "installation_probe",
+      input.enabled ? "supported" : "unknown",
+      "terminal_registry",
+      input.enabled ? null : "Provider is disabled; installation was not probed",
+    ),
     evidence(
       "authentication_probe",
-      input.loginProbe ? "supported" : "unknown",
+      input.enabled && input.loginProbe ? "supported" : "unknown",
       "terminal_registry",
-      input.loginProbe ? null : "Registry does not declare login detection",
+      input.enabled
+        ? input.loginProbe
+          ? null
+          : "Registry does not declare login detection"
+        : "Provider is disabled; authentication was not probed",
     ),
     evidence(
       "usage_collection",
       input.usageSupported ? "unknown" : "unsupported",
       "terminal_registry",
-      input.usageSupported ? "Collector not executed" : "Collector not supported",
+      input.enabled
+        ? input.usageSupported
+          ? "Collector not executed"
+          : "Collector not supported"
+        : "Provider is disabled; usage collection was not run",
     ),
   ];
   for (const key of REMOTE_CAPABILITY_KEYS) {
@@ -477,6 +541,122 @@ function providerCapabilities(input: {
     ),
   );
   return result;
+}
+
+function accountDirectoryCount(providerRoot: string) {
+  const accountsRoot = join(providerRoot, "accounts");
+  if (!isDirectory(accountsRoot)) return 0;
+  try {
+    return readdirSync(accountsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .slice(0, MAX_PROVIDER_ACCOUNTS).length;
+  } catch {
+    return 0;
+  }
+}
+
+export function providerEnabled(
+  providerId: string,
+  options: Pick<ProviderInventoryOptions, "registryRoot"> = {},
+) {
+  const match = providerManifest(providerId, options.registryRoot);
+  return match.manifest.enabled === true;
+}
+
+export function setProviderEnabled(input: {
+  providerId: string;
+  expectedEnabled: boolean;
+  enabled: boolean;
+  registryRoot?: string;
+}) {
+  if (input.expectedEnabled === input.enabled) {
+    throw new ProviderEnablementMutationError(
+      "PROVIDER_ENABLEMENT_CONFLICT",
+      "Provider enablement mutation must change the current value",
+    );
+  }
+  const match = providerManifest(input.providerId, input.registryRoot);
+  const current = match.manifest.enabled === true;
+  if (current !== input.expectedEnabled) {
+    throw new ProviderEnablementMutationError(
+      "PROVIDER_ENABLEMENT_CONFLICT",
+      "Provider enablement changed since the inventory snapshot",
+    );
+  }
+  const updated = { ...match.manifest, enabled: input.enabled };
+  const temporaryPath = `${match.manifestPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  const mode = statSync(match.manifestPath).mode & 0o777;
+  writeFileSync(temporaryPath, `${JSON.stringify(updated, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode,
+  });
+  try {
+    renameSync(temporaryPath, match.manifestPath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+  return { providerId: input.providerId, enabled: input.enabled };
+}
+
+function providerManifest(providerId: string, registryRoot?: string) {
+  const root = registryRoot ?? DEFAULT_PROVIDER_REGISTRY_ROOT;
+  const providersRoot = join(root, "providers");
+  if (!isDirectory(providersRoot)) {
+    throw new ProviderEnablementMutationError(
+      "PROVIDER_REGISTRY_UNAVAILABLE",
+      "Terminal provider registry is unavailable",
+    );
+  }
+  let canonicalProvidersRoot: string;
+  let directories: Dirent[];
+  try {
+    canonicalProvidersRoot = realpathSync(providersRoot);
+    directories = readdirSync(canonicalProvidersRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .slice(0, MAX_PROVIDER_INVENTORY);
+  } catch {
+    throw new ProviderEnablementMutationError(
+      "PROVIDER_REGISTRY_UNAVAILABLE",
+      "Terminal provider registry could not be read",
+    );
+  }
+
+  const matches: Array<{ manifestPath: string; manifest: RawProviderManifest & Record<string, unknown> }> = [];
+  for (const directory of directories) {
+    const candidatePath = join(canonicalProvidersRoot, directory.name, "provider.json");
+    if (!existsSync(candidatePath)) continue;
+    try {
+      const manifestPath = realpathSync(candidatePath);
+      const pathFromRoot = relative(canonicalProvidersRoot, manifestPath);
+      if (
+        pathFromRoot === "" ||
+        pathFromRoot.startsWith("..") ||
+        isAbsolute(pathFromRoot)
+      ) {
+        continue;
+      }
+      const parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as unknown;
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        continue;
+      }
+      const manifest = parsed as RawProviderManifest & Record<string, unknown>;
+      const candidateId =
+        slug(asString(manifest.id) ?? directory.name) ?? slug(directory.name);
+      if (candidateId === providerId) matches.push({ manifestPath, manifest });
+    } catch {
+      continue;
+    }
+  }
+  if (matches.length !== 1) {
+    throw new ProviderEnablementMutationError(
+      matches.length === 0 ? "PROVIDER_NOT_FOUND" : "PROVIDER_MANIFEST_INVALID",
+      matches.length === 0
+        ? "Provider does not exist in the terminal registry"
+        : "Provider identity is duplicated in the terminal registry",
+    );
+  }
+  return matches[0]!;
 }
 
 function authenticationState(

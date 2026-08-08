@@ -54,6 +54,11 @@ export interface ConnectorOptions {
     active?: { providerId: string; accountId: string } | null,
   ) => ProviderFleetSnapshot | Promise<ProviderFleetSnapshot>;
   providerInventoryTimeoutMs?: number;
+  setProviderEnabled?: (input: {
+    providerId: string;
+    expectedEnabled: boolean;
+    enabled: boolean;
+  }) => void | Promise<void>;
   providerNativeSessions?: (
     revision: number,
   ) => ProviderNativeSessionSnapshot | Promise<ProviderNativeSessionSnapshot>;
@@ -104,6 +109,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
   let provider = activeAccount?.provider ?? options.provider;
   let legacyActiveIdentity: { providerId: string; accountId: string } | null = null;
   let preloadedInventory: ProviderFleetSnapshot | undefined;
+  let latestProviderInventory: ProviderFleetSnapshot | undefined;
   let stopped = false;
   let providerLost = false;
   let runtimeStatus: "ready" | "busy" | "lost" = "ready";
@@ -303,6 +309,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       ]);
       if (snapshot === undefined) return;
       preloadedInventory = snapshot;
+      latestProviderInventory = snapshot;
       const candidates = snapshot.providers.flatMap((providerRecord) =>
         providerRecord.accounts
           .filter(
@@ -375,6 +382,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         ]);
         if (snapshot === undefined || stopped) return;
         preloadedInventory = undefined;
+        latestProviderInventory = snapshot;
         emit(
           makeEnvelope("connector.providers.snapshot", {
             snapshot: {
@@ -424,19 +432,20 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       } catch {
         if (stopped) return;
         const observedAt = new Date().toISOString();
+        latestProviderInventory = {
+          snapshotId: `fleet-${crypto.randomUUID()}`,
+          revision,
+          source: "unavailable" as const,
+          observedAt,
+          staleAt: new Date(Date.now() + 60_000).toISOString(),
+          freshness: "unavailable" as const,
+          degraded: true,
+          providers: [],
+          notice: "Provider inventory refresh failed or timed out",
+        };
         emit(
           makeEnvelope("connector.providers.snapshot", {
-            snapshot: {
-              snapshotId: `fleet-${crypto.randomUUID()}`,
-              revision,
-              source: "unavailable" as const,
-              observedAt,
-              staleAt: new Date(Date.now() + 60_000).toISOString(),
-              freshness: "unavailable" as const,
-              degraded: true,
-              providers: [],
-              notice: "Provider inventory refresh failed or timed out",
-            },
+            snapshot: latestProviderInventory,
           }),
         );
       } finally {
@@ -449,6 +458,12 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
 
   const refreshNativeSessions = () => {
     if (options.providerNativeSessions === undefined) return Promise.resolve();
+    if (
+      options.providerNativeSessionIdentity !== undefined &&
+      !providerWorkEnabled(options.providerNativeSessionIdentity.providerId)
+    ) {
+      return Promise.resolve();
+    }
     if (nativeSessionRefreshInFlight !== undefined) {
       return nativeSessionRefreshInFlight;
     }
@@ -506,6 +521,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     providerId: string,
     accountId: string,
   ) => {
+    if (!providerWorkEnabled(providerId)) return;
     const controller = options.providerAccountController;
     if (controller === undefined) return;
     const isActive =
@@ -540,9 +556,30 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       { type: "connector.sessions.native.list" }
     >,
   ) => {
+    const { providerId, accountId } = command.payload;
+    if (!providerWorkEnabled(providerId)) {
+      const observedAt = new Date().toISOString();
+      emit(
+        makeEnvelope("connector.sessions.native.page", {
+          requestId: command.payload.requestId,
+          page: {
+            providerId,
+            accountId,
+            observedAt,
+            freshness: "unavailable" as const,
+            sessions: [],
+            nextCursor: null,
+            hasMore: false,
+            truncated: false,
+            cursorReset: false,
+            notice: "Provider is disabled",
+          },
+        }),
+      );
+      return;
+    }
     const controller = options.providerAccountController;
     if (controller === undefined) return;
-    const { providerId, accountId } = command.payload;
     const isActive =
       activeAccount?.providerId === providerId &&
       activeAccount.accountId === accountId;
@@ -631,6 +668,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     }
     if (command.type === "connector.sessions.native.refresh") {
       if (
+        !providerWorkEnabled(command.payload.providerId) ||
         options.providerNativeSessionIdentity?.providerId !==
           command.payload.providerId ||
         options.providerNativeSessionIdentity.accountId !== command.payload.accountId
@@ -671,6 +709,16 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         );
         return;
       }
+      if (command.type === "connector.provider.enablement.set") {
+        emit(
+          makeEnvelope("connector.provider.enablement.rejected", {
+            commandId: command.payload.commandId,
+            providerId: command.payload.providerId,
+            code: "IDEMPOTENCY_KEY_REUSE",
+          }),
+        );
+        return;
+      }
       if (
         command.type === "connector.session.create" ||
         command.type === "connector.session.resume"
@@ -698,6 +746,61 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     }
     journal.markCommand(command.payload.commandId, "dispatching");
 
+    if (command.type === "connector.provider.enablement.set") {
+      const reject = (code: string) => {
+        journal.markCommand(command.payload.commandId, "completed", {
+          failureCode: code,
+        });
+        emit(
+          makeEnvelope("connector.provider.enablement.rejected", {
+            commandId: command.payload.commandId,
+            providerId: command.payload.providerId,
+            code,
+          }),
+        );
+      };
+      if (options.setProviderEnabled === undefined) {
+        reject("PROVIDER_ENABLEMENT_UNAVAILABLE");
+        return;
+      }
+      if (
+        command.payload.enabled === false &&
+        activeIdentity()?.providerId === command.payload.providerId
+      ) {
+        reject("PROVIDER_ACTIVE");
+        return;
+      }
+      const current = latestProviderInventory?.providers.find(
+        (providerRecord) => providerRecord.providerId === command.payload.providerId,
+      );
+      if (
+        current === undefined ||
+        current.enabled !== command.payload.expectedEnabled
+      ) {
+        reject(
+          current === undefined
+            ? "PROVIDER_NOT_FOUND"
+            : "PROVIDER_ENABLEMENT_CONFLICT",
+        );
+        return;
+      }
+      try {
+        await options.setProviderEnabled(command.payload);
+        journal.markCommand(command.payload.commandId, "completed");
+        await refreshProviderInventory();
+        emit(
+          makeEnvelope("connector.provider.enablement.changed", {
+            commandId: command.payload.commandId,
+            providerId: command.payload.providerId,
+            enabled: command.payload.enabled,
+          }),
+        );
+      } catch (error) {
+        reject(providerEnablementErrorCode(error));
+      }
+      return;
+    }
+
     if (command.type === "connector.provider.account.activate") {
       const controller = options.providerAccountController;
       const currentSnapshot = accountCapabilities.get(
@@ -718,6 +821,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       };
       if (
         controller === undefined ||
+        !providerWorkEnabled(command.payload.providerId) ||
         command.payload.expectedRuntimeId !== journal.runtimeId ||
         command.payload.expectedRuntimeGeneration !== journal.runtimeGeneration
       ) {
@@ -868,6 +972,19 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       command.type === "connector.session.create" ||
       command.type === "connector.session.resume"
     ) {
+      if (!providerWorkEnabled(command.payload.providerId)) {
+        journal.markCommand(command.payload.commandId, "completed", {
+          failureCode: "PROVIDER_DISABLED",
+        });
+        emit(
+          makeEnvelope("connector.session.prepare.failed", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            code: "PROVIDER_DISABLED",
+          }),
+        );
+        return;
+      }
       if (
         command.payload.runtimeId !== journal.runtimeId ||
         command.payload.runtimeGeneration !== journal.runtimeGeneration
@@ -1079,8 +1196,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         ),
       );
       for (const event of journal.pendingEvents()) sendRaw(event);
-      void refreshProviderInventory();
-      void refreshNativeSessions();
+      void refreshProviderInventory().then(() => refreshNativeSessions());
       for (const snapshot of accountCapabilities.values()) {
         emit(
           makeEnvelope("connector.provider.account.capabilities.snapshot", {
@@ -1151,6 +1267,14 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     healthServer.listen(options.healthPort, "127.0.0.1");
   }
 
+  function providerWorkEnabled(providerId: string) {
+    if (options.providerInventory === undefined) return true;
+    return latestProviderInventory?.providers.some(
+      (providerRecord) =>
+        providerRecord.providerId === providerId && providerRecord.enabled,
+    ) === true;
+  }
+
   void initializeLegacyAccountEvidence().finally(connect);
 
   return {
@@ -1206,6 +1330,24 @@ export function startMockConnector(
       ? {}
       : { reconnectDelayMs: options.reconnectDelayMs }),
   });
+}
+
+function providerEnablementErrorCode(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    [
+      "PROVIDER_NOT_FOUND",
+      "PROVIDER_ENABLEMENT_CONFLICT",
+      "PROVIDER_REGISTRY_UNAVAILABLE",
+      "PROVIDER_MANIFEST_INVALID",
+    ].includes(error.code)
+  ) {
+    return error.code;
+  }
+  return "PROVIDER_ENABLEMENT_FAILED";
 }
 
 function legacyAccountSnapshot(
