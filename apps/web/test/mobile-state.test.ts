@@ -248,6 +248,28 @@ describe("M10 mobile provider/account/session selectors", () => {
     ]);
   });
 
+  it("never restores a disabled provider to the normal drawer from stored accounts", () => {
+    const disabled = provider({
+      providerId: "claude",
+      displayName: "Claude Code",
+      enabled: false,
+      adapterSupport: "inventory_only",
+      accounts: [account("stored", "Stored account", true)],
+      accountCount: 1,
+    });
+    const activeInventoryOnly = provider({
+      providerId: "grok",
+      displayName: "Grok Build",
+      enabled: true,
+      installation: "not_installed",
+      adapterSupport: "inventory_only",
+      accounts: [],
+      accountCount: 0,
+    });
+    expect(groupAccountsByProvider(fleet([disabled, activeInventoryOnly])))
+      .toEqual([{ provider: activeInventoryOnly, accounts: [] }]);
+  });
+
   it("never falls back from a restored account during partial inventory", () => {
     const partial = provider({ accounts: [account("blue-3", "Blue Three", true)] });
     expect(accountSelectionForProvider(partial, "blue-1")).toBe("blue-1");
@@ -312,12 +334,18 @@ describe("M10 mobile provider/account/session selectors", () => {
     const inventory = provider().accounts[0] ?? null;
     const unavailable = currentAccountStatus("codex", inventory, null);
     expect(unavailable.canControl).toBe(false);
-    const inactive = currentAccountStatus("codex", inventory, accountCapabilities("blue-1"));
+    const inactive = currentAccountStatus(
+      "codex",
+      inventory,
+      accountCapabilities("blue-1"),
+      Date.parse(observedAt),
+    );
     expect(inactive).toMatchObject({ canControl: false, active: false, label: "Ready to activate" });
     const active = currentAccountStatus(
       "codex",
       inventory,
       accountCapabilities("blue-1", { active: true, control: "remote_control" }),
+      Date.parse(observedAt),
     );
     expect(active).toMatchObject({ canControl: true, active: true });
     expect(currentAccountStatus("other", inventory, accountCapabilities("blue-1")).canControl).toBe(false);
@@ -326,11 +354,26 @@ describe("M10 mobile provider/account/session selectors", () => {
   it("switches account-specific models and never invents xhigh", () => {
     const first = accountCapabilities("blue-1", { models: [model("gpt-a", ["low", "high"])] });
     const second = accountCapabilities("blue-2", { models: [model("gpt-b", ["medium"])] });
-    const firstModels = supportedModelsForAccount(first, "codex", "blue-1");
+    const firstModels = supportedModelsForAccount(
+      first,
+      "codex",
+      "blue-1",
+      Date.parse(observedAt),
+    );
     expect(firstModels.map((item) => item.modelId)).toEqual(["gpt-a"]);
     expect(supportedReasoningForModel(firstModels, "gpt-a").map((item) => item.value)).toEqual(["low", "high"]);
-    expect(supportedModelsForAccount(first, "codex", "blue-2")).toEqual([]);
-    expect(supportedModelsForAccount(second, "codex", "blue-2").map((item) => item.modelId)).toEqual(["gpt-b"]);
+    expect(supportedModelsForAccount(
+      first,
+      "codex",
+      "blue-2",
+      Date.parse(observedAt),
+    )).toEqual([]);
+    expect(supportedModelsForAccount(
+      second,
+      "codex",
+      "blue-2",
+      Date.parse(observedAt),
+    ).map((item) => item.modelId)).toEqual(["gpt-b"]);
   });
 
   it("withdraws control when exact account evidence becomes stale", () => {

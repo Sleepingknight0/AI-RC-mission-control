@@ -1,5 +1,9 @@
 import { startConnector } from "@aicl/connector";
 import { MockProvider } from "@aicl/connector/mock-provider";
+import type {
+  ManagedProviderAccount,
+  ProviderAccountController,
+} from "@aicl/connector/provider";
 import {
   ServerEnvelopeSchema,
   makeEnvelope,
@@ -386,7 +390,135 @@ describe("provider inventory relay", () => {
     );
     reconnected.socket.close();
   });
+
+  it("persists audited visibility changes and blocks all disabled-provider work", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    let enabled = false;
+    let mutations = 0;
+    const controller = new CountingAccountController();
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider: new MockProvider(),
+      providerName: "mock",
+      providerInventory: (revision) => ({
+        ...fleet(revision),
+        providers: fleet(revision).providers.map((provider) => ({
+          ...provider,
+          enabled,
+        })),
+      }),
+      setProviderEnabled: (input) => {
+        expect(input.expectedEnabled).toBe(enabled);
+        enabled = input.enabled;
+        mutations += 1;
+      },
+      providerAccountController: controller,
+    });
+    handles.push(connector);
+    await connector.ready;
+    const browser = await openBrowser(core.browserUrl, core.browserToken);
+    expect((await waitFor(browser, "providers.snapshot")).payload.snapshot.providers[0])
+      .toMatchObject({ enabled: false, accountCount: 2 });
+
+    browser.socket.send(JSON.stringify(makeEnvelope("sessions.native.list", {
+      requestId: "disabled-native-request",
+      providerId: "codex",
+      accountId: "blue",
+      pageSize: 50,
+      cursor: null,
+      search: null,
+      archived: "exclude",
+    })));
+    await waitUntil(() => browser.messages.some(
+      (message) =>
+        message.type === "protocol.error" &&
+        message.payload.error.code === "NATIVE_SESSION_DISCOVERY_UNAVAILABLE",
+    ));
+    browser.socket.send(JSON.stringify(makeEnvelope("session.create", {
+      commandId: "disabled-create",
+      sessionId: "disabled-session",
+      deviceId: "device-one",
+      title: "Must remain absent",
+      providerId: "codex",
+      accountId: "blue",
+      projectPath: process.cwd(),
+      model: null,
+      reasoningLevel: null,
+    })));
+    await waitUntil(() => browser.messages.some(
+      (message) =>
+        message.type === "command.rejected" &&
+        message.payload.commandId === "disabled-create" &&
+        message.payload.error.code === "PROVIDER_CAPABILITY_UNAVAILABLE",
+    ));
+    expect(controller.openCalls).toBe(0);
+    expect(controller.nativePageCalls).toBe(0);
+
+    const enable = makeEnvelope("provider.enablement.set", {
+      commandId: "enable-codex",
+      deviceId: "device-one",
+      providerId: "codex",
+      expectedEnabled: false,
+      enabled: true,
+    });
+    browser.socket.send(JSON.stringify(enable));
+    await waitUntil(() => browser.messages.some(
+      (message) =>
+        message.type === "provider.enablement.changed" &&
+        message.payload.commandId === "enable-codex" &&
+        message.payload.enabled,
+    ));
+    await waitUntil(() => browser.messages.some(
+      (message) =>
+        message.type === "providers.snapshot" &&
+        message.payload.snapshot.providers[0]?.enabled === true,
+    ));
+    browser.socket.send(JSON.stringify(enable));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(mutations).toBe(1);
+
+    browser.socket.send(JSON.stringify(makeEnvelope("provider.enablement.set", {
+      commandId: "disable-codex",
+      deviceId: "device-one",
+      providerId: "codex",
+      expectedEnabled: true,
+      enabled: false,
+    })));
+    await waitUntil(() => browser.messages.some(
+      (message) =>
+        message.type === "provider.enablement.changed" &&
+        message.payload.commandId === "disable-codex" &&
+        !message.payload.enabled,
+    ));
+    expect(mutations).toBe(2);
+    expect(controller.openCalls).toBe(0);
+    browser.socket.close();
+
+    const reconnected = await openBrowser(core.browserUrl, core.browserToken);
+    expect((await waitFor(reconnected, "providers.snapshot")).payload.snapshot.providers[0]?.enabled)
+      .toBe(false);
+    reconnected.socket.close();
+  });
 });
+
+class CountingAccountController implements ProviderAccountController {
+  openCalls = 0;
+  nativePageCalls = 0;
+
+  open(): ManagedProviderAccount | null {
+    this.openCalls += 1;
+    return null;
+  }
+
+  rememberIdentity() {}
+
+  async nativeSessionPage(): Promise<never> {
+    this.nativePageCalls += 1;
+    throw new Error("Disabled provider must not discover Sessions");
+  }
+}
 
 function fleet(revision: number): ProviderFleetSnapshot {
   const observedAt = new Date().toISOString();
