@@ -42,7 +42,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 14;
+export const CORE_SCHEMA_VERSION = 15;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -121,6 +121,16 @@ export type ProviderAccountActivationResult =
         nextRuntimeId: string;
         nextRuntimeGeneration: number;
       };
+    };
+
+export type ProviderEnablementResult =
+  | { kind: "same"; result: ServerEnvelope }
+  | { kind: "pending" }
+  | { kind: "conflict" }
+  | {
+      kind: "new";
+      result?: ServerEnvelope;
+      dispatch?: true;
     };
 
 export type ApprovalResolutionResult =
@@ -1324,6 +1334,192 @@ export class CoreDatabase {
           runtimeGeneration: row.runtime_generation,
           revision: row.revision,
         };
+  }
+
+  async acceptProviderEnablement(input: {
+    message: Extract<ClientEnvelope, { type: "provider.enablement.set" }>;
+    preconditionError?: { code: string; detail: string };
+    rejection: (code: string, detail: string) => ServerEnvelope;
+  }): Promise<ProviderEnablementResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(input.message);
+      const prior = this.#database
+        .prepare(
+          `SELECT payload_hash, result_json
+             FROM provider_enablement_commands WHERE command_id = ?`,
+        )
+        .get(input.message.payload.commandId) as
+        | { payload_hash: string; result_json: string | null }
+        | undefined;
+      if (prior !== undefined) {
+        if (prior.payload_hash !== payloadHash) return { kind: "conflict" };
+        return prior.result_json === null
+          ? { kind: "pending" }
+          : { kind: "same", result: parseServer(prior.result_json) };
+      }
+
+      const now = new Date().toISOString();
+      if (input.preconditionError !== undefined) {
+        const result = input.rejection(
+          input.preconditionError.code,
+          input.preconditionError.detail,
+        );
+        this.#database
+          .prepare(
+            `INSERT INTO provider_enablement_commands (
+               command_id, provider_id, device_id, expected_enabled, enabled,
+               payload_json, payload_hash, state, result_json, created_at,
+               updated_at, terminal_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, 'rejected', ?, ?, ?, ?)`,
+          )
+          .run(
+            input.message.payload.commandId,
+            input.message.payload.providerId,
+            input.message.payload.deviceId,
+            input.message.payload.expectedEnabled ? 1 : 0,
+            input.message.payload.enabled ? 1 : 0,
+            JSON.stringify(input.message.payload),
+            payloadHash,
+            JSON.stringify(result),
+            now,
+            now,
+            now,
+          );
+        return { kind: "new", result };
+      }
+
+      this.#database
+        .prepare(
+          `INSERT INTO provider_enablement_commands (
+             command_id, provider_id, device_id, expected_enabled, enabled,
+             payload_json, payload_hash, state, result_json, created_at,
+             updated_at, terminal_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, NULL)`,
+        )
+        .run(
+          input.message.payload.commandId,
+          input.message.payload.providerId,
+          input.message.payload.deviceId,
+          input.message.payload.expectedEnabled ? 1 : 0,
+          input.message.payload.enabled ? 1 : 0,
+          JSON.stringify(input.message.payload),
+          payloadHash,
+          now,
+          now,
+        );
+      return { kind: "new", dispatch: true };
+    });
+  }
+
+  async recordProviderEnablement(
+    message: Extract<
+      ConnectorEnvelope,
+      {
+        type:
+          | "connector.provider.enablement.changed"
+          | "connector.provider.enablement.rejected";
+      }
+    >,
+    source: ConnectorSource,
+  ) {
+    return this.#ingestSource(source, () => {
+      const row = this.#database
+        .prepare(
+          `SELECT provider_id, enabled, state
+             FROM provider_enablement_commands WHERE command_id = ?`,
+        )
+        .get(message.payload.commandId) as
+        | { provider_id: string; enabled: number; state: string }
+        | undefined;
+      if (
+        row === undefined ||
+        row.state !== "pending" ||
+        row.provider_id !== message.payload.providerId ||
+        (message.type === "connector.provider.enablement.changed" &&
+          row.enabled !== (message.payload.enabled ? 1 : 0))
+      ) {
+        return undefined;
+      }
+
+      const now = new Date().toISOString();
+      const accepted = message.type === "connector.provider.enablement.changed";
+      const result = parseServer(
+        JSON.stringify(
+          accepted
+            ? makeEnvelope("provider.enablement.changed", {
+                commandId: message.payload.commandId,
+                providerId: message.payload.providerId,
+                enabled: message.payload.enabled,
+              })
+            : makeEnvelope("provider.enablement.rejected", {
+                commandId: message.payload.commandId,
+                providerId: message.payload.providerId,
+                error: {
+                  code: message.payload.code,
+                  message: "Provider enablement change was rejected.",
+                  retryable: false,
+                  detail: null,
+                },
+              }),
+        ),
+      );
+      this.#database
+        .prepare(
+          `UPDATE provider_enablement_commands SET state = ?, result_json = ?,
+             updated_at = ?, terminal_at = ?
+           WHERE command_id = ? AND state = 'pending'`,
+        )
+        .run(
+          accepted ? "accepted" : "rejected",
+          JSON.stringify(result),
+          now,
+          now,
+          message.payload.commandId,
+        );
+      return result;
+    });
+  }
+
+  async markPendingProviderEnablementsOutcomeUnknown() {
+    return this.#write(() => {
+      const rows = this.#database
+        .prepare(
+          `SELECT command_id, provider_id
+             FROM provider_enablement_commands WHERE state = 'pending'`,
+        )
+        .all() as unknown as Array<{
+          command_id: string;
+          provider_id: string;
+        }>;
+      const now = new Date().toISOString();
+      const results: ServerEnvelope[] = [];
+      for (const row of rows) {
+        const result = parseServer(
+          JSON.stringify(
+            makeEnvelope("provider.enablement.rejected", {
+              commandId: row.command_id,
+              providerId: row.provider_id,
+              error: {
+                code: "OUTCOME_UNKNOWN",
+                message:
+                  "Connector ownership was lost while provider enablement was in flight. Refresh inventory before retrying.",
+                retryable: false,
+                detail: null,
+              },
+            }),
+          ),
+        );
+        this.#database
+          .prepare(
+            `UPDATE provider_enablement_commands SET state = 'outcome_unknown',
+               result_json = ?, updated_at = ?, terminal_at = ?
+             WHERE command_id = ? AND state = 'pending'`,
+          )
+          .run(JSON.stringify(result), now, now, row.command_id);
+        results.push(result);
+      }
+      return results;
+    });
   }
 
   async acceptProviderAccountActivation(input: {

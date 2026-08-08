@@ -99,6 +99,13 @@ export class NativeSessionEvidenceStore {
     return row?.canResume === true ? row : null;
   }
 
+  deleteProvider(providerId: string): void {
+    const prefix = `${providerId}\u0000`;
+    for (const key of this.#pairs.keys()) {
+      if (key.startsWith(prefix)) this.#pairs.delete(key);
+    }
+  }
+
   #pairKey(providerId: string, accountId: string): string {
     return `${providerId}\u0000${accountId}`;
   }

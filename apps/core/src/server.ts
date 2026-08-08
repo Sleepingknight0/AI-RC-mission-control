@@ -434,6 +434,33 @@ export async function startCoreServer(
       archived: "exclude" | "include" | "only";
     }
   >();
+  const clearDisabledProviderOperationalState = (
+    snapshot: ProviderFleetSnapshot,
+  ) => {
+    const disabled = new Set(
+      snapshot.providers
+        .filter((provider) => !provider.enabled)
+        .map((provider) => provider.providerId),
+    );
+    for (const [key, retained] of providerAccountSnapshots) {
+      if (disabled.has(retained.snapshot.providerId)) {
+        providerAccountSnapshots.delete(key);
+      }
+    }
+    for (const [key, retained] of nativeSessionSnapshots) {
+      if (disabled.has(retained.snapshot.providerId)) {
+        nativeSessionSnapshots.delete(key);
+      }
+    }
+    for (const providerId of disabled) {
+      nativeSessionEvidence.deleteProvider(providerId);
+    }
+    for (const [requestId, request] of pendingNativeSessionRequests) {
+      if (disabled.has(request.providerId)) {
+        pendingNativeSessionRequests.delete(requestId);
+      }
+    }
+  };
   let closing = false;
   const rateWindows = new WeakMap<
     WebSocket,
@@ -1013,7 +1040,97 @@ export async function startCoreServer(
         }
         return;
       }
+      case "provider.enablement.set": {
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        const connection = connectorConnection;
+        const providerEnablementRejection = (code: string, detail: string) =>
+          validatedServerEnvelope(
+            makeEnvelope("provider.enablement.rejected", {
+              commandId: message.payload.commandId,
+              providerId: message.payload.providerId,
+              error: protocolError(code, detail, {
+                commandId: message.payload.commandId,
+              }),
+            }),
+          );
+        const preconditionError =
+          provider === undefined
+            ? {
+                code: "PROVIDER_NOT_FOUND",
+                detail: "Provider is not present in authoritative inventory.",
+              }
+            : provider.enabled !== message.payload.expectedEnabled
+              ? {
+                  code: "PROVIDER_ENABLEMENT_CONFLICT",
+                  detail: "Provider enablement changed; refresh inventory and retry.",
+                }
+              : connection?.socket.readyState !== WebSocket.OPEN
+                ? {
+                    code: "CONNECTOR_OFFLINE",
+                    detail: "Connector must be online to update provider enablement.",
+                  }
+                : message.payload.enabled === false &&
+                    connection.activeProviderId === message.payload.providerId
+                  ? {
+                      code: "PROVIDER_ACTIVE",
+                      detail: "Deactivate the active provider account before disabling it.",
+                    }
+                  : undefined;
+        const result = await store.acceptProviderEnablement({
+          message,
+          ...(preconditionError === undefined ? {} : { preconditionError }),
+          rejection: providerEnablementRejection,
+        });
+        if (result.kind === "conflict") {
+          send(
+            socket,
+            providerEnablementRejection(
+              "IDEMPOTENCY_KEY_REUSE",
+              "The command ID was already used with a different payload.",
+            ),
+          );
+          return;
+        }
+        if (result.kind === "same") {
+          send(socket, result.result);
+          return;
+        }
+        if (result.kind === "pending") return;
+        if (result.result !== undefined) {
+          send(socket, result.result);
+          return;
+        }
+        if (result.dispatch !== true || connection === undefined) return;
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.provider.enablement.set", {
+            commandId: message.payload.commandId,
+            providerId: message.payload.providerId,
+            expectedEnabled: message.payload.expectedEnabled,
+            enabled: message.payload.enabled,
+          }),
+        );
+        return;
+      }
       case "provider.account.capabilities.refresh": {
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        if (provider?.enabled !== true) {
+          send(
+            socket,
+            makeEnvelope("protocol.error", {
+              error: protocolError(
+                "PROVIDER_DISABLED",
+                "Disabled providers cannot probe account capabilities.",
+                { retryable: false },
+              ),
+            }),
+          );
+          return;
+        }
         const key = nativeSnapshotKey(
           message.payload.providerId,
           message.payload.accountId,
@@ -1027,9 +1144,6 @@ export async function startCoreServer(
             }),
           );
         }
-        const provider = providerFleetSnapshot?.providers.find(
-          (candidate) => candidate.providerId === message.payload.providerId,
-        );
         const account = provider?.accounts.find(
           (candidate) => candidate.accountId === message.payload.accountId,
         );
@@ -1037,6 +1151,7 @@ export async function startCoreServer(
         if (
           connection?.socket.readyState !== WebSocket.OPEN ||
           provider === undefined ||
+          !provider.enabled ||
           account === undefined
         ) {
           if (retained === undefined) {
@@ -1171,6 +1286,7 @@ export async function startCoreServer(
         if (
           connection?.socket.readyState !== WebSocket.OPEN ||
           provider === undefined ||
+          !provider.enabled ||
           account === undefined
         ) {
           send(
@@ -1200,6 +1316,22 @@ export async function startCoreServer(
         return;
       }
       case "sessions.native.refresh": {
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        if (provider?.enabled !== true) {
+          send(
+            socket,
+            makeEnvelope("protocol.error", {
+              error: protocolError(
+                "PROVIDER_DISABLED",
+                "Disabled providers cannot discover native Sessions.",
+                { retryable: false },
+              ),
+            }),
+          );
+          return;
+        }
         const key = nativeSnapshotKey(
           message.payload.providerId,
           message.payload.accountId,
@@ -1213,9 +1345,6 @@ export async function startCoreServer(
             }),
           );
         }
-        const provider = providerFleetSnapshot?.providers.find(
-          (candidate) => candidate.providerId === message.payload.providerId,
-        );
         const account = provider?.accounts.find(
           (candidate) => candidate.accountId === message.payload.accountId,
         );
@@ -1228,6 +1357,7 @@ export async function startCoreServer(
         if (
           connection?.socket.readyState !== WebSocket.OPEN ||
           provider === undefined ||
+          !provider.enabled ||
           account === undefined ||
           account.control !== "remote_control" ||
           !canList
@@ -1295,6 +1425,7 @@ export async function startCoreServer(
           message.type === "session.create" ? "create_session" : "resume_session";
         if (
           provider === undefined ||
+          !provider.enabled ||
           !["live", "local"].includes(provider.freshness) ||
           account === undefined ||
           accountEvidence === undefined ||
@@ -1490,6 +1621,12 @@ export async function startCoreServer(
             : providerAccountSnapshots.get(
                 nativeSnapshotKey(authority.providerId, authority.accountId),
               )?.snapshot;
+        const authorityProvider =
+          authority === undefined
+            ? undefined
+            : providerFleetSnapshot?.providers.find(
+                (provider) => provider.providerId === authority.providerId,
+              );
         const preconditionError =
           connection?.socket.readyState !== WebSocket.OPEN ||
           connection.runtime.status !== "ready"
@@ -1499,6 +1636,7 @@ export async function startCoreServer(
               }
             :
           authority === undefined ||
+          authorityProvider?.enabled !== true ||
           authority.providerSessionId === null ||
           accountEvidence === undefined ||
           accountEvidence.revision !== message.payload.expectedAccountRevision ||
@@ -2384,6 +2522,7 @@ export async function startCoreServer(
         return;
       }
       providerFleetSnapshot = message.payload.snapshot;
+      clearDisabledProviderOperationalState(providerFleetSnapshot);
       providerSnapshotBootId = message.bootId;
       broadcast(
         null,
@@ -2400,6 +2539,14 @@ export async function startCoreServer(
         connectorConnection.bootId !== message.bootId ||
         connectorConnection.runtime.runtimeId !== message.runtimeId ||
         connectorConnection.runtime.generation !== message.runtimeGeneration
+      ) {
+        return;
+      }
+      if (
+        providerFleetSnapshot?.providers.find(
+          (provider) =>
+            provider.providerId === message.payload.snapshot.providerId,
+        )?.enabled !== true
       ) {
         return;
       }
@@ -2438,6 +2585,13 @@ export async function startCoreServer(
         return;
       }
       const snapshot = message.payload.snapshot;
+      if (
+        providerFleetSnapshot?.providers.find(
+          (provider) => provider.providerId === snapshot.providerId,
+        )?.enabled !== true
+      ) {
+        return;
+      }
       if (
         snapshot.active !==
           (connectorConnection.activeProviderId === snapshot.providerId &&
@@ -2479,6 +2633,14 @@ export async function startCoreServer(
         connectorConnection.runtime.runtimeId !== message.runtimeId ||
         connectorConnection.runtime.generation !== message.runtimeGeneration
       ) {
+        return;
+      }
+      if (
+        providerFleetSnapshot?.providers.find(
+          (provider) => provider.providerId === request.providerId,
+        )?.enabled !== true
+      ) {
+        pendingNativeSessionRequests.delete(message.payload.requestId);
         return;
       }
       nativeSessionEvidence.record(
@@ -2551,6 +2713,16 @@ export async function startCoreServer(
       connectorConnection?.socket !== socket ||
       connectorConnection.connectorId !== source.connectorId
     ) {
+      return;
+    }
+
+    if (
+      message.type === "connector.provider.enablement.changed" ||
+      message.type === "connector.provider.enablement.rejected"
+    ) {
+      const result = await store.recordProviderEnablement(message, source);
+      acknowledge(socket, source.sourceEventId);
+      if (result !== undefined) broadcast(null, result);
       return;
     }
 
@@ -2814,6 +2986,9 @@ export async function startCoreServer(
         const activations =
           await store.markPendingProviderAccountActivationsOutcomeUnknown();
         for (const result of activations) broadcast(null, result);
+        const enablements =
+          await store.markPendingProviderEnablementsOutcomeUnknown();
+        for (const result of enablements) broadcast(null, result);
         lastRuntime = { ...connection.runtime, status: "lost" };
         broadcast(null, makeEnvelope("runtime.status", { runtime: lastRuntime }));
       })();
