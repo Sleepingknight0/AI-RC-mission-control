@@ -2349,3 +2349,86 @@ Runtime must be explicitly resumed against current account/Runtime authority.
   350-Session Web coverage remains automated.
 - Next single milestone: M8.5 real second-device acceptance only if the operator
   explicitly removes its deferral; otherwise define the next post-M10 milestone.
+
+---
+
+### 2026-08-09 06:18 — Codex — M10.1 provider visibility and optimization
+
+**Scope**
+
+Keep the machine's five operator-selected providers in the normal Mobile drawer,
+move every other discovered provider behind Manage Providers, persist explicit
+enablement without deleting data, and make disabled providers lifecycle-cheap.
+
+**Files changed or reviewed**
+
+- Protocol/Core/Connector enablement path and schema 15 under
+  `packages/protocol`, `apps/core`, and `apps/connector`
+- Mobile provider management under `apps/web/src/mobile` and `apps/web/src/App.tsx`
+- Regression coverage under Protocol, Connector, Core, Web, and Host tests
+- Core-15 operational smoke expectations in `scripts/Test-M8Maintenance.ps1`
+  and `scripts/Test-CleanProductionInstall.ps1`
+- `reviews/codex/M10.1-PROVIDER-VISIBILITY.md`
+
+**Commands and tests**
+
+```text
+Targeted Protocol/Connector/Core/Web matrices
+→ PASS: 85 tests (11 + 18 + 21 + 35)
+
+pnpm --filter @aicl/core typecheck
+pnpm --filter @aicl/host typecheck
+→ PASS
+
+pnpm --filter @aicl/host exec vitest run test/maintenance.test.ts
+→ PASS: 5/5
+
+powershell -File scripts/Test-M8Maintenance.ps1
+powershell -File scripts/Test-CleanProductionInstall.ps1
+powershell -File scripts/Test-TailscaleAutomation.ps1
+→ PASS
+
+pnpm build
+→ PASS
+
+pnpm check
+→ PASS: 251 tests; Config 13, Protocol 37, Domain 5, Web 67,
+  Connector 59, Core 70, Host 15; 1 opt-in Real Codex test skipped;
+  compiled lifecycle, maintenance/restore, clean install, and Tailscale pass
+
+git diff --check
+→ PASS
+```
+
+**Observable result**
+
+At 375×812, 390×844, or 430×932, open AI Accounts. Only Antigravity CLI,
+Claude Code, Cursor Agent, Grok Build, and OpenAI Codex appear; Codex reports
+three accounts. Open Manage Providers to see the ten disabled providers. Enable
+Amp to add it to the drawer, then disable it to remove it while its one stored
+account remains. Refresh and full application restarts preserve both states.
+
+**Protocol/schema assumptions**
+
+- No `crosscode` registry identity exists; the spoken CrossCode refers to the
+  existing Claude Code provider without renaming IDs.
+- Manifest `enabled` is the durable source. Core schema 15 stores command audit,
+  idempotency, CAS inputs, and terminal results; Connector performs the atomic
+  manifest mutation.
+- Enablement changes visibility only. Existing account/Session/capability,
+  runtime-generation, approval, and exact-routing checks remain authoritative.
+
+**Known limitations or uncertain outcomes**
+
+- Disabled inventory still reads bounded manifest metadata and counts immediate
+  account directories so Manage Providers can report recoverable stored data.
+- No disabled-provider or isolated Connector child process remained across the
+  measured restart/three-second observation. Inventory refresh is event-driven;
+  no recurring provider polling loop exists in the Connector.
+- The expensive Real Codex lifecycle was not rerun because Codex routing and
+  Turn dispatch did not change; the already-passed M10 evidence is reused.
+
+**Requested next action**
+
+M8.5 real second-device acceptance only if the operator removes its deferral;
+otherwise define the next post-M10 milestone.

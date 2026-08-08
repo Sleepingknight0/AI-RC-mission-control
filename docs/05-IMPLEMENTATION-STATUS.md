@@ -75,7 +75,29 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] M10.5 Runtime-generation fencing, explicit native resume, and no replay
 - [x] M10.6 sanitized recovery evidence and final production gate
 
+## M10.1 — Provider visibility and disabled-provider optimization
+
+- [x] normal Mobile AI Accounts shows enabled providers only
+- [x] Manage Providers separates active and available/disabled providers
+- [x] manifest-backed enablement CAS, durable Core audit, and restart persistence
+- [x] disabled-provider process, discovery, activation, capability, and Session gates
+- [x] real-registry Mobile acceptance and resource measurement
+
 ## Current milestone
+
+**The post-M10 M10.1 provider refinement is complete on the M10 review
+branch.** This machine keeps Antigravity CLI, Claude Code, Cursor Agent, Grok
+Build, and OpenAI Codex active; the other ten discovered providers remain
+disabled and recoverable. The normal Mobile drawer no longer promotes a
+disabled provider from stored account data. A normalized, command-ID-backed
+Core/Connector CAS updates the existing manifest `enabled` field, while Core
+schema 15 records the durable audit/result. Disabled inventory is limited to
+bounded manifest and account-directory counting; no installation/authentication,
+model, usage, native-Session, activation, or Session-authority work runs. The
+compiled real-registry acceptance passed 375×812, 390×844, 430×932, 200% text,
+focus/Escape, restart/reconnect persistence, toggle retention, no overflow, and
+console 0/0. No disabled-provider process or isolated Connector child remained.
+Evidence is in `reviews/codex/M10.1-PROVIDER-VISIBILITY.md`.
 
 **M10 recovery and acceptance are complete.** Thirteen local M10 commits were
 preserved on `codex/m10-mobile-account-session-shell` from base `50e2d90`.
@@ -99,6 +121,12 @@ Google/Cloudflare identity, and a product retention policy remain deferred.
 
 ## Last verified demo
 
+- M10.1 provider visibility: the compiled isolated stack read the machine's real
+  15-provider registry. The drawer showed exactly the five operator-selected
+  providers and Codex exposed all three accounts. Manage Providers showed ten
+  disabled providers. Amp enabled across refresh and restart, then disabled
+  across restart without changing its stored-account aggregate hash or creating
+  a Session, Turn, provider process, or Connector child.
 - M10 recovery gate: exact profile `easy-bluewhalex` completed the real
   lifecycle in 79.84 s; restart authority was re-established only through a
   fenced `session.runtime.resume`, and the previous prompt was not replayed.
@@ -116,7 +144,7 @@ Google/Cloudflare identity, and a product retention policy remain deferred.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 13 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, and bounded terminal evidence; Connector retains strict FIFO journal sequence.
+- Database schema: Core schema version 15 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, bounded terminal evidence, and audited provider-enablement commands; Connector retains strict FIFO journal sequence.
 - Live production acceptance: the compiled Web, real Core/Connector, real Codex
   account, and headed Chromium completed bootstrap, authoritative Session create,
   first delta/final, approval-backed write and Diff Review, interrupt,
