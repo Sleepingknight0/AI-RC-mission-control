@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -12,8 +13,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   DEFAULT_PROVIDER_REGISTRY_ROOT,
+  ProviderEnablementMutationError,
+  providerEnabled,
   readProviderAccountProfiles,
   readProviderFleet,
+  setProviderEnabled,
 } from "../src/provider-inventory.js";
 
 const roots: string[] = [];
@@ -70,6 +74,86 @@ describe("terminal provider inventory", () => {
 
     expect(snapshot.source).toBe("unavailable");
     expect(snapshot.providers).toEqual([]);
+  });
+
+  it("keeps disabled inventory manifest-only while retaining stored accounts", () => {
+    const { root, providers } = registry();
+    const providerRoot = provider(providers, "claude", {
+      ...codexManifest,
+      id: "claude",
+      displayName: "Claude Code",
+      enabled: false,
+      executableOverride: "Z:\\must-not-be-probed\\claude.exe",
+    });
+    const profileRoot = mkdtempSync(join(tmpdir(), "aicl-disabled-profile-"));
+    roots.push(profileRoot);
+    writeFileSync(join(profileRoot, "auth.json"), "credential-canary");
+    account(providerRoot, "work", {
+      id: "work",
+      displayName: "Stored Work",
+      profilePath: profileRoot,
+    });
+
+    const entry = readProviderFleet({ registryRoot: root, now }).providers[0];
+    expect(entry).toMatchObject({
+      providerId: "claude",
+      enabled: false,
+      installation: "unknown",
+      authentication: "unknown",
+      accounts: [],
+      accountCount: 1,
+      modelsState: "not_supported",
+      usageState: "not_supported",
+    });
+    expect(entry?.notice).toContain("were not probed");
+    expect(readProviderAccountProfiles({ registryRoot: root, enabledOnly: true }))
+      .toEqual([]);
+  });
+
+  it("atomically enables and disables a provider without deleting account data", () => {
+    const { root, providers } = registry();
+    const providerRoot = provider(providers, "claude", {
+      ...codexManifest,
+      id: "claude",
+      displayName: "Claude Code",
+      enabled: false,
+    });
+    const profileRoot = mkdtempSync(join(tmpdir(), "aicl-retained-profile-"));
+    roots.push(profileRoot);
+    account(providerRoot, "work", {
+      id: "work",
+      displayName: "Stored Work",
+      profilePath: profileRoot,
+    });
+    const profilePath = join(providerRoot, "accounts", "work", "profile.json");
+    const before = readFileSync(profilePath, "utf8");
+
+    setProviderEnabled({
+      registryRoot: root,
+      providerId: "claude",
+      expectedEnabled: false,
+      enabled: true,
+    });
+    expect(providerEnabled("claude", { registryRoot: root })).toBe(true);
+    expect(readProviderFleet({ registryRoot: root, now }).providers[0]?.accounts)
+      .toHaveLength(1);
+
+    setProviderEnabled({
+      registryRoot: root,
+      providerId: "claude",
+      expectedEnabled: true,
+      enabled: false,
+    });
+    expect(providerEnabled("claude", { registryRoot: root })).toBe(false);
+    expect(readProviderFleet({ registryRoot: root, now }).providers[0]?.accounts)
+      .toEqual([]);
+    expect(readFileSync(profilePath, "utf8")).toBe(before);
+    expect(() => setProviderEnabled({
+      registryRoot: root,
+      providerId: "claude",
+      expectedEnabled: true,
+      enabled: false,
+    })).toThrow(ProviderEnablementMutationError);
   });
 
   it("keeps providers and accounts distinct without emitting paths or secrets", () => {

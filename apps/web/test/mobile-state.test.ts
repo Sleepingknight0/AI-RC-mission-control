@@ -298,6 +298,28 @@ describe("M10 mobile provider/account/session selectors", () => {
     expect(rows[0]?.title).toBe("RECOVERY LOCAL STATE FIRST");
   });
 
+  it("never restores a disabled provider to the normal drawer from stored accounts", () => {
+    const disabled = provider({
+      providerId: "claude",
+      displayName: "Claude Code",
+      enabled: false,
+      adapterSupport: "inventory_only",
+      accounts: [account("stored", "Stored account", true)],
+      accountCount: 1,
+    });
+    const activeInventoryOnly = provider({
+      providerId: "grok",
+      displayName: "Grok Build",
+      enabled: true,
+      installation: "not_installed",
+      adapterSupport: "inventory_only",
+      accounts: [],
+      accountCount: 0,
+    });
+    expect(groupAccountsByProvider(fleet([disabled, activeInventoryOnly])))
+      .toEqual([{ provider: activeInventoryOnly, accounts: [] }]);
+  });
+
   it("never falls back from a restored account during partial inventory", () => {
     const partial = provider({ accounts: [account("blue-3", "Blue Three", true)] });
     expect(accountSelectionForProvider(partial, "blue-1")).toBe("blue-1");

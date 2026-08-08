@@ -258,6 +258,46 @@ describe("provider capability protocol", () => {
     ).toBe("providers.snapshot");
   });
 
+  it("validates provider enablement CAS envelopes at every relay boundary", () => {
+    const client = makeEnvelope("provider.enablement.set", {
+      commandId: "provider-enable-command",
+      deviceId: "device-one",
+      providerId: "claude",
+      expectedEnabled: false,
+      enabled: true,
+    });
+    expect(ClientEnvelopeSchema.parse(client).type).toBe("provider.enablement.set");
+    expect(() => ClientEnvelopeSchema.parse({
+      ...client,
+      payload: { ...client.payload, enabled: false },
+    })).toThrow();
+    expect(CoreToConnectorEnvelopeSchema.parse(makeEnvelope(
+      "connector.provider.enablement.set",
+      {
+        commandId: "provider-enable-command",
+        providerId: "claude",
+        expectedEnabled: false,
+        enabled: true,
+      },
+    )).type).toBe("connector.provider.enablement.set");
+    expect(ConnectorEnvelopeSchema.parse(makeEnvelope(
+      "connector.provider.enablement.changed",
+      {
+        commandId: "provider-enable-command",
+        providerId: "claude",
+        enabled: true,
+      },
+    )).type).toBe("connector.provider.enablement.changed");
+    expect(ServerEnvelopeSchema.parse(makeEnvelope(
+      "provider.enablement.changed",
+      {
+        commandId: "provider-enable-command",
+        providerId: "claude",
+        enabled: true,
+      },
+    )).type).toBe("provider.enablement.changed");
+  });
+
   it("requires exact active evidence before an account can claim remote control", () => {
     const accountSnapshot = {
       snapshotId: "account-capabilities-1",

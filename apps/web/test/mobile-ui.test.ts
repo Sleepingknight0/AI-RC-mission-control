@@ -15,6 +15,7 @@ import { MobileAccountHome } from "../src/mobile/MobileAccountHome.js";
 import { MobileComposer } from "../src/mobile/MobileComposer.js";
 import { MobileHeader } from "../src/mobile/MobileHeader.js";
 import { ModelModeSheet } from "../src/mobile/ModelModeSheet.js";
+import { ProviderManagementSheet } from "../src/mobile/ProviderManagementSheet.js";
 import { supportedModelsForAccount } from "../src/mobile/state.js";
 
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
@@ -180,6 +181,7 @@ describe("M10 mobile visible contracts", () => {
       onResumeNative: () => undefined,
       onOpenActions: () => undefined,
       onLoadMore: () => undefined,
+      onOpenManageProviders: () => undefined,
       onOpenStatus: () => undefined,
       approvalDestinationAvailable: false,
       attachmentDestinationAvailable: false,
@@ -196,11 +198,99 @@ describe("M10 mobile visible contracts", () => {
     expect(html).toContain("Approvals");
     expect(html).toContain("Attachments");
     expect(html).toContain("Settings");
+    expect(html).toContain("Manage providers");
     expect(html).not.toContain("More options for Account");
   });
 
+  it("separates active drawer providers from available disabled providers", () => {
+    const codex = fleet.providers[0]!;
+    const disabledWithAccount = {
+      ...codex,
+      providerId: "claude",
+      displayName: "Claude Code",
+      enabled: false,
+      adapterSupport: "inventory_only" as const,
+      accounts: [{ ...codex.accounts[0]!, accountId: "stored" }],
+      accountCount: 1,
+    };
+    const activeInventoryOnly = {
+      ...codex,
+      providerId: "grok",
+      displayName: "Grok Build",
+      enabled: true,
+      installation: "not_installed" as const,
+      adapterSupport: "inventory_only" as const,
+      accounts: [],
+      accountCount: 0,
+    };
+    const mixedFleet = {
+      ...fleet,
+      providers: [codex, disabledWithAccount, activeInventoryOnly],
+    };
+    const drawer = renderToStaticMarkup(createElement(AccountSessionDrawer, {
+      open: true,
+      fleet: mixedFleet,
+      selectedProviderId: "codex",
+      selectedAccountId: "one",
+      accountLabel: "Account 1",
+      sessions: [],
+      selectedSessionId: "",
+      search: "",
+      loading: false,
+      hasMore: false,
+      truncated: false,
+      now: Date.parse(observedAt),
+      onClose: () => undefined,
+      onSelectAccount: () => undefined,
+      onSearchChange: () => undefined,
+      onSelectSession: () => undefined,
+      onResumeNative: () => undefined,
+      onOpenActions: () => undefined,
+      onLoadMore: () => undefined,
+      onOpenManageProviders: () => undefined,
+      onOpenStatus: () => undefined,
+      approvalDestinationAvailable: false,
+      attachmentDestinationAvailable: false,
+      settingsDestinationAvailable: false,
+      onOpenApprovals: () => undefined,
+      onOpenAttachments: () => undefined,
+      onOpenSettings: () => undefined,
+    }));
+    expect(drawer).toContain("Codex");
+    expect(drawer).toContain("Grok Build");
+    expect(drawer).not.toContain("Claude Code");
+
+    const management = renderToStaticMarkup(createElement(ProviderManagementSheet, {
+      open: true,
+      fleet: mixedFleet,
+      pendingProviderIds: new Set<string>(),
+      onClose: () => undefined,
+      onSetEnabled: () => undefined,
+    }));
+    expect(management).toContain("Active");
+    expect(management).toContain("Available / disabled");
+    expect(management).toContain("Claude Code");
+    expect(management).toContain('data-testid="provider-toggle-claude"');
+    expect(management).toContain('aria-checked="false"');
+    expect(management).toContain("1 stored account");
+  });
+
+  it("changes provider visibility through its dedicated command without prompt dispatch", () => {
+    const start = appSource.indexOf("const updateProviderEnablement");
+    const end = appSource.indexOf("if (mobileLayout)", start);
+    const handler = appSource.slice(start, end);
+    expect(handler).toContain('makeEnvelope("provider.enablement.set"');
+    expect(handler).not.toContain('makeEnvelope("turn.submit"');
+    expect(handler).not.toContain("prompt:");
+  });
+
   it("shows only account-advertised model and reasoning choices", () => {
-    const models = supportedModelsForAccount(accountCapabilities, "codex", "one");
+    const models = supportedModelsForAccount(
+      accountCapabilities,
+      "codex",
+      "one",
+      Date.parse(observedAt),
+    );
     const html = renderToStaticMarkup(createElement(ModelModeSheet, {
       open: true,
       models,
