@@ -156,7 +156,7 @@ export function groupAccountsByProvider(
 ): ProviderAccountGroup[] {
   if (fleet === null) return [];
   return fleet.providers
-    .filter((provider) => provider.enabled || provider.accounts.length > 0)
+    .filter((provider) => provider.enabled)
     .map((provider) => ({ provider, accounts: provider.accounts }))
     .sort((left, right) => left.provider.displayName.localeCompare(right.provider.displayName));
 }

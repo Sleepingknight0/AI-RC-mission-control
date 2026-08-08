@@ -1,6 +1,7 @@
 import type {
   ProviderFleetSnapshot,
   ProviderModel,
+  ProviderRecord,
   SessionCapabilitiesSnapshot,
   SessionSettings,
   SessionSettingsSnapshot,
@@ -15,6 +16,7 @@ import { MobileComposer } from "./MobileComposer.js";
 import { MobileHeader } from "./MobileHeader.js";
 import { MobileEvidenceSheet } from "./MobileEvidenceSheet.js";
 import { ModelModeSheet } from "./ModelModeSheet.js";
+import { ProviderManagementSheet } from "./ProviderManagementSheet.js";
 import { SessionActionSheet } from "./SessionActionSheet.js";
 import { SystemStatusSheet, type StatusFact } from "./SystemStatusSheet.js";
 import type { AccountStatus, MobileSessionRow } from "./state.js";
@@ -69,6 +71,7 @@ export interface MobileChatShellProps {
   modelEvidenceNotice: string | null;
   settings: SessionSettingsSnapshot | null;
   capabilities: SessionCapabilitiesSnapshot | null;
+  pendingProviderIds: ReadonlySet<string>;
   onSelectAccount: (providerId: string, accountId: string) => void;
   onSearchChange: (value: string) => void;
   onSelectSession: (sessionId: string) => void;
@@ -90,12 +93,14 @@ export interface MobileChatShellProps {
   onAbort: () => void;
   onPickFiles: (files: FileList) => void;
   onUpdateSettings: (settings: SessionSettings) => void;
+  onSetProviderEnabled: (provider: ProviderRecord, enabled: boolean) => void;
 }
 
 export function MobileChatShell(props: MobileChatShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [providerManagementOpen, setProviderManagementOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [actionSession, setActionSession] = useState<MobileSessionRow | null>(null);
 
@@ -209,6 +214,7 @@ export function MobileChatShell(props: MobileChatShellProps) {
         }}
         onOpenActions={(session) => closeAnd(() => setActionSession(session))}
         onLoadMore={props.onLoadMore}
+        onOpenManageProviders={() => closeAnd(() => setProviderManagementOpen(true))}
         onOpenStatus={() => closeAnd(() => setStatusOpen(true))}
         approvalDestinationAvailable={!props.showAccountHome && props.approvals !== null}
         attachmentDestinationAvailable={!props.showAccountHome && (props.canAttachText || props.canAttachImage)}
@@ -222,6 +228,13 @@ export function MobileChatShell(props: MobileChatShellProps) {
           document.querySelector<HTMLButtonElement>("[data-testid=mobile-attachment-trigger]")?.click();
         })}
         onOpenSettings={() => closeAnd(() => setModelOpen(true))}
+      />
+      <ProviderManagementSheet
+        open={providerManagementOpen}
+        fleet={props.fleet}
+        pendingProviderIds={props.pendingProviderIds}
+        onClose={() => setProviderManagementOpen(false)}
+        onSetEnabled={props.onSetProviderEnabled}
       />
       <SystemStatusSheet open={statusOpen} facts={props.statusFacts} onClose={() => setStatusOpen(false)} />
       <MobileEvidenceSheet
