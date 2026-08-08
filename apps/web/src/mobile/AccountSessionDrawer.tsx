@@ -25,6 +25,7 @@ export function AccountSessionDrawer({
   onResumeNative,
   onOpenActions,
   onLoadMore,
+  onOpenManageProviders,
   onOpenStatus,
   approvalDestinationAvailable,
   attachmentDestinationAvailable,
@@ -52,6 +53,7 @@ export function AccountSessionDrawer({
   onResumeNative: (providerSessionId: string) => void;
   onOpenActions: (session: MobileSessionRow) => void;
   onLoadMore: () => void;
+  onOpenManageProviders: () => void;
   onOpenStatus: () => void;
   approvalDestinationAvailable: boolean;
   attachmentDestinationAvailable: boolean;
@@ -70,6 +72,15 @@ export function AccountSessionDrawer({
           selectedAccountId={selectedAccountId}
           onSelectAccount={onSelectAccount}
         />
+        <button
+          type="button"
+          className="mobile-manage-providers"
+          data-testid="mobile-manage-providers"
+          onClick={onOpenManageProviders}
+        >
+          <span>Manage providers</span>
+          <small>Active and available</small>
+        </button>
         <div className="mobile-drawer-section-heading">
           <h2>Sessions</h2>
           <span title={accountLabel}>{accountLabel}</span>

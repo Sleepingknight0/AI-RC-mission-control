@@ -9,6 +9,7 @@ import {
   type Approval,
   type FileChange,
   type ProviderAccountCapabilitySnapshot,
+  type ProviderRecord,
   type Runtime,
   type SessionSettings,
   type SessionSnapshot,
@@ -471,8 +472,15 @@ export function App() {
     action: PendingMobileAction;
     busy: boolean;
   } | null>(null);
-  const selectedProviderIdRef = useRef<string | null>(null);
-  const selectedAccountIdRef = useRef<string | null>(null);
+  const [pendingProviderIds, setPendingProviderIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const pendingProviderEnablementsRef = useRef(new Map<
+    string,
+    { providerId: string; enabled: boolean }
+  >());
+  const selectedProviderIdRef = useRef<string | null>(restoredProviderId);
+  const selectedAccountIdRef = useRef<string | null>(restoredAccountId);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [pendingAttachmentIds, setPendingAttachmentIds] = useState<string[]>([]);
   const [maintenanceNotice, setMaintenanceNotice] = useState<string | null>(null);
@@ -869,17 +877,43 @@ export function App() {
         }
         if (message.type === "providers.snapshot") {
           const controllable = controllableProviders(message.payload.snapshot);
-          setSelectedProviderId((current) => {
-            if (current && controllable.some((item) => item.providerId === current)) {
-              return current;
-            }
-            // Prefer still-listed inventory; never retain optimistic control selection.
-            const anyListed = message.payload.snapshot.providers.find(
-              (item) => item.providerId === current,
-            );
-            if (current && anyListed) return current;
-            return controllable[0]?.providerId ?? message.payload.snapshot.providers[0]?.providerId ?? null;
-          });
+          const active = message.payload.snapshot.providers.filter(
+            (provider) => provider.enabled,
+          );
+          const current = selectedProviderIdRef.current;
+          if (!active.some((provider) => provider.providerId === current)) {
+            const next = controllable[0] ?? active[0] ?? null;
+            const nextAccount =
+              next?.accounts.find((account) => account.isDefault) ??
+              next?.accounts[0] ??
+              null;
+            selectedProviderIdRef.current = next?.providerId ?? null;
+            selectedAccountIdRef.current = nextAccount?.accountId ?? null;
+            setSelectedProviderId(next?.providerId ?? null);
+            setSelectedAccountId(nextAccount?.accountId ?? null);
+            setMobileAccountHome(true);
+          }
+        }
+        if (
+          message.type === "provider.enablement.changed" ||
+          message.type === "provider.enablement.rejected"
+        ) {
+          const pending = pendingProviderEnablementsRef.current.get(
+            message.payload.commandId,
+          );
+          if (pending !== undefined) {
+            pendingProviderEnablementsRef.current.delete(message.payload.commandId);
+            setPendingProviderIds((current) => {
+              const next = new Set(current);
+              next.delete(pending.providerId);
+              return next;
+            });
+          }
+          setNotice(
+            message.type === "provider.enablement.changed"
+              ? `${message.payload.providerId} is now ${message.payload.enabled ? "active" : "disabled"}. No prompt was sent.`
+              : `${message.payload.error.code}: ${message.payload.error.message}`,
+          );
         }
         if (message.type === "session.command.accepted") {
           setNotice(`Session command accepted · rev ${message.payload.revision}`);
@@ -1009,6 +1043,8 @@ export function App() {
         pendingMobileActionRef.current = null;
         pendingNativeResumeRefreshRef.current = null;
         setActivationPrompt(null);
+        pendingProviderEnablementsRef.current.clear();
+        setPendingProviderIds(new Set());
         setConnection("offline");
         setArtifactAccessToken(null);
         setNotice("Core connection lost. Draft retained; no command will auto-send.");
@@ -2021,6 +2057,29 @@ export function App() {
   const mobileCanCreate =
     createDisabledReason === null ||
     (createDisabledReason === "Account activation required" && canActivateSelectedAccount);
+  const updateProviderEnablement = (
+    provider: ProviderRecord,
+    enabled: boolean,
+  ) => {
+    const socket = socketRef.current;
+    if (socket?.readyState !== WebSocket.OPEN || connection !== "online") {
+      setNotice("Provider visibility is locked until Core reconnects.");
+      return;
+    }
+    const commandId = crypto.randomUUID();
+    pendingProviderEnablementsRef.current.set(commandId, {
+      providerId: provider.providerId,
+      enabled,
+    });
+    setPendingProviderIds((current) => new Set(current).add(provider.providerId));
+    send(socket, makeEnvelope("provider.enablement.set", {
+      commandId,
+      deviceId: deviceIdRef.current,
+      providerId: provider.providerId,
+      expectedEnabled: provider.enabled,
+      enabled,
+    }));
+  };
 
   if (mobileLayout) {
     return (
@@ -2102,6 +2161,7 @@ export function App() {
         settingsNotice={settingsUi.error}
         settings={settingsUi.snapshot}
         capabilities={sessionCapabilitiesUi.snapshot}
+        pendingProviderIds={pendingProviderIds}
         activationPrompt={activationPrompt === null ? null : {
           actionLabel: activationPrompt.action.kind === "create" ? "Create a Session" : activationPrompt.action.kind === "resume_native" ? "Resume this native Session" : "Resume this Session Runtime",
           busy: activationPrompt.busy,
@@ -2159,6 +2219,7 @@ export function App() {
             deviceId: deviceIdRef.current, expectedRevision: revision, settings: nextSettings,
           }));
         }}
+        onSetProviderEnabled={updateProviderEnablement}
         onConfirmActivation={confirmMobileActivation}
         onCancelActivation={() => {
           pendingMobileActionRef.current = null;
