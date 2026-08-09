@@ -113,6 +113,8 @@ export const MAX_PROVIDER_MODELS = 128;
 export const MAX_PROVIDER_REASONING_OPTIONS = 16;
 export const MAX_PROVIDER_USAGE_METERS = 8;
 export const MAX_PROVIDER_NATIVE_SESSIONS = 500;
+export const MAX_PROVIDER_SESSION_PROJECTION_ITEMS = 250;
+export const MAX_PROVIDER_SESSION_PROJECTION_TEXT_BYTES = 16 * 1024;
 
 const providerSlug = z
   .string()
@@ -559,6 +561,203 @@ export const ProviderNativeSessionPageSchema = z
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: "native Sessions must match page provider and account",
+      });
+    }
+  });
+
+export const ProviderSessionProjectionAvailabilitySchema = z.enum([
+  "available",
+  "unsupported",
+  "unavailable",
+]);
+
+export const ProviderSessionProjectionStateSchema = z.enum([
+  "thinking",
+  "working",
+  "running_command",
+  "reading_file",
+  "searching",
+  "editing",
+  "running_tests",
+  "waiting_for_approval",
+  "waiting_for_input",
+  "idle",
+  "completed",
+  "failed",
+  "interrupted",
+  "view_only",
+  "unavailable",
+]);
+
+const ProviderSessionProjectionItemIdentitySchema = z.object({
+  providerTurnId: id,
+  providerItemId: id,
+  order: z.number().int().nonnegative(),
+});
+const projectionText = utf8String(MAX_PROVIDER_SESSION_PROJECTION_TEXT_BYTES);
+const ProviderSessionProjectionItemSchema = z.discriminatedUnion("type", [
+  ProviderSessionProjectionItemIdentitySchema.extend({
+    type: z.literal("operator_message"),
+    text: projectionText,
+  }).strict(),
+  ProviderSessionProjectionItemIdentitySchema.extend({
+    type: z.literal("assistant_message"),
+    phase: z.enum(["final_answer", "unknown"]),
+    status: z.enum(["streaming", "completed"]),
+    text: projectionText,
+  }).strict(),
+  ProviderSessionProjectionItemIdentitySchema.extend({
+    type: z.literal("assistant_progress"),
+    progressType: z.enum(["commentary", "reasoning", "plan"]),
+    status: z.enum(["streaming", "completed"]),
+    text: projectionText,
+  }).strict(),
+  ProviderSessionProjectionItemIdentitySchema.extend({
+    type: z.literal("activity"),
+    activityType: z.enum([
+      "command",
+      "read_file",
+      "search",
+      "edit",
+      "test",
+      "tool",
+      "web_search",
+      "subagent",
+      "waiting",
+    ]),
+    status: z.enum(["running", "completed", "failed", "declined", "waiting"]),
+    title: displayText(1_000),
+    cwdLabel: displayText(160).nullable(),
+    durationMs: z.number().int().nonnegative().nullable(),
+    combinedOutputPreview: projectionText.nullable(),
+    stdoutPreview: projectionText.nullable(),
+    stderrPreview: projectionText.nullable(),
+  }).strict(),
+  ProviderSessionProjectionItemIdentitySchema.extend({
+    type: z.literal("file_change"),
+    status: z.enum(["running", "completed", "failed", "declined"]),
+    files: z
+      .array(
+        z
+          .object({
+            path: displayText(512).refine(
+              (value) =>
+                !/^(?:[A-Za-z]:[\\/]|[\\/]{1,2})/u.test(value) &&
+                !value.split(/[\\/]/u).includes(".."),
+              { message: "provider-native file labels must be relative" },
+            ),
+            kind: z.enum(["add", "update", "delete"]),
+          })
+          .strict(),
+      )
+      .max(100),
+  }).strict(),
+  ProviderSessionProjectionItemIdentitySchema.extend({
+    type: z.literal("turn_state"),
+    state: ProviderSessionProjectionStateSchema.exclude(["unavailable"]),
+    startedAt: timestamp.nullable(),
+    completedAt: timestamp.nullable(),
+    failureCode: displayText(96).nullable(),
+  }).strict(),
+]);
+
+export const ProviderSessionProjectionSnapshotSchema = z
+  .object({
+    projectionId: id,
+    revision: z.number().int().positive(),
+    providerId: providerSlug,
+    accountId: providerSlug,
+    providerSessionId: id.refine((value) => !hasControlCharacter(value), {
+      message: "provider Session ID may not contain control characters",
+    }),
+    providerRevision: displayText(200).nullable(),
+    providerCursor: displayText(1_024).nullable(),
+    observedAt: timestamp,
+    staleAt: timestamp,
+    freshness: ProviderFreshnessSchema,
+    availability: ProviderSessionProjectionAvailabilitySchema,
+    runtimeId: id.nullable(),
+    runtimeGeneration: z.number().int().positive().nullable(),
+    title: displayText(160).nullable(),
+    projectLabel: displayText(160).nullable(),
+    state: ProviderSessionProjectionStateSchema,
+    activeSince: timestamp.nullable(),
+    truncated: z.boolean(),
+    notice: displayText(200).nullable(),
+    items: z
+      .array(ProviderSessionProjectionItemSchema)
+      .max(MAX_PROVIDER_SESSION_PROJECTION_ITEMS),
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    addDuplicateIssue(
+      snapshot.items.map(
+        (item) => `${item.providerTurnId}\u0000${item.providerItemId}`,
+      ),
+      "provider-native projection item",
+      context,
+    );
+    if (Date.parse(snapshot.staleAt) <= Date.parse(snapshot.observedAt)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "staleAt must be later than observedAt",
+      });
+    }
+    if ((snapshot.runtimeId === null) !== (snapshot.runtimeGeneration === null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "projection runtime identity and generation must be paired",
+      });
+    }
+    const active = [
+      "thinking",
+      "working",
+      "running_command",
+      "reading_file",
+      "searching",
+      "editing",
+      "running_tests",
+      "waiting_for_approval",
+      "waiting_for_input",
+    ].includes(snapshot.state);
+    if (!active && snapshot.activeSince !== null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "only active provider-native states may expose activeSince",
+      });
+    }
+    if (
+      snapshot.availability !== "available" &&
+      (snapshot.freshness !== "unavailable" ||
+        snapshot.state !== "unavailable" ||
+        snapshot.activeSince !== null ||
+        snapshot.items.length > 0 ||
+        snapshot.title !== null ||
+        snapshot.projectLabel !== null ||
+        snapshot.notice === null)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "unavailable projections must fail closed without history",
+      });
+    }
+    if (
+      snapshot.availability === "available" &&
+      (snapshot.freshness !== "live" ||
+        snapshot.runtimeId === null ||
+        snapshot.title === null ||
+        snapshot.projectLabel === null ||
+        snapshot.state === "unavailable")
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "available projections require live fenced provider evidence",
+      });
+    }
+    if (utf8ByteLength(JSON.stringify(snapshot)) > MAX_INLINE_ENVELOPE_BYTES) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "provider-native projection exceeds the inline envelope bound",
       });
     }
   });
@@ -1115,6 +1314,17 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       .strict(),
   ),
   envelope(
+    "provider.session.projection.get",
+    z
+      .object({
+        requestId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        providerSessionId: id,
+      })
+      .strict(),
+  ),
+  envelope(
     "session.create",
     z
       .object({
@@ -1525,6 +1735,15 @@ export const ServerEnvelopeSchema = z.discriminatedUnion("type", [
       .object({ requestId: id, page: ProviderNativeSessionPageSchema })
       .strict(),
   ),
+  envelope(
+    "provider.session.projection.snapshot",
+    z
+      .object({
+        requestId: id,
+        snapshot: ProviderSessionProjectionSnapshotSchema,
+      })
+      .strict(),
+  ),
   envelope("runtime.status", z.object({ runtime: RuntimeSchema })),
   envelope(
     "turn.started",
@@ -1812,6 +2031,17 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       })
       .strict(),
   ),
+  envelope(
+    "connector.provider.session.projection.get",
+    z
+      .object({
+        requestId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        providerSessionId: id,
+      })
+      .strict(),
+  ),
 ]);
 
 export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
@@ -1899,6 +2129,15 @@ export const ConnectorEnvelopeSchema = z.discriminatedUnion("type", [
     "connector.sessions.native.page",
     z
       .object({ requestId: id, page: ProviderNativeSessionPageSchema })
+      .strict(),
+  ),
+  connectorEnvelope(
+    "connector.provider.session.projection.snapshot",
+    z
+      .object({
+        requestId: id,
+        snapshot: ProviderSessionProjectionSnapshotSchema,
+      })
       .strict(),
   ),
   connectorEnvelope(
@@ -2083,6 +2322,18 @@ export type ProviderNativeSessionArchiveFilter = z.infer<
 >;
 export type ProviderNativeSessionPage = z.infer<
   typeof ProviderNativeSessionPageSchema
+>;
+export type ProviderSessionProjectionAvailability = z.infer<
+  typeof ProviderSessionProjectionAvailabilitySchema
+>;
+export type ProviderSessionProjectionState = z.infer<
+  typeof ProviderSessionProjectionStateSchema
+>;
+export type ProviderSessionProjectionItem = z.infer<
+  typeof ProviderSessionProjectionItemSchema
+>;
+export type ProviderSessionProjectionSnapshot = z.infer<
+  typeof ProviderSessionProjectionSnapshotSchema
 >;
 export type Turn = z.infer<typeof TurnSchema>;
 export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
