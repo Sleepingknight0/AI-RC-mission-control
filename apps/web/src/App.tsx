@@ -96,6 +96,7 @@ import {
   nativeProjectionHeaderStatus,
   nativeProjectionIsActive,
   nativeProjectionRequestStarted,
+  nativeProjectionSelectionFromStoredIds,
   nativeProjectionSignal,
   reduceNativeProjection,
   type NativeProjectionSelection,
@@ -144,12 +145,11 @@ const restoredProviderId = readStoredId(SELECTED_PROVIDER_KEY);
 const restoredAccountId = readStoredId(SELECTED_ACCOUNT_KEY);
 const restoredNativeSelection: NativeProjectionSelection | null = (() => {
   if (HAS_REQUESTED_SESSION) return null;
-  const providerId = readStoredId(SELECTED_NATIVE_PROVIDER_KEY);
-  const accountId = readStoredId(SELECTED_NATIVE_ACCOUNT_KEY);
-  const providerSessionId = readStoredId(SELECTED_NATIVE_SESSION_KEY);
-  return providerId === null || accountId === null || providerSessionId === null
-    ? null
-    : { providerId, accountId, providerSessionId };
+  return nativeProjectionSelectionFromStoredIds({
+    providerId: sessionStorage.getItem(SELECTED_NATIVE_PROVIDER_KEY),
+    accountId: sessionStorage.getItem(SELECTED_NATIVE_ACCOUNT_KEY),
+    providerSessionId: sessionStorage.getItem(SELECTED_NATIVE_SESSION_KEY),
+  });
 })();
 const INITIAL_SESSION_ID =
   HAS_REQUESTED_SESSION

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  MAX_PROVIDER_SESSION_PROJECTION_BYTES,
   MAX_PROVIDER_SESSION_PROJECTION_ITEMS,
   MAX_PROVIDER_SESSION_PROJECTION_TEXT_BYTES,
   utf8ByteLength,
@@ -169,6 +170,193 @@ describe("Codex provider-native Session projection", () => {
     ).toBeLessThanOrEqual(MAX_PROVIDER_SESSION_PROJECTION_TEXT_BYTES);
   });
 
+  it("fails closed for environment, credential, ticket, and secret-header command data", async () => {
+    const sensitive = thread();
+    const command = sensitive.turns[0]!.items.find(
+      (item: { type: string }) => item.type === "commandExecution",
+    ) as { command: string; aggregatedOutput: string };
+    command.command =
+      "$env:AICL_CONNECTOR_TOKEN='runtime-secret'; " +
+      "Get-Content $env:USERPROFILE\\.codex\\auth.json";
+    command.aggregatedOutput =
+      "Author\u001b[31mization: Basic provider-credential\u001b[0m\n" +
+      '{"refresh_token":"refresh-secret","ticket":"runtime-ticket"}\n' +
+      "DEPLOY_KEY=opaque-environment-value\n" +
+      "X-Api-Key: header-secret";
+
+    const snapshot = await readCodexNativeSessionProjection(
+      { request: async () => ({ thread: sensitive }) },
+      options(7),
+    );
+    const serialized = JSON.stringify(snapshot);
+
+    for (const forbidden of [
+      "AICL_CONNECTOR_TOKEN",
+      "runtime-secret",
+      "USERPROFILE",
+      "auth.json",
+      "provider-credential",
+      "refresh-secret",
+      "runtime-ticket",
+      "DEPLOY_KEY",
+      "opaque-environment-value",
+      "header-secret",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+    expect(snapshot.items.find((item) => item.type === "activity")).toMatchObject({
+      title: "Sensitive provider command",
+      combinedOutputPreview: null,
+    });
+  });
+
+  it.each([
+    ["cmd /c echo %AICL_CONNECTOR_TOKEN%", "runtime-secret"],
+    ["sh -c echo $AICL_CONNECTOR_TOKEN", "second-runtime-secret"],
+    ["Get-Content auth.json", "opaque-provider-credential"],
+  ])("suppresses sensitive command form %s", async (commandText, output) => {
+    const sensitive = thread();
+    const command = sensitive.turns[0]!.items.find(
+      (item: { type: string }) => item.type === "commandExecution",
+    ) as { command: string; aggregatedOutput: string };
+    command.command = commandText;
+    command.aggregatedOutput = output;
+
+    const snapshot = await readCodexNativeSessionProjection(
+      { request: async () => ({ thread: sensitive }) },
+      options(10),
+    );
+
+    expect(snapshot.items.find((item) => item.type === "activity")).toMatchObject({
+      title: "Sensitive provider command",
+      combinedOutputPreview: null,
+    });
+    expect(JSON.stringify(snapshot)).not.toContain(output);
+  });
+
+  it.each([
+    ["node -p process.env.AICL_CONNECTOR_TOKEN", "standalone-environment-secret"],
+    ["provider-cli --ticket runtime-ticket-secret", "completed"],
+    ["provider-cli --api-key credential-secret", "completed"],
+    ["deploy_key=opaque-value node app.js", "completed"],
+  ])("suppresses programmatic or option-based sensitive command %s", async (
+    commandText,
+    output,
+  ) => {
+    const sensitive = thread();
+    const command = sensitive.turns[0]!.items.find(
+      (item: { type: string }) => item.type === "commandExecution",
+    ) as { command: string; aggregatedOutput: string };
+    command.command = commandText;
+    command.aggregatedOutput = output;
+
+    const snapshot = await readCodexNativeSessionProjection(
+      { request: async () => ({ thread: sensitive }) },
+      options(11),
+    );
+
+    expect(snapshot.items.find((item) => item.type === "activity")).toMatchObject({
+      title: "Sensitive provider command",
+      combinedOutputPreview: null,
+    });
+    expect(JSON.stringify(snapshot)).not.toMatch(
+      /AICL_CONNECTOR_TOKEN|standalone-environment-secret|runtime-ticket-secret|credential-secret|deploy_key|opaque-value/u,
+    );
+  });
+
+  it("keeps unstructured provider command output Connector-side", async () => {
+    const value = thread();
+    const command = value.turns[0]!.items.find(
+      (item: { type: string }) => item.type === "commandExecution",
+    ) as { command: string; aggregatedOutput: string };
+    command.command = "Write-Output public-build-state";
+    command.aggregatedOutput = "public build output";
+
+    const snapshot = await readCodexNativeSessionProjection(
+      { request: async () => ({ thread: value }) },
+      options(12),
+    );
+
+    expect(snapshot.items.find((item) => item.type === "activity")).toMatchObject({
+      title: "Write-Output public-build-state",
+      combinedOutputPreview: null,
+    });
+  });
+
+  it("preserves benign shell-variable discussion in native conversation history", async () => {
+    const value = thread({
+      status: { type: "idle" },
+      turns: [{
+        id: "variable-discussion",
+        status: "completed",
+        itemsView: "full",
+        error: null,
+        startedAt,
+        completedAt: startedAt + 1,
+        durationMs: 1_000,
+        items: [
+          {
+            type: "userMessage",
+            id: "variable-user",
+            clientId: null,
+            content: [{
+              type: "text",
+              text: "Explain the local $value variable",
+              text_elements: [],
+            }],
+          },
+          {
+            type: "agentMessage",
+            id: "variable-answer",
+            text: "Use $value to store the local result.",
+            phase: "final_answer",
+            memoryCitation: null,
+          },
+        ],
+      }],
+    });
+
+    const snapshot = await readCodexNativeSessionProjection(
+      { request: async () => ({ thread: value }) },
+      options(13),
+    );
+
+    expect(snapshot.items).toContainEqual(expect.objectContaining({
+      type: "operator_message",
+      text: "Explain the local $value variable",
+    }));
+    expect(snapshot.items).toContainEqual(expect.objectContaining({
+      type: "assistant_message",
+      text: "Use $value to store the local result.",
+    }));
+  });
+
+  it("suppresses a bounded output preview when sensitive data appears after ANSI removal", async () => {
+    const sensitiveOutput = thread();
+    const command = sensitiveOutput.turns[0]!.items.find(
+      (item: { type: string }) => item.type === "commandExecution",
+    ) as { command: string; aggregatedOutput: string };
+    command.command = "Write-Output provider-state";
+    command.aggregatedOutput =
+      "Author\u001b[31mization: Basic provider-credential\u001b[0m\n" +
+      '{"refresh_token":"refresh-secret","ticket":"runtime-ticket"}\n' +
+      "DEPLOY_KEY=opaque-environment-value";
+
+    const snapshot = await readCodexNativeSessionProjection(
+      { request: async () => ({ thread: sensitiveOutput }) },
+      options(8),
+    );
+    const activity = snapshot.items.find((item) => item.type === "activity");
+
+    expect(activity).toMatchObject({
+      title: "Write-Output provider-state",
+      combinedOutputPreview: null,
+    });
+    expect(JSON.stringify(snapshot)).not.toMatch(
+      /provider-credential|refresh-secret|runtime-ticket|DEPLOY_KEY|opaque-environment-value/u,
+    );
+  });
+
   it("distinguishes final answers and terminal turn state", async () => {
     const completed = thread({
       status: { type: "notLoaded" },
@@ -260,8 +448,42 @@ describe("Codex provider-native Session projection", () => {
         snapshot.items.map(
           (item) => `${item.providerTurnId}\u0000${item.providerItemId}`,
         ),
-      ).size,
+    ).size,
     ).toBe(snapshot.items.length);
+  });
+
+  it("bounds the complete normalized snapshot, including metadata and separators", async () => {
+    const value = thread({
+      turns: [
+        {
+          id: "large-byte-turn",
+          status: "completed",
+          itemsView: "full",
+          error: null,
+          startedAt,
+          completedAt: startedAt + 1,
+          durationMs: 1_000,
+          items: Array.from({ length: 250 }, (_, index) => ({
+            type: "agentMessage",
+            id: `large-message-${index}`,
+            text: `${index}:`.padEnd(2_293, "x"),
+            phase: "commentary",
+            memoryCitation: null,
+          })),
+        },
+      ],
+      status: { type: "idle" },
+    });
+
+    const snapshot = await readCodexNativeSessionProjection(
+      { request: async () => ({ thread: value }) },
+      options(9),
+    );
+
+    expect(utf8ByteLength(JSON.stringify(snapshot))).toBeLessThanOrEqual(
+      MAX_PROVIDER_SESSION_PROJECTION_BYTES,
+    );
+    expect(snapshot.truncated).toBe(true);
   });
 
   it("fails exact account/session mismatches instead of falling back", async () => {

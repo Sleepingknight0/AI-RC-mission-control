@@ -115,6 +115,7 @@ export const MAX_PROVIDER_USAGE_METERS = 8;
 export const MAX_PROVIDER_NATIVE_SESSIONS = 500;
 export const MAX_PROVIDER_SESSION_PROJECTION_ITEMS = 250;
 export const MAX_PROVIDER_SESSION_PROJECTION_TEXT_BYTES = 16 * 1024;
+export const MAX_PROVIDER_SESSION_PROJECTION_BYTES = 600 * 1024;
 
 const providerSlug = z
   .string()
@@ -754,10 +755,13 @@ export const ProviderSessionProjectionSnapshotSchema = z
         message: "available projections require live fenced provider evidence",
       });
     }
-    if (utf8ByteLength(JSON.stringify(snapshot)) > MAX_INLINE_ENVELOPE_BYTES) {
+    if (
+      utf8ByteLength(JSON.stringify(snapshot)) >
+      MAX_PROVIDER_SESSION_PROJECTION_BYTES
+    ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "provider-native projection exceeds the inline envelope bound",
+        message: "provider-native projection exceeds the 600 KiB bound",
       });
     }
   });

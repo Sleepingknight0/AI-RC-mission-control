@@ -4,7 +4,10 @@ import {
 } from "@aicl/protocol";
 import { describe, expect, it } from "vitest";
 
-import { OpaqueNativeSessionPager } from "../src/codex/account-controller.js";
+import {
+  OpaqueNativeSessionPager,
+  closeOwnedNativeSessionObservers,
+} from "../src/codex/account-controller.js";
 import {
   StaleNativeSessionCursorError,
   UnavailableProvider,
@@ -17,6 +20,22 @@ import {
 const observedAt = "2026-08-04T00:00:00.000Z";
 
 describe("account-scoped native Session pagination", () => {
+  it("retains failed observer ownership and surfaces shutdown failure", async () => {
+    const observers = new Map([
+      ["codex\u0000good", { close: async () => undefined }],
+      ["codex\u0000failed", { close: async () => Promise.reject(new Error("close failed")) }],
+    ]);
+    const closed: string[] = [];
+
+    await expect(
+      closeOwnedNativeSessionObservers(observers, () => true, (key) => {
+        closed.push(key);
+      }),
+    ).rejects.toThrow("observer shutdown failed");
+    expect(closed).toEqual(["codex\u0000good"]);
+    expect([...observers.keys()]).toEqual(["codex\u0000failed"]);
+  });
+
   it("uses opaque one-time query-bound cursors and preserves truncation truth", async () => {
     const pager = new OpaqueNativeSessionPager();
     const sessions = Array.from({ length: 5 }, (_, index) =>

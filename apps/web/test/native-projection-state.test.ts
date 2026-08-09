@@ -9,6 +9,8 @@ import {
   initialNativeProjectionState,
   nativeProjectionHeaderStatus,
   nativeProjectionRequestStarted,
+  nativeProjectionSelectionFromStoredIds,
+  nativeProjectionSignal,
   reduceNativeProjection,
 } from "../src/mobile/native-projection.js";
 
@@ -53,6 +55,27 @@ function projection(
 }
 
 describe("provider-native projection Web state", () => {
+  it("restores protocol-valid provider-native identities up to their exact bounds", () => {
+    const providerId = `p${"a".repeat(95)}`;
+    const accountId = `a${"b".repeat(95)}`;
+    const providerSessionId = `thread:${"x".repeat(193)}`;
+
+    expect(
+      nativeProjectionSelectionFromStoredIds({
+        providerId,
+        accountId,
+        providerSessionId,
+      }),
+    ).toEqual({ providerId, accountId, providerSessionId });
+    expect(
+      nativeProjectionSelectionFromStoredIds({
+        providerId,
+        accountId,
+        providerSessionId: "thread\nunsafe",
+      }),
+    ).toBeNull();
+  });
+
   it("accepts only the exact outstanding provider/account/Session response", () => {
     const selection = {
       providerId: "codex",
@@ -184,5 +207,49 @@ describe("provider-native projection Web state", () => {
         now,
       ),
     ).toMatchObject({ label: "LIVE · Running tests" });
+  });
+
+  it("signals an in-place rendered file-change update for Return to live", () => {
+    const fileChange = {
+      type: "file_change" as const,
+      providerTurnId: "turn-1",
+      providerItemId: "file-1",
+      order: 0,
+      status: "running" as const,
+      files: [{ path: "src/a.ts", kind: "update" as const }],
+    };
+    const before = projection({ items: [fileChange] });
+    const after = projection({
+      items: [
+        {
+          ...fileChange,
+          files: [
+            ...fileChange.files,
+            { path: "src/b.ts", kind: "add" as const },
+          ],
+        },
+      ],
+    });
+
+    expect(nativeProjectionSignal(after)).not.toBe(nativeProjectionSignal(before));
+  });
+
+  it("does not signal an unread update for an unchanged polling observation", () => {
+    const before = projection({
+      projectionId: "projection-poll-1",
+      revision: 41,
+      providerRevision: null,
+      observedAt: "2026-08-09T08:00:00.000Z",
+      staleAt: "2026-08-09T08:00:05.000Z",
+    });
+    const after = projection({
+      projectionId: "projection-poll-2",
+      revision: 42,
+      providerRevision: null,
+      observedAt: "2026-08-09T08:00:01.500Z",
+      staleAt: "2026-08-09T08:00:06.500Z",
+    });
+
+    expect(nativeProjectionSignal(after)).toBe(nativeProjectionSignal(before));
   });
 });

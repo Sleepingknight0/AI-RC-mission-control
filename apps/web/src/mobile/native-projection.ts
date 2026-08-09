@@ -24,6 +24,37 @@ export interface NativeProjectionHeaderStatus {
   tone: "ready" | "working" | "warning" | "offline";
 }
 
+const PROVIDER_SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/u;
+
+export function nativeProjectionSelectionFromStoredIds(input: {
+  providerId: string | null;
+  accountId: string | null;
+  providerSessionId: string | null;
+}): NativeProjectionSelection | null {
+  const { providerId, accountId, providerSessionId } = input;
+  if (
+    providerId === null ||
+    accountId === null ||
+    providerSessionId === null ||
+    !PROVIDER_SLUG_PATTERN.test(providerId) ||
+    !PROVIDER_SLUG_PATTERN.test(accountId) ||
+    providerSessionId.length === 0 ||
+    providerSessionId.length > 200 ||
+    hasControlCharacter(providerSessionId)
+  ) {
+    return null;
+  }
+  return { providerId, accountId, providerSessionId };
+}
+
+function hasControlCharacter(value: string) {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
 export function initialNativeProjectionState(): NativeProjectionUiState {
   return {
     status: "idle",
@@ -153,19 +184,19 @@ export function nativeProjectionSignal(
   snapshot: ProviderSessionProjectionSnapshot | null,
 ) {
   if (snapshot === null) return "native:none";
-  return `native:${snapshot.providerId}:${snapshot.accountId}:${snapshot.providerSessionId}:${snapshot.providerRevision ?? snapshot.revision}:${snapshot.state}:${snapshot.items
-    .map((item) =>
-      item.type === "assistant_message" || item.type === "assistant_progress"
-        ? `${item.providerItemId}:${item.status}:${item.text.length}:${item.text.slice(-64)}`
-        : item.type === "activity"
-          ? `${item.providerItemId}:${item.status}:${item.combinedOutputPreview?.length ?? 0}:${item.combinedOutputPreview?.slice(-64) ?? ""}`
-          : item.type === "turn_state"
-            ? `${item.providerItemId}:${item.state}`
-            : item.type === "file_change"
-              ? `${item.providerItemId}:${item.type}:${item.status}`
-              : `${item.providerItemId}:${item.type}`,
-    )
+  return `native:${snapshot.providerId}:${snapshot.accountId}:${snapshot.providerSessionId}:${snapshot.state}:${snapshot.items
+    .map((item) => `${item.providerItemId}:${projectionItemDigest(item)}`)
     .join(",")}`;
+}
+
+function projectionItemDigest(item: ProviderSessionProjectionSnapshot["items"][number]) {
+  const serialized = JSON.stringify(item);
+  let hash = 2_166_136_261;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return `${serialized.length}:${(hash >>> 0).toString(16)}`;
 }
 
 function activeStateLabel(state: ProviderSessionProjectionState): string | null {

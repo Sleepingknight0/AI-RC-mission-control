@@ -96,6 +96,17 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
         candidate.control === "remote_control",
     );
     if (account === undefined) throw new Error("No controllable Codex account");
+    await waitFor(
+      browser,
+      "provider.account.capabilities.snapshot",
+      (message) =>
+        message.payload.snapshot.providerId === "codex" &&
+        message.payload.snapshot.accountId === account.accountId &&
+        message.payload.snapshot.active &&
+        message.payload.snapshot.authentication === "authenticated" &&
+        message.payload.snapshot.control === "remote_control" &&
+        message.payload.snapshot.freshness === "live",
+    );
     send(
       browser,
       makeEnvelope("session.create", {

@@ -2,6 +2,7 @@ import { basename, isAbsolute, relative, resolve } from "node:path";
 
 import { canonicalProjectRoot } from "@aicl/config";
 import {
+  MAX_PROVIDER_SESSION_PROJECTION_BYTES,
   MAX_PROVIDER_SESSION_PROJECTION_ITEMS,
   MAX_PROVIDER_SESSION_PROJECTION_TEXT_BYTES,
   ProviderSessionProjectionSnapshotSchema,
@@ -17,7 +18,6 @@ import type { CodexDiscoveryRpc } from "./discovery.js";
 
 const MAX_RAW_TURNS = 500;
 const MAX_RAW_ITEMS = 5_000;
-const MAX_PROJECTION_ITEM_BYTES = 600 * 1024;
 const OBSERVED_DELTA_LIVE_WINDOW_MS = 15_000;
 const ANSI_ESCAPE_PATTERN = new RegExp(
   String.raw`\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))`,
@@ -256,9 +256,9 @@ export async function readCodexNativeSessionProjection(
     sanitizeDisplay(response.thread.preview, 160) ??
     "Codex Session";
   const projectLabel = sanitizeDisplay(basename(projectPath), 160) ?? "Project";
-  const bounded = boundItems(normalized.items);
-
-  return ProviderSessionProjectionSnapshotSchema.parse({
+  let bounded = boundItems(normalized.items);
+  let truncated = normalized.truncated || bounded.length < normalized.items.length;
+  const projectionBase = {
     projectionId: `projection-${crypto.randomUUID()}`,
     revision: options.revision,
     providerId: options.providerId,
@@ -276,14 +276,31 @@ export async function readCodexNativeSessionProjection(
     projectLabel,
     state,
     activeSince,
-    truncated:
-      normalized.truncated || bounded.length < normalized.items.length,
-    notice:
-      normalized.truncated || bounded.length < normalized.items.length
-        ? "Older provider history was omitted to stay within observation bounds"
-        : null,
+  };
+  let projection = {
+    ...projectionBase,
+    truncated,
+    notice: truncated
+      ? "Older provider history was omitted to stay within observation bounds"
+      : null,
     items: bounded,
-  });
+  };
+  while (
+    bounded.length > 0 &&
+    utf8ByteLength(JSON.stringify(projection)) >
+      MAX_PROVIDER_SESSION_PROJECTION_BYTES
+  ) {
+    bounded = bounded.slice(1);
+    truncated = true;
+    projection = {
+      ...projectionBase,
+      truncated,
+      notice: "Older provider history was omitted to stay within observation bounds",
+      items: bounded,
+    };
+  }
+
+  return ProviderSessionProjectionSnapshotSchema.parse(projection);
 }
 
 /**
@@ -458,6 +475,7 @@ function normalizeTurns(thread: RawThread, projectPath: string) {
 
       const command = CommandSchema.safeParse(rawItem);
       if (command.success) {
+        const sensitiveCommand = commandTouchesSensitiveData(command.data.command);
         const activityType = classifyCommand(
           command.data.command,
           command.data.commandActions,
@@ -470,12 +488,16 @@ function normalizeTurns(thread: RawThread, projectPath: string) {
           activityType,
           status: normalizeActivityStatus(command.data.status),
           title:
-            sanitizeDisplay(command.data.command, 1_000) ?? "Provider command",
+            sensitiveCommand
+              ? "Sensitive provider command"
+              : sanitizeDisplay(command.data.command, 1_000) ?? "Provider command",
           cwdLabel: sanitizeDisplay(basename(projectPath), 160),
           durationMs: command.data.durationMs,
-          combinedOutputPreview: sanitizeProjectionText(
-            command.data.aggregatedOutput,
-          ),
+          // Codex exposes one unstructured aggregate stream. A bounded stream is
+          // still not provably free of bare environment or credential values, so
+          // keep it Connector-side until the provider offers a structured safe
+          // preview channel.
+          combinedOutputPreview: null,
           stdoutPreview: null,
           stderrPreview: null,
         });
@@ -682,20 +704,59 @@ function normalizeUserContent(content: z.infer<typeof UserMessageSchema>["conten
 
 function sanitizeProjectionText(value: unknown): string | null {
   if (value === null || value === undefined) return null;
+  const cleaned = String(value)
+    .replace(ANSI_ESCAPE_PATTERN, "")
+    .replace(UNSAFE_CONTROL_PATTERN, "");
+  if (projectionTextContainsSensitiveData(cleaned)) return null;
   const sanitized = redactSensitiveOutput(
-    String(value),
+    cleaned,
     MAX_PROVIDER_SESSION_PROJECTION_TEXT_BYTES,
   )
-    .replace(ANSI_ESCAPE_PATTERN, "")
     .replace(/\b[A-Za-z]:[\\/][^\s"'`<>|]*/gu, "[PATH]")
     .replace(/(^|\s)\/(?:[^\s"'`/]+\/)*[^\s"'`]*/gu, "$1[PATH]")
     .replace(
       /(?:^|[\\/])(?:auth\.json|credentials?(?:\.json)?|\.env(?:\.[A-Za-z0-9._-]+)?)(?=$|[\s"'`])/giu,
       "[SENSITIVE_FILE]",
     )
-    .replace(UNSAFE_CONTROL_PATTERN, "")
     .trim();
   return sanitized.length === 0 ? null : sanitized;
+}
+
+function projectionTextContainsSensitiveData(value: string) {
+  return (
+    /\$env:[A-Za-z_][A-Za-z0-9_]*|\benv:[A-Za-z_][A-Za-z0-9_]*/iu.test(value) ||
+    /(?:^|[\s;&|])(?:export\s+)?[A-Z_][A-Z0-9_]*\s*=/mu.test(value) ||
+    /["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|credential|runtime[_-]?ticket|ticket|authorization|cookie|x-api-key|x-auth-token)["']?\s*[:=]/iu.test(
+      value,
+    ) ||
+    /(?:^|[\s"'`=:[\\/])(?:auth\.json|credentials?(?:\.json)?|\.env(?:\.[A-Za-z0-9._-]+)?)(?=$|[\s"'`;&|])/iu.test(
+      value,
+    )
+  );
+}
+
+function commandTouchesSensitiveData(command: string) {
+  return (
+    /\$env:[A-Za-z_][A-Za-z0-9_]*|\benv:[A-Za-z_][A-Za-z0-9_]*|\bprintenv(?:\s|$)|(?:^|[;&|]\s*)set(?:\s|$)|\bGet-ChildItem\s+Env:/iu.test(
+      command,
+    ) ||
+    /(?:^|[\s;&|])(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=/u.test(command) ||
+    /\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)|%[A-Za-z_][A-Za-z0-9_]*%|![A-Za-z_][A-Za-z0-9_]*!/u.test(
+      command,
+    ) ||
+    /\bprocess\.env(?:\.|\[)|\bos\.environ(?:\.|\[)|\bgetenv\s*\(|\bGetEnvironmentVariable\s*\(|(?:^|[;&|]\s*)env(?:\s|$)/iu.test(
+      command,
+    ) ||
+    /(?:^|\s)--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|credential|runtime[_-]?ticket|ticket|authorization|cookie|x-api-key|x-auth-token)(?:=|\s+)/iu.test(
+      command,
+    ) ||
+    /(?:^|[\s"'`=:[\\/])(?:auth\.json|credentials?(?:\.json)?|\.env(?:\.[A-Za-z0-9._-]+)?)(?=$|[\s"'`;&|])/iu.test(
+      command,
+    ) ||
+    /\b(?:authorization|cookie|x-api-key|x-auth-token|runtime[_-]?ticket)\s*:/iu.test(
+      command,
+    )
+  );
 }
 
 function sanitizeDisplay(value: unknown, maxCharacters: number): string | null {
@@ -725,7 +786,7 @@ function boundItems(items: ProviderSessionProjectionItem[]) {
     const itemBytes = utf8ByteLength(JSON.stringify(item));
     if (
       bounded.length >= MAX_PROVIDER_SESSION_PROJECTION_ITEMS ||
-      bytes + itemBytes > MAX_PROJECTION_ITEM_BYTES
+      bytes + itemBytes > MAX_PROVIDER_SESSION_PROJECTION_BYTES
     ) {
       continue;
     }

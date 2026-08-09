@@ -89,6 +89,22 @@ export interface ConnectorHandle {
   close(): Promise<void>;
 }
 
+export async function runConnectorCleanupStages(
+  stages: ReadonlyArray<() => void | Promise<void>>,
+): Promise<void> {
+  const failures: unknown[] = [];
+  for (const stage of stages) {
+    try {
+      await stage();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Connector cleanup failed");
+  }
+}
+
 export function startConnector(options: ConnectorOptions): ConnectorHandle {
   const journal = new ConnectorJournal({
     path: options.journalPath ?? ":memory:",
@@ -880,12 +896,12 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         return;
       }
       try {
-        await options.setProviderEnabled(command.payload);
         if (!command.payload.enabled) {
           await options.providerAccountController?.closeProvider?.(
             command.payload.providerId,
           );
         }
+        await options.setProviderEnabled(command.payload);
         journal.markCommand(command.payload.commandId, "completed");
         await refreshProviderInventory();
         emit(
@@ -1396,19 +1412,26 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     close() {
       closePromise ??= (async () => {
         stopped = true;
-        unsubscribeLost();
         if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
-        socket?.close();
-        await provider.close();
-        await options.providerAccountController?.close?.();
-        await Promise.allSettled([...inFlightCommands]);
-        inputAttachments.close();
-        if (healthServer !== undefined) {
-          await new Promise<void>((resolve, reject) => {
-            healthServer?.close((error) => (error ? reject(error) : resolve()));
-          });
-        }
-        journal.close();
+        await runConnectorCleanupStages([
+          () => unsubscribeLost(),
+          () => socket?.close(),
+          () => provider.close(),
+          async () => {
+            await options.providerAccountController?.close?.();
+          },
+          async () => {
+            await Promise.allSettled([...inFlightCommands]);
+          },
+          () => inputAttachments.close(),
+          async () => {
+            if (healthServer === undefined) return;
+            await new Promise<void>((resolve, reject) => {
+              healthServer?.close((error) => (error ? reject(error) : resolve()));
+            });
+          },
+          () => journal.close(),
+        ]);
       })();
       return closePromise;
     },

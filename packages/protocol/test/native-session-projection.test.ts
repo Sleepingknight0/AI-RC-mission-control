@@ -154,4 +154,25 @@ describe("provider-native Session projection protocol", () => {
       }),
     ).toThrow();
   });
+
+  it("rejects a complete normalized projection larger than 600 KiB", () => {
+    const oversized = {
+      ...snapshot,
+      items: Array.from({ length: 41 }, (_, index) => ({
+        type: "assistant_progress" as const,
+        providerTurnId: "turn-large",
+        providerItemId: `progress-${index}`,
+        order: index,
+        progressType: "commentary" as const,
+        status: "streaming" as const,
+        text: "x".repeat(15_000),
+      })),
+    };
+    expect(new TextEncoder().encode(JSON.stringify(oversized)).byteLength).toBeGreaterThan(
+      600 * 1024,
+    );
+    expect(() => ProviderSessionProjectionSnapshotSchema.parse(oversized)).toThrow(
+      "600 KiB",
+    );
+  });
 });

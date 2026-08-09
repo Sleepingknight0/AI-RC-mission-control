@@ -37,6 +37,35 @@ interface CursorState {
   expiresAt: number;
 }
 
+interface ClosableNativeSessionObserver {
+  close(): Promise<void>;
+}
+
+export async function closeOwnedNativeSessionObservers<T extends ClosableNativeSessionObserver>(
+  observers: Map<string, T>,
+  matches: (key: string) => boolean,
+  onClosed: (key: string) => void,
+): Promise<void> {
+  const entries = [...observers].filter(([key]) => matches(key));
+  const results = await Promise.allSettled(
+    entries.map(([, provider]) => provider.close()),
+  );
+  const failures: unknown[] = [];
+  for (let index = 0; index < results.length; index += 1) {
+    const result = results[index]!;
+    const key = entries[index]![0];
+    if (result.status === "rejected") {
+      failures.push(result.reason);
+      continue;
+    }
+    observers.delete(key);
+    onClosed(key);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Native Session observer shutdown failed");
+  }
+}
+
 export interface CodexAccountControllerOptions {
   cwd: string;
   allowedRoots: readonly string[];
@@ -160,30 +189,35 @@ export class CodexAccountController implements ProviderAccountController {
       this.#observationContinuity.set(observationKey, reconciled.continuity);
       return reconciled.snapshot;
     } catch (error) {
+      try {
+        await provider.close();
+      } catch (closeError) {
+        throw new AggregateError(
+          [error, closeError],
+          "Native Session observation failed and observer shutdown failed",
+        );
+      }
       this.#observers.delete(key);
       this.#deleteObservationContinuity(key);
-      await provider.close().catch(() => undefined);
       throw error;
     }
   }
 
   async close(): Promise<void> {
-    const providers = [...this.#observers.values()];
-    this.#observers.clear();
-    this.#observationContinuity.clear();
-    await Promise.allSettled(providers.map((provider) => provider.close()));
+    await closeOwnedNativeSessionObservers(
+      this.#observers,
+      () => true,
+      (key) => this.#deleteObservationContinuity(key),
+    );
   }
 
   async closeProvider(providerId: string): Promise<void> {
     const prefix = `${providerId}\u0000`;
-    const providers: CodexProvider[] = [];
-    for (const [key, provider] of this.#observers) {
-      if (!key.startsWith(prefix)) continue;
-      this.#observers.delete(key);
-      providers.push(provider);
-    }
-    this.#deleteObservationContinuity(prefix.slice(0, -1));
-    await Promise.allSettled(providers.map((provider) => provider.close()));
+    await closeOwnedNativeSessionObservers(
+      this.#observers,
+      (key) => key.startsWith(prefix),
+      (key) => this.#deleteObservationContinuity(key),
+    );
   }
 
   #deleteObservationContinuity(accountKey: string) {
