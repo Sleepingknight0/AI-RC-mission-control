@@ -137,6 +137,9 @@ code, pre, .mono-meta, .clock, .status-pill, .mission-metrics dd,
 
 .skip-link {
   position: fixed;
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
   z-index: 100;
   top: 10px;
   left: 10px;
