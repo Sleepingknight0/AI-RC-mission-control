@@ -179,7 +179,7 @@ Google/Cloudflare identity, and a product retention policy remain deferred.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 15 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, bounded terminal evidence, and audited provider-enablement commands; Connector retains strict FIFO journal sequence.
+- Database schema: Core schema version 16 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, bounded terminal evidence, audited provider-enablement commands, and durable steering commands; Connector retains strict FIFO journal sequence.
 - Live production acceptance: the compiled Web, real Core/Connector, real Codex
   account, and headed Chromium completed bootstrap, authoritative Session create,
   first delta/final, approval-backed write and Diff Review, interrupt,
@@ -250,3 +250,27 @@ Google/Cloudflare identity, and a product retention policy remain deferred.
   probing. Ask is interactive, plan is plan-first, and auto permits multiple
   bounded steps inside the already accepted Turn. Adapter tests prove plan
   translation and that auto still raises the normalized approval request.
+
+## M10.3 Full Remote Workspace — completed 2026-08-10
+
+The exact Catalog-bound Codex Session that previously rendered zero AICL Turns
+now retains its provider Session identity and restores 195 native entries across
+refresh. `RemoteSessionRef`, unified provenance, and fourteen independent
+remote-workspace capabilities separate observation from mutation authority.
+
+Current-generation AICL-owned Codex Turns support submit, streaming, exact-Turn
+steer transport, interrupt, approval CAS, settings CAS, attachments, bounded
+activity/output, and relative file/diff evidence. The final real lifecycle
+passed in 65.323 seconds on one exact usable account and a disposable project.
+External Codex threads remain view-only because 0.146.0 has no safe atomic
+Windows ownership transfer.
+
+Claude Code 2.1.221 contributes real allowlist-filtered Session inventory only;
+history/live/control remain unavailable. Cursor, Grok, and Antigravity received
+bounded measurements without fake parity.
+
+The gate passed 345 automated tests with one ordinary opt-in skip, the
+separately enabled Real Codex lifecycle, Core 16 / Connector 3 migrations,
+build, compiled lifecycle, backup/restore, clean install, Tailscale automation,
+seven Mobile viewports, 200% text, reduced motion, and console 0/0. Evidence:
+`reviews/codex/M10.3-FULL-REMOTE-WORKSPACE.md`.

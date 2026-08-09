@@ -2591,3 +2591,66 @@ but no real `commandExecution` item. Command cards remain deterministic
 regression evidence. Codex remains the only native observation adapter;
 unsupported providers truthfully report Remote activity unavailable. No next
 milestone is selected.
+
+---
+
+### 2026-08-10 — Codex — M10.3 full remote workspace
+
+**Milestone result**
+
+Completed the achievable M10.3 scope on
+`codex/m10.3-full-remote-workspace` without merging master. Protected dirty,
+recovery-evidence, and historical M10.2 worktrees remain untouched.
+
+**Observable demo**
+
+1. Start compiled production and select the formerly empty Catalog-bound Codex
+   Session. One row opens one timeline with native history; refresh/deep link
+   retain AICL and provider identities.
+2. External Sessions remain read-only. Current AICL-owned active Turns expose
+   exact Add instruction and Abort controls.
+3. File/command cards retain bounded normalized evidence and project-relative
+   labels.
+4. The measured Claude account exposes real native inventory, then truthfully
+   reports unavailable history/activity with a disabled composer.
+
+**Defects and repairs**
+
+- Catalog selection cleared `providerSessionId`; exact identity restoration and
+  unified timeline regression retain it.
+- The focused skip link was 35 px high; actions now meet 44 px.
+- Real Codex returned absolute file evidence; Connector now emits relative
+  labels/diff headers and rejects out-of-project changes without leakage.
+- Migration 016 left host assertions on schema 15; final gates use Core 16 /
+  Connector 3.
+
+**Commands and results**
+
+```text
+pnpm install --frozen-lockfile                        PASS
+pnpm migrate -ConfigPath <isolated> (twice)          PASS; 16/3; no-op twice
+pnpm build                                            PASS
+pnpm check                                            PASS; 345 tests; 1 opt-in skip
+Real Codex opt-in lifecycle                           PASS; 65.323 s (67.821 s wall)
+compiled production Mobile                           PASS; 7 viewports; console 0/0
+production lifecycle / maintenance / clean install  PASS
+Tailscale automation                                  PASS
+git diff --check                                      PASS
+```
+
+Final counts: Config 13, Protocol 46, Domain 5, Connector 84, Core 79, Web 103,
+Host 15. The ordinary suite skips the real-provider test; it passed separately.
+No Real Claude mutation was run.
+
+**Known limitations**
+
+- External Codex Take/Resume is unsupported; external/prior-generation threads
+  remain view-only.
+- Cross-process Codex live state is bounded `thread/read` polling.
+- Exact-Turn steering acceptance passed; immediate behavioral preemption was
+  not proven.
+- Claude is inventory-only; Cursor, Grok, and Antigravity have no M10.3 control
+  adapters.
+
+No next milestone is inferred. Durable evidence:
+`reviews/codex/M10.3-FULL-REMOTE-WORKSPACE.md`.

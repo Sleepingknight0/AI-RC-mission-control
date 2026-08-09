@@ -555,3 +555,28 @@ restored 177 entries across refresh with zero mutation-table deltas, console
 0/0, three required phone sizes, 200% text, and reduced motion.
 
 Durable evidence: `reviews/codex/M10.2-NATIVE-LIVE-SESSION-MIRROR.md`.
+
+## M10.3 full remote workspace execution result — 2026-08-10
+
+1. Reproduced the exact Catalog-bound empty-history path and proved that
+   Catalog selection discarded the bound provider Session ID.
+2. Added `RemoteSessionRef`, exact deep-link restoration, one bound row/timeline,
+   provenance-preserving unification, and independent capability evidence.
+3. Retained bounded Codex `thread/read` observation and added generation-fenced
+   steering for exact active AICL-owned Turns. External native takeover remains
+   disabled because installed Codex has no atomic ownership transfer.
+4. Added truthful Claude 2.1.221 machine-readable Session inventory. No
+   history/control parity is claimed for Claude, Cursor, Grok, or Antigravity.
+5. Real Codex passed history continuity, submit, streaming, approval/settings
+   CAS, controlled write/diff, refresh/no replay, steering acceptance,
+   interrupt, and fail-closed generation change in 65.323 seconds.
+6. Repaired provider absolute file evidence to relative labels and made
+   out-of-project activity fail closed. Advanced operational expectations to
+   Core 16 / Connector 3.
+7. Frozen install, two isolated migrations, build, 345 tests, all compiled
+   operational gates, seven Mobile viewports, console 0/0, and diff hygiene pass.
+
+Durable evidence: `reviews/codex/M10.3-FULL-REMOTE-WORKSPACE.md`.
+
+No master merge is part of this milestone. Remaining provider limitations are
+recorded rather than represented as complete features.

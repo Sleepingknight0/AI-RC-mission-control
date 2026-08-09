@@ -273,3 +273,37 @@ projection from a fresh provider read and deduplicate stable provider item IDs;
 they never replay a prompt. Observation grants no submit, interrupt, steer,
 approval, settings, or model authority. Providers without an implemented and
 measured history/activity API report `Remote activity unavailable`.
+
+## AD-030 — A bound remote Session is one logical conversation
+
+Remote UI identity is provider ID, account ID, optional provider Session ID,
+and optional AICL Session ID. An explicit binding is one row and one timeline.
+URL, refresh, and deep-link restoration retain both identities; title, path,
+message text, and timestamps are not identity or deduplication evidence.
+
+The unified timeline retains AICL/provider provenance. Stable provider Turn
+correlation may suppress only the provider operator item represented by the
+accepted AICL prompt. Provider items never acquire AICL Turn IDs.
+
+## AD-031 — Observation and mutation authority are independent
+
+History/live capabilities do not derive from `canControl`; control does not
+derive from inventory or readability. Each capability carries support,
+freshness, source, and a false reason.
+
+Mutation requires current Connector boot/Runtime generation, exact provider,
+account, thread and Turn binding, and proven single-writer ownership. Installed
+Windows Codex has no atomic external ownership transfer, so external and
+prior-generation threads remain view-only. Steering is permitted only for the
+exact AICL-owned active provider Turn.
+
+## AD-032 — Provider file evidence is project-relative or rejected
+
+Provider file paths and diff headers are normalized at Connector. An absolute
+in-project path becomes a relative label. An out-of-project provider file
+change emits no file event, faults the boundary, and produces
+`outcome_unknown`. Web never receives the absolute provider path.
+
+Machine-readable provider inventory grants no history, live, resume, submit,
+interrupt, approval, or settings authority. Future adapters expose only
+capabilities proven from their installed official interfaces.
