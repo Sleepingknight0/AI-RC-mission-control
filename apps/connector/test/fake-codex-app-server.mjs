@@ -1,6 +1,7 @@
 /* global process, setTimeout, setInterval, clearInterval */
 
 import { createInterface } from "node:readline";
+import { resolve } from "node:path";
 
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -237,7 +238,9 @@ lines.on("line", (line) => {
                 type: "fileChange",
                 id: "provider-file-item",
                 status: "inProgress",
-                changes: [{ path: "demo.txt", kind: { type: "add" }, diff }],
+                changes: [
+                  { path: resolve(process.cwd(), "demo.txt"), kind: { type: "add" }, diff },
+                ],
               },
             },
           });
@@ -251,11 +254,36 @@ lines.on("line", (line) => {
                 type: "fileChange",
                 id: "provider-file-item",
                 status: "completed",
-                changes: [{ path: "demo.txt", kind: { type: "add" }, diff }],
+                changes: [
+                  { path: resolve(process.cwd(), "demo.txt"), kind: { type: "add" }, diff },
+                ],
               },
             },
           });
           finishTurn("Activity complete");
+        }, 15);
+      } else if (text === "outside-file-change") {
+        setTimeout(() => {
+          send({
+            method: "item/started",
+            params: {
+              threadId: active.threadId,
+              turnId,
+              startedAtMs: Date.now(),
+              item: {
+                type: "fileChange",
+                id: "provider-outside-file-item",
+                status: "inProgress",
+                changes: [
+                  {
+                    path: resolve(process.cwd(), "..", "outside.txt"),
+                    kind: { type: "add" },
+                    diff: "outside\n",
+                  },
+                ],
+              },
+            },
+          });
         }, 15);
       } else if (text === "large-terminal-output") {
         setTimeout(() => {

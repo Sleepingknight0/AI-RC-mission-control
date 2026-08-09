@@ -323,6 +323,15 @@ describe("Codex adapter normalization", () => {
         MAX_OUTPUT_BATCH_BYTES,
       );
     }
+    const fileChange = events.find(
+      (event) => event.type === "connector.file.change.completed",
+    );
+    expect(fileChange?.type).toBe("connector.file.change.completed");
+    if (fileChange?.type === "connector.file.change.completed") {
+      expect(fileChange.payload.fileChange.files).toEqual([
+        { path: "demo.txt", kind: "add" },
+      ]);
+    }
     const serialized = JSON.stringify(events);
     expect(serialized).not.toMatch(/provider-command-item|provider-file-item/);
     expect(serialized).not.toMatch(/item\/commandExecution|item\/fileChange/);
@@ -350,6 +359,27 @@ describe("Codex adapter normalization", () => {
         /^activity-correlation-/u,
       );
     }
+  });
+
+  it("fails closed without emitting a provider file path outside the project", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+
+    await expect(
+      adapter.startTurn(startCommand("outside-file-change"), (event) =>
+        events.push(event),
+      ),
+    ).rejects.toBeInstanceOf(ProviderLostError);
+
+    expect(events.at(-1)?.type).toBe("connector.turn.outcome_unknown");
+    expect(
+      events.some(
+        (event) =>
+          event.type === "connector.file.change.started" ||
+          event.type === "connector.file.change.completed",
+      ),
+    ).toBe(false);
+    expect(JSON.stringify(events)).not.toContain("outside.txt");
   });
 
   it("emits large terminal evidence as a redacted authenticated artifact", async () => {

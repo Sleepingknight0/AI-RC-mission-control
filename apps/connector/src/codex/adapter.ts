@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { relative } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import {
   ARTIFACT_CHUNK_BYTES,
   ConnectorEnvelopeSchema,
   MAX_ARTIFACT_BYTES,
+  MAX_INLINE_DIFF_BYTES,
   MAX_OUTPUT_BATCH_BYTES,
   ProviderFleetSnapshotSchema,
   makeEnvelope,
@@ -1242,7 +1243,38 @@ export class CodexProvider implements ConnectorProvider {
     }
     if (method === "item/completed") active.completedFileChangeItems.add(item.id);
     const fileChangeId = this.#fileChangeId(active, item.id);
-    const diff = normalizeFileChangeDiff(item.changes, active.turnDiff);
+    const paths: Array<{ providerPath: string; label: string }> = [];
+    for (const change of item.changes) {
+      const label = this.#fileLabel(active, change.path);
+      if (label === null) {
+        this.#handleProtocolFault(
+          new Error("Codex reported a file change outside the active project"),
+        );
+        return;
+      }
+      paths.push({ providerPath: change.path, label });
+    }
+    const replaceProviderPaths = (value: string) => {
+      let normalized = value;
+      for (const path of paths) {
+        normalized = normalized
+          .replaceAll(path.providerPath, path.label)
+          .replaceAll(path.providerPath.replaceAll("\\", "/"), path.label);
+      }
+      return normalized;
+    };
+    const normalizedChanges = item.changes.map((change, index) => ({
+      ...change,
+      path: paths[index]!.label,
+      diff: replaceProviderPaths(change.diff),
+    }));
+    const diff = redactSensitiveOutput(
+      normalizeFileChangeDiff(
+        normalizedChanges,
+        replaceProviderPaths(active.turnDiff),
+      ),
+      MAX_INLINE_DIFF_BYTES,
+    );
     const counts = countDiffLines(diff);
     const common = {
       fileChangeId,
@@ -1251,7 +1283,7 @@ export class CodexProvider implements ConnectorProvider {
         statusOverride ??
         (method === "item/started" ? ("running" as const) : activityStatus(item.status)),
       revision: method === "item/started" ? 0 : 1,
-      files: item.changes.map((change) => ({
+      files: normalizedChanges.map((change) => ({
         path: change.path,
         kind: change.kind.type,
       })),
@@ -1273,6 +1305,23 @@ export class CodexProvider implements ConnectorProvider {
         fileChange: { ...common, inlineDiff: diff, artifact: null },
       }),
     );
+  }
+
+  #fileLabel(active: ActiveTurn, candidatePath: string) {
+    try {
+      const projectRoot = canonicalProjectRoot(
+        active.effectiveProjectPath ?? this.#options.cwd,
+        this.#options.allowedRoots ?? [this.#options.cwd],
+      );
+      const candidate = resolve(projectRoot, candidatePath);
+      const label = relative(projectRoot, candidate).replaceAll("\\", "/");
+      if (label === "" || label.startsWith("..") || isAbsolute(label)) {
+        return null;
+      }
+      return sanitizeTerminalText(label, 4_096);
+    } catch {
+      return null;
+    }
   }
 
   #activityId(active: ActiveTurn, providerItemId: string) {
