@@ -30,6 +30,19 @@ const nativeMessage = (
   text,
 });
 
+const nativeOperator = (
+  providerTurnId: string,
+  providerItemId: string,
+  order: number,
+  text: string,
+): ProviderSessionProjectionItem => ({
+  type: "operator_message",
+  providerTurnId,
+  providerItemId,
+  order,
+  text,
+});
+
 describe("M10.3 unified remote timeline", () => {
   it("uses native history when the bound AICL Session has no durable Turns", () => {
     const native = [nativeMessage("provider-turn-1", "answer-1", 0)];
@@ -42,7 +55,7 @@ describe("M10.3 unified remote timeline", () => {
     ]);
   });
 
-  it("prefers AICL provenance only for a stable provider Turn correlation", () => {
+  it("deduplicates the original provider prompt but retains a later steering instruction", () => {
     const correlatedTurn = turn("aicl-turn-1", "provider-turn-1");
     const aicl: TimelineItem[] = [
       {
@@ -52,13 +65,31 @@ describe("M10.3 unified remote timeline", () => {
       },
     ];
     const oldNative = nativeMessage("provider-turn-old", "answer-old", 0);
-    const duplicatedNative = nativeMessage("provider-turn-1", "answer-1", 1);
+    const originalPrompt = nativeOperator(
+      "provider-turn-1",
+      "operator-1",
+      1,
+      "Inspect README.md",
+    );
+    const steeringInstruction = nativeOperator(
+      "provider-turn-1",
+      "operator-2",
+      2,
+      "Also inspect package scripts.",
+    );
 
-    expect(buildUnifiedTimeline(aicl, [duplicatedNative, oldNative])).toEqual([
+    expect(
+      buildUnifiedTimeline(aicl, [steeringInstruction, originalPrompt, oldNative]),
+    ).toEqual([
       {
         source: "provider_native",
         key: "provider:provider-turn-old:answer-old",
         item: oldNative,
+      },
+      {
+        source: "provider_native",
+        key: "provider:provider-turn-1:operator-2",
+        item: steeringInstruction,
       },
       {
         source: "aicl",

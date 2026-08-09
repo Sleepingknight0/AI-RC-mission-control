@@ -61,6 +61,29 @@ describe("normalized protocol validation", () => {
     }).success).toBe(false);
   });
 
+  it("accepts only a bounded non-empty active-Turn steering instruction", () => {
+    const valid = makeEnvelope("turn.steer", {
+      commandId: "steer-command-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      instruction: "Also inspect the package scripts.",
+    });
+
+    expect(ClientEnvelopeSchema.safeParse(valid).success).toBe(true);
+    expect(
+      ClientEnvelopeSchema.safeParse({
+        ...valid,
+        payload: { ...valid.payload, instruction: "   " },
+      }).success,
+    ).toBe(false);
+    expect(
+      ClientEnvelopeSchema.safeParse({
+        ...valid,
+        payload: { ...valid.payload, instruction: "x".repeat(32_769) },
+      }).success,
+    ).toBe(false);
+  });
+
   it("validates the normalized Session catalog without provider fields", () => {
     expect(ClientEnvelopeSchema.safeParse(makeEnvelope("sessions.list", {})).success).toBe(
       true,

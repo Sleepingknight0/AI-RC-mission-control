@@ -1185,7 +1185,75 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       return;
     }
 
+    if (command.type === "connector.turn.steer") {
+      if (
+        command.payload.runtimeId !== journal.runtimeId ||
+        command.payload.runtimeGeneration !== journal.runtimeGeneration
+      ) {
+        journal.markCommand(command.payload.commandId, "completed", {
+          failureCode: "STALE_RUNTIME_GENERATION",
+        });
+        emit(
+          makeEnvelope("connector.command.error", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
+            code: "STALE_RUNTIME_GENERATION",
+            message: "Steering instruction belongs to another runtime generation.",
+            retryable: false,
+          }),
+        );
+        return;
+      }
+      try {
+        if (provider.steer === undefined) {
+          throw new Error("Provider adapter does not support active-Turn steering");
+        }
+        await provider.steer(command);
+        journal.markCommand(command.payload.commandId, "completed");
+        emit(
+          makeEnvelope("connector.command.completed", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
+          }),
+        );
+      } catch {
+        journal.markCommand(command.payload.commandId, "outcome_unknown");
+        emit(
+          makeEnvelope("connector.command.error", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
+            code: "STEER_DELIVERY_UNKNOWN",
+            message: "Provider steering delivery could not be confirmed.",
+            retryable: false,
+          }),
+        );
+      }
+      return;
+    }
+
     if (command.type === "connector.turn.interrupt") {
+      if (
+        command.payload.runtimeId !== journal.runtimeId ||
+        command.payload.runtimeGeneration !== journal.runtimeGeneration
+      ) {
+        journal.markCommand(command.payload.commandId, "completed", {
+          failureCode: "STALE_RUNTIME_GENERATION",
+        });
+        emit(
+          makeEnvelope("connector.command.error", {
+            commandId: command.payload.commandId,
+            sessionId: command.payload.sessionId,
+            turnId: command.payload.turnId,
+            code: "STALE_RUNTIME_GENERATION",
+            message: "Interrupt belongs to another runtime generation.",
+            retryable: false,
+          }),
+        );
+        return;
+      }
       try {
         await provider.interrupt(command);
         journal.markCommand(command.payload.commandId, "completed");

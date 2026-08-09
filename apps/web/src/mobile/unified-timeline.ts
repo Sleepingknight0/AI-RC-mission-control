@@ -16,9 +16,11 @@ export type UnifiedTimelineEntry =
 
 /**
  * A bound provider thread precedes its later AICL-managed work. Provider items
- * are retained in provider order; once an AICL Turn carries the exact same
- * provider Turn ID, AICL's durable projection wins for that Turn. Text, title,
- * timing, and filesystem similarity are deliberately never correlation keys.
+ * are retained in provider order. Once an AICL Turn carries the exact same
+ * provider Turn ID, only the first native operator item is the correlated
+ * original prompt; later operator items are distinct steering instructions.
+ * Text, title, timing, and filesystem similarity are deliberately never
+ * correlation keys.
  */
 export function buildUnifiedTimeline(
   aiclItems: readonly TimelineItem[],
@@ -34,12 +36,23 @@ export function buildUnifiedTimeline(
     }
   }
 
-  const nativeEntries: UnifiedTimelineEntry[] = [...providerItems]
-    .sort((left, right) =>
+  const sortedProviderItems = [...providerItems].sort((left, right) =>
       left.order - right.order ||
       left.providerItemId.localeCompare(right.providerItemId),
-    )
-    .filter((item) => !durableProviderTurns.has(item.providerTurnId))
+    );
+  const correlatedPromptSeen = new Set<string>();
+  const nativeEntries: UnifiedTimelineEntry[] = sortedProviderItems
+    .filter((item) => {
+      if (
+        item.type !== "operator_message" ||
+        !durableProviderTurns.has(item.providerTurnId)
+      ) {
+        return true;
+      }
+      if (correlatedPromptSeen.has(item.providerTurnId)) return true;
+      correlatedPromptSeen.add(item.providerTurnId);
+      return false;
+    })
     .map((item) => ({
       source: "provider_native" as const,
       key: `provider:${item.providerTurnId}:${item.providerItemId}`,

@@ -1818,6 +1818,38 @@ export function App() {
     else sessionStorage.setItem(draftKey(selectedSessionId), value);
   };
 
+  const steer = (event: FormEvent) => {
+    event.preventDefault();
+    const value = prompt.trim();
+    const socket = socketRef.current;
+    const turnId = snapshot?.activeTurnId;
+    const capability = sessionCapabilitiesUi.snapshot?.remoteWorkspace.canSteer;
+    if (capability?.supported !== true) {
+      setNotice(capability?.reason ?? "Active-Turn steering is unavailable");
+      return;
+    }
+    if (
+      value === "" ||
+      turnId == null ||
+      socket?.readyState !== WebSocket.OPEN
+    ) {
+      return;
+    }
+    const commandId = crypto.randomUUID();
+    send(
+      socket,
+      makeEnvelope("turn.steer", {
+        commandId,
+        sessionId: selectedSessionId,
+        turnId,
+        instruction: value,
+      }),
+    );
+    sessionStorage.removeItem(draftKey(selectedSessionId));
+    setPrompt("");
+    setNotice(`Adding instruction · ${commandId}`);
+  };
+
   const handlePromptKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
       event.preventDefault();
@@ -2029,6 +2061,22 @@ export function App() {
   const timelineBusy =
     latest?.status === "running" ||
     (selectedNative !== null && nativeProjectionIsActive(visibleNativeSnapshot?.state));
+  const canSteer =
+    !providerNativeOnly &&
+    latest?.status === "running" &&
+    remoteCapabilities?.canSteer.supported === true;
+  const canAbort =
+    !providerNativeOnly &&
+    latest?.status === "running" &&
+    remoteCapabilities?.canInterrupt.supported === true;
+  const composerReason = timelineBusy
+    ? providerNativeOnly
+      ? "View only while this provider Session is active elsewhere."
+      : canSteer
+        ? "Add an instruction to the active Turn."
+        : remoteCapabilities?.canSteer.reason ??
+          "This provider cannot accept instructions during an active Turn."
+    : availability.reason;
   const recoveryRequired =
     hasAiclSession &&
     (runtime?.status === "lost" || latest?.status === "outcome_unknown");
@@ -2573,14 +2621,11 @@ export function App() {
         modelLabel={mobileModelLabel}
         modeLabel={providerNativeOnly ? "View only" : settingsUi.snapshot?.settings.executionMode ?? "Mode unavailable"}
         canSubmit={availability.canSubmit && settingsUi.snapshot !== null}
-        canAbort={
-          !providerNativeOnly &&
-          latest?.status === "running" &&
-          remoteCapabilities?.canInterrupt.supported === true
-        }
-        composerReason={availability.reason}
-        canAttachText={textAttach.ok}
-        canAttachImage={imageAttach.ok}
+        canAbort={canAbort}
+        canSteer={canSteer}
+        composerReason={composerReason}
+        canAttachText={!timelineBusy && textAttach.ok}
+        canAttachImage={!timelineBusy && imageAttach.ok}
         attachmentDisabledReason={attachDisabledReason}
         attachmentChips={mobileAttachmentChips}
         models={mobileModels}
@@ -2635,6 +2680,7 @@ export function App() {
         onCloseEvidence={closeInspector}
         onPromptChange={updateDraft}
         onSubmit={submit}
+        onSteer={steer}
         onAbort={interrupt}
         onPickFiles={(files) => void uploadFiles(files)}
         onUpdateSettings={(nextSettings) => {
@@ -3175,7 +3221,7 @@ export function App() {
             }}
           />
 
-          <form onSubmit={submit} className="composer">
+          <form onSubmit={timelineBusy ? steer : submit} className="composer">
             <div className="composer-heading">
               <label htmlFor="prompt">Uplink command</label>
               <span className="mono-meta">
@@ -3187,9 +3233,13 @@ export function App() {
               selectedAttachmentIds={pendingAttachmentIds}
               uploadProgress={attachmentsUi.uploadProgress}
               error={attachmentsUi.error}
-              canAttachText={textAttach.ok}
-              canAttachImage={imageAttach.ok}
-              disabledReason={attachDisabledReason}
+              canAttachText={!timelineBusy && textAttach.ok}
+              canAttachImage={!timelineBusy && imageAttach.ok}
+              disabledReason={
+                timelineBusy
+                  ? "Attachments cannot be added to an active Turn."
+                  : attachDisabledReason
+              }
               onPickFiles={(files) => void uploadFiles(files)}
               onToggleSelection={(attachmentId) => {
                 setPendingAttachmentIds((ids) =>
@@ -3225,12 +3275,12 @@ export function App() {
               aria-describedby="composer-help"
             />
             <div className="composer-footer">
-              <small id="composer-help">{availability.reason} Drafts never auto-send.</small>
+              <small id="composer-help">{composerReason} Drafts never auto-send.</small>
               <div className="actions">
                 <button
                   className="secondary-button"
                   type="button"
-                  disabled={snapshot?.activeTurnId == null || connection !== "online"}
+                  disabled={!canAbort || connection !== "online"}
                   onClick={interrupt}
                 >
                   Abort
@@ -3239,12 +3289,12 @@ export function App() {
                   type="submit"
                   className={timelineBusy ? "btn-busy" : undefined}
                   disabled={
-                    !availability.canSubmit ||
+                    (timelineBusy ? !canSteer : !availability.canSubmit) ||
                     prompt.trim() === "" ||
-                    settingsUi.snapshot === null
+                    (!timelineBusy && settingsUi.snapshot === null)
                   }
                 >
-                  {timelineBusy ? "Working…" : "Launch"}
+                  {timelineBusy ? "Add instruction" : "Launch"}
                 </button>
               </div>
             </div>

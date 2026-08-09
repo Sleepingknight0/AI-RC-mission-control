@@ -4,6 +4,7 @@ export const PROTOCOL_VERSION = 1 as const;
 export const MAX_WEBSOCKET_MESSAGE_BYTES = 1024 * 1024;
 export const MAX_INLINE_ENVELOPE_BYTES = 768 * 1024;
 export const MAX_PROMPT_BYTES = 256 * 1024;
+export const MAX_STEER_INSTRUCTION_BYTES = 32 * 1024;
 export const MAX_OUTPUT_BATCH_BYTES = 256 * 1024;
 export const MAX_INLINE_DIFF_BYTES = 512 * 1024;
 export const ARTIFACT_CHUNK_BYTES = 128 * 1024;
@@ -1630,12 +1631,28 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
       .strict(),
   ),
   envelope(
+    "turn.steer",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        turnId: id,
+        instruction: utf8String(MAX_STEER_INSTRUCTION_BYTES).refine(
+          (value) => value.trim().length > 0,
+          { message: "Steering instruction must not be empty" },
+        ),
+      })
+      .strict(),
+  ),
+  envelope(
     "turn.interrupt",
-    z.object({
-      commandId: id,
-      sessionId: id,
-      turnId: id,
-    }),
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        turnId: id,
+      })
+      .strict(),
   ),
   envelope(
     "approval.resolve",
@@ -2031,14 +2048,36 @@ export const CoreToConnectorEnvelopeSchema = z.discriminatedUnion("type", [
       .strict(),
   ),
   envelope(
+    "connector.turn.steer",
+    z
+      .object({
+        sessionId: id,
+        turnId: id,
+        commandId: id,
+        providerSessionId: id,
+        providerTurnId: id,
+        instruction: utf8String(MAX_STEER_INSTRUCTION_BYTES).refine(
+          (value) => value.trim().length > 0,
+          { message: "Steering instruction must not be empty" },
+        ),
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+      })
+      .strict(),
+  ),
+  envelope(
     "connector.turn.interrupt",
-    z.object({
-      sessionId: id,
-      turnId: id,
-      commandId: id,
-      providerSessionId: id,
-      providerTurnId: id,
-    }),
+    z
+      .object({
+        sessionId: id,
+        turnId: id,
+        commandId: id,
+        providerSessionId: id,
+        providerTurnId: id,
+        runtimeId: id,
+        runtimeGeneration: z.number().int().positive(),
+      })
+      .strict(),
   ),
   envelope(
     "connector.approval.resolve",

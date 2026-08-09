@@ -537,6 +537,7 @@ function fleet(revision: number): ProviderFleetSnapshot {
           "list_sessions",
           "create_session",
           "resume_session",
+          "submit_turn",
           "text_input",
           "execution_modes",
           "approval_policies",

@@ -14,6 +14,7 @@ import {
   ProviderLostError,
   type ApprovalResolveCommand,
   type TurnInterruptCommand,
+  type TurnSteerCommand,
   type TurnStartCommand,
 } from "../src/provider.js";
 
@@ -202,6 +203,48 @@ describe("Codex adapter normalization", () => {
           commandId: "interrupt-1",
           providerSessionId: "fake-thread",
           providerTurnId: "fake-turn-command-wait",
+          runtimeId: "runtime-1",
+          runtimeGeneration: 1,
+        }),
+      ) as TurnInterruptCommand,
+    );
+    await running;
+    expect(events.at(-1)?.type).toBe("connector.turn.interrupted");
+  });
+
+  it("steers only the exact active provider Turn", async () => {
+    const adapter = provider();
+    const events: ConnectorEnvelope[] = [];
+    const running = adapter.startTurn(startCommand("wait"), (event) =>
+      events.push(event),
+    );
+    await waitUntil(() =>
+      events.some((event) => event.type === "connector.turn.bound"),
+    );
+    await adapter.steer(
+      CoreToConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.turn.steer", {
+          sessionId: "session-1",
+          turnId: "turn-wait",
+          commandId: "steer-1",
+          providerSessionId: "fake-thread",
+          providerTurnId: "fake-turn-command-wait",
+          instruction: "Summarize the current progress before continuing.",
+          runtimeId: "runtime-1",
+          runtimeGeneration: 1,
+        }),
+      ) as TurnSteerCommand,
+    );
+    await adapter.interrupt(
+      CoreToConnectorEnvelopeSchema.parse(
+        makeEnvelope("connector.turn.interrupt", {
+          sessionId: "session-1",
+          turnId: "turn-wait",
+          commandId: "interrupt-after-steer",
+          providerSessionId: "fake-thread",
+          providerTurnId: "fake-turn-command-wait",
+          runtimeId: "runtime-1",
+          runtimeGeneration: 1,
         }),
       ) as TurnInterruptCommand,
     );

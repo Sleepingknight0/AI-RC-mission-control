@@ -66,6 +66,7 @@ export interface MobileChatShellProps {
   modeLabel: string;
   canSubmit: boolean;
   canAbort: boolean;
+  canSteer: boolean;
   composerReason: string;
   canAttachText: boolean;
   canAttachImage: boolean;
@@ -95,6 +96,7 @@ export interface MobileChatShellProps {
   onCloseEvidence: () => void;
   onPromptChange: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
+  onSteer: (event: FormEvent) => void;
   onAbort: () => void;
   onPickFiles: (files: FileList) => void;
   onUpdateSettings: (settings: SessionSettings) => void;
@@ -182,6 +184,8 @@ export function MobileChatShell(props: MobileChatShellProps) {
             modeLabel={props.modeLabel}
             busy={props.timelineBusy}
             canSubmit={props.canSubmit}
+            canAbort={props.canAbort}
+            canSteer={props.canSteer}
             disabledReason={props.composerReason}
             canAttachText={props.canAttachText}
             canAttachImage={props.canAttachImage}
@@ -189,6 +193,7 @@ export function MobileChatShell(props: MobileChatShellProps) {
             attachmentChips={props.attachmentChips}
             onChange={props.onPromptChange}
             onSubmit={props.onSubmit}
+            onSteer={props.onSteer}
             onAbort={props.onAbort}
             onOpenModelMode={() => setModelOpen(true)}
             onPickFiles={props.onPickFiles}

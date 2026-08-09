@@ -218,6 +218,7 @@ function fleet(revision: number): ProviderFleetSnapshot {
           "image_input",
           "remote_control",
           "create_session",
+          "submit_turn",
           "execution_modes",
           "approval_policies",
           "sandbox_policies",
@@ -227,6 +228,7 @@ function fleet(revision: number): ProviderFleetSnapshot {
             | "image_input"
             | "remote_control"
             | "create_session"
+            | "submit_turn"
             | "execution_modes"
             | "approval_policies"
             | "sandbox_policies",

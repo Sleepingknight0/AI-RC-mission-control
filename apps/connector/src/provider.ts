@@ -14,6 +14,10 @@ export type TurnInterruptCommand = Extract<
   CoreToConnectorEnvelope,
   { type: "connector.turn.interrupt" }
 >;
+export type TurnSteerCommand = Extract<
+  CoreToConnectorEnvelope,
+  { type: "connector.turn.steer" }
+>;
 export type ApprovalResolveCommand = Extract<
   CoreToConnectorEnvelope,
   { type: "connector.approval.resolve" }
@@ -61,6 +65,7 @@ export interface ConnectorProvider {
     emit: ConnectorEmit,
     attachments?: readonly PreparedInputAttachment[],
   ): Promise<void>;
+  steer?(command: TurnSteerCommand): Promise<void>;
   interrupt(command: TurnInterruptCommand): Promise<void>;
   resolveApproval(command: ApprovalResolveCommand): Promise<void>;
   onLost(listener: () => void): () => void;
@@ -148,6 +153,10 @@ export class UnavailableProvider implements ConnectorProvider {
   }
 
   async interrupt(): Promise<void> {
+    throw new Error("No provider account is active");
+  }
+
+  async steer(): Promise<void> {
     throw new Error("No provider account is active");
   }
 

@@ -163,7 +163,7 @@ describe("Codex discovery", () => {
     expect(state("read_diffs")).toBe("supported");
     expect(state("submit_turn")).toBe("supported");
     expect(state("interrupt_turn")).toBe("supported");
-    expect(state("steer_turn")).toBe("unsupported");
+    expect(state("steer_turn")).toBe("supported");
   });
 
   it("removes optimistic control authority when the live probe fails", async () => {

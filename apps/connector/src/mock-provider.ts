@@ -9,6 +9,7 @@ import type {
   ConnectorProvider,
   SessionPrepareCommand,
   TurnInterruptCommand,
+  TurnSteerCommand,
   TurnStartCommand,
 } from "./provider.js";
 
@@ -164,6 +165,17 @@ export class MockProvider implements ConnectorProvider {
       throw new Error("Mock provider has no matching active Turn");
     }
     this.#active.interrupted = true;
+  }
+
+  async steer(command: TurnSteerCommand) {
+    if (
+      this.#active?.command.payload.turnId !== command.payload.turnId ||
+      command.payload.runtimeId !== this.#active.command.payload.runtimeId ||
+      command.payload.runtimeGeneration !==
+        this.#active.command.payload.runtimeGeneration
+    ) {
+      throw new Error("Mock provider has no matching active Turn");
+    }
   }
 
   async resolveApproval() {}

@@ -354,6 +354,34 @@ describe("M10 mobile visible contracts", () => {
     expect(html).not.toMatch(/microphone|camera|skill/i);
   });
 
+  it("shows separate steer and abort controls only for a controllable active Turn", () => {
+    const html = renderToStaticMarkup(createElement(MobileComposer, {
+      value: "Also inspect package scripts",
+      modelLabel: "GPT Mobile",
+      modeLabel: "Ask",
+      busy: true,
+      canSubmit: false,
+      canSteer: true,
+      canAbort: true,
+      disabledReason: "Add an instruction to the active Turn.",
+      canAttachText: false,
+      canAttachImage: false,
+      attachmentDisabledReason: "Attachments unavailable during a Turn",
+      attachmentChips: null,
+      onChange: () => undefined,
+      onSubmit: () => undefined,
+      onSteer: () => undefined,
+      onAbort: () => undefined,
+      onOpenModelMode: () => undefined,
+      onPickFiles: () => undefined,
+    }));
+
+    expect(html).toContain('data-testid="mobile-steer"');
+    expect(html).toContain('data-testid="mobile-abort"');
+    expect(html).toContain("Add instruction…");
+    expect(html).not.toContain('data-testid="mobile-attachment-trigger"');
+  });
+
   it("keeps mobile at below 768px with safe areas, 100dvh and 44px targets", () => {
     expect(styles).toMatch(/@media \(max-width: 767px\)/);
     expect(styles).toMatch(/\.mobile-chat-shell\s*\{[^}]*height:\s*100dvh/s);

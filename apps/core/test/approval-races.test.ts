@@ -10,6 +10,7 @@ import type {
   ProviderSessionPreparation,
   SessionPrepareCommand,
   TurnStartCommand,
+  TurnSteerCommand,
 } from "@aicl/connector/provider";
 import {
   ConnectorEnvelopeSchema,
@@ -226,6 +227,76 @@ describe("approval compare-and-set", () => {
     expect(completed.payload.activity.status).toBe("interrupted");
     await waitFor(browser, "turn.interrupted");
     expect(provider.interruptCalls).toBe(1);
+    browser.socket.close();
+  });
+
+  it("steers the exact active Turn once and preserves its provider identity", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    const provider = new InterruptingProvider();
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider,
+      providerName: "steering-test",
+      journalPath: ":memory:",
+      providerInventory: (revision) => controlledProviderFleet(revision),
+    });
+    handles.push(connector);
+    await connector.ready;
+    const browser = await openBrowser(
+      core.browserUrl,
+      core.browserToken,
+      "steering-session",
+      true,
+    );
+    send(
+      browser,
+      makeEnvelope("turn.submit", {
+        commandId: "steering-turn-command",
+        sessionId: "steering-session",
+        prompt: "run held command",
+      }),
+    );
+    const started = await waitFor(browser, "activity.started");
+    const steer = makeEnvelope("turn.steer", {
+      commandId: "steering-command",
+      sessionId: "steering-session",
+      turnId: started.payload.activity.turnId,
+      instruction: "Also summarize the test output.",
+    });
+    send(browser, steer);
+
+    expect((await waitForCommand(browser, "steering-command")).type).toBe(
+      "command.accepted",
+    );
+    await waitUntil(() => provider.steerCalls.length === 1);
+    expect(provider.steerCalls[0]?.payload.providerSessionId).toBe(
+      "interrupt-provider-session",
+    );
+    expect(provider.steerCalls[0]?.payload.providerTurnId).toBe(
+      "interrupt-provider-turn",
+    );
+    const duplicateStart = browser.messages.length;
+    send(browser, steer);
+    expect(
+      (await waitForCommand(
+        browser,
+        "steering-command",
+        duplicateStart,
+      )).type,
+    ).toBe("command.accepted");
+    expect(provider.steerCalls).toHaveLength(1);
+
+    send(
+      browser,
+      makeEnvelope("turn.interrupt", {
+        commandId: "steering-cleanup-interrupt",
+        sessionId: "steering-session",
+        turnId: started.payload.activity.turnId,
+      }),
+    );
+    await waitFor(browser, "turn.interrupted");
     browser.socket.close();
   });
 
@@ -540,6 +611,7 @@ class ApprovalProvider implements ConnectorProvider {
 
 class InterruptingProvider implements ConnectorProvider {
   interruptCalls = 0;
+  steerCalls: TurnSteerCommand[] = [];
   #active:
     | { command: TurnStartCommand; emit: ConnectorEmit; finish(): void }
     | undefined;
@@ -610,6 +682,13 @@ class InterruptingProvider implements ConnectorProvider {
     );
     this.#active = undefined;
     active.finish();
+  }
+
+  async steer(command: TurnSteerCommand) {
+    if (this.#active?.command.payload.turnId !== command.payload.turnId) {
+      throw new Error("No matching active Turn");
+    }
+    this.steerCalls.push(command);
   }
 
   async resolveApproval() {}
@@ -808,6 +887,9 @@ function approvalFleet(revision: number): ProviderFleetSnapshot {
   const capabilities = [
     "remote_control",
     "create_session",
+    "submit_turn",
+    "interrupt_turn",
+    "resolve_approval",
     "text_input",
     "execution_modes",
     "approval_policies",

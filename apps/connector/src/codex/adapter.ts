@@ -30,6 +30,7 @@ import {
   type ProviderSessionPreparation,
   type SessionPrepareCommand,
   type TurnInterruptCommand,
+  type TurnSteerCommand,
   type TurnStartCommand,
   type PreparedInputAttachment,
 } from "../provider.js";
@@ -53,6 +54,9 @@ const ThreadResponseSchema = z.object({
 });
 const TurnStartResponseSchema = z.object({
   turn: z.object({ id: z.string().min(1) }),
+});
+const TurnSteerResponseSchema = z.object({
+  turnId: z.string().min(1),
 });
 const AgentDeltaSchema = z.object({
   method: z.literal("item/agentMessage/delta"),
@@ -791,6 +795,10 @@ export class CodexProvider implements ConnectorProvider {
       active === undefined ||
       rpc === undefined ||
       active.command.payload.turnId !== command.payload.turnId ||
+      active.command.payload.runtimeId !== command.payload.runtimeId ||
+      active.command.payload.runtimeGeneration !==
+        command.payload.runtimeGeneration ||
+      active.providerSessionId !== command.payload.providerSessionId ||
       active.providerTurnId !== command.payload.providerTurnId
     ) {
       throw new Error("Codex provider has no matching active Turn");
@@ -799,6 +807,34 @@ export class CodexProvider implements ConnectorProvider {
       threadId: command.payload.providerSessionId,
       turnId: command.payload.providerTurnId,
     });
+  }
+
+  async steer(command: TurnSteerCommand) {
+    const active = this.#active;
+    const rpc = this.#rpc;
+    if (
+      active === undefined ||
+      rpc === undefined ||
+      active.command.payload.turnId !== command.payload.turnId ||
+      active.command.payload.runtimeId !== command.payload.runtimeId ||
+      active.command.payload.runtimeGeneration !==
+        command.payload.runtimeGeneration ||
+      active.providerSessionId !== command.payload.providerSessionId ||
+      active.providerTurnId !== command.payload.providerTurnId
+    ) {
+      throw new Error("Codex provider has no matching active Turn");
+    }
+    const response = TurnSteerResponseSchema.parse(
+      await rpc.request("turn/steer", {
+        threadId: command.payload.providerSessionId,
+        expectedTurnId: command.payload.providerTurnId,
+        clientUserMessageId: command.payload.commandId,
+        input: [{ type: "text", text: command.payload.instruction.trim() }],
+      }),
+    );
+    if (response.turnId !== command.payload.providerTurnId) {
+      throw new Error("Codex steer response changed the active Turn identity");
+    }
   }
 
   async resolveApproval(command: ApprovalResolveCommand) {
@@ -1485,10 +1521,11 @@ function updateCodexCapabilities(
       controlled ? null : "Codex app-server is not authenticated",
     );
   }
+
   evidence(
     "steer_turn",
-    "unsupported",
-    "The AICL Codex adapter has not completed turn/steer acceptance",
+    controlled ? "supported" : "unsupported",
+    controlled ? null : "Codex app-server is not authenticated",
   );
   evidence("list_models", "supported");
   evidence(

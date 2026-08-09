@@ -437,7 +437,7 @@ describe("durability and reconnect", () => {
     browser.socket.close();
   });
 
-  it("restores exact-account Session control after provider loss and Connector restart", async () => {
+  it("keeps a prior-generation provider binding view-only after Connector restart", async () => {
     const directory = temporaryDirectory();
     const core = await startCoreServer({
       port: 0,
@@ -570,53 +570,19 @@ describe("durability and reconnect", () => {
             message.type === "command.rejected") &&
           message.payload.commandId === "restart-control-resume",
     );
-    expect(resumeResponse?.type).toBe("session.command.accepted");
-    await waitUntil(() =>
+    expect(resumeResponse).toMatchObject({
+      type: "command.rejected",
+      payload: {
+        error: { code: "SESSION_NOT_CONTROLLABLE" },
+      },
+    });
+    expect(
       browser.messages.slice(restartIndex).some(
         (message) =>
           message.type === "session.provider.status" &&
           message.payload.commandId === "restart-control-resume",
       ),
-    );
-    const resumeStatus = browser.messages
-      .slice(restartIndex)
-      .reverse()
-      .find(
-        (message) =>
-          message.type === "session.provider.status" &&
-          message.payload.commandId === "restart-control-resume",
-      );
-    expect(resumeStatus).toMatchObject({
-      type: "session.provider.status",
-      payload: {
-        status: "ready",
-        runtimeGeneration: secondConnector.identity.generation,
-      },
-    });
-    await waitUntil(() =>
-      browser.messages.slice(restartIndex).some(
-        (message) =>
-          message.type === "session.capabilities.snapshot" &&
-          message.payload.snapshot.sessionId === "restart-control-session" &&
-          message.payload.snapshot.controlAuthority.canControl,
-      ),
-    );
-    const resumedCapabilities = browser.messages
-      .slice(restartIndex)
-      .reverse()
-      .find(
-        (message) =>
-          message.type === "session.capabilities.snapshot" &&
-          message.payload.snapshot.sessionId === "restart-control-session",
-      );
-    expect(resumedCapabilities).toMatchObject({
-      type: "session.capabilities.snapshot",
-      payload: {
-        snapshot: {
-          controlAuthority: { canControl: true },
-        },
-      },
-    });
+    ).toBe(false);
     expect(secondProvider.startCalls).toBe(0);
     browser.socket.close();
   }, 15_000);

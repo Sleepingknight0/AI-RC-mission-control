@@ -903,6 +903,7 @@ export async function startCoreServer(
       {
         type:
           | "turn.submit"
+          | "turn.steer"
           | "turn.interrupt"
           | "approval.resolve"
           | "session.rename"
@@ -937,7 +938,13 @@ export async function startCoreServer(
     socket: WebSocket,
     message: Extract<
       ClientEnvelope,
-      { type: "turn.submit" | "turn.interrupt" | "approval.resolve" }
+      {
+        type:
+          | "turn.submit"
+          | "turn.steer"
+          | "turn.interrupt"
+          | "approval.resolve";
+      }
     >,
   ) => {
     const result = await store.recordRejectedCommand(
@@ -983,7 +990,7 @@ export async function startCoreServer(
         turnId: turn.turnId,
       }),
     );
-    const result = await store.acceptInterrupt({ message, accepted });
+    const result = await store.acceptTurnControlCommand({ message, accepted });
     if (result.kind !== "new" || result.result.type !== "command.accepted") return;
     await store.markDispatched(commandId);
     sendConnector(
@@ -994,6 +1001,8 @@ export async function startCoreServer(
         turnId: turn.turnId,
         providerSessionId: snapshot.providerSessionId,
         providerTurnId: turn.providerTurnId,
+        runtimeId: connection.runtime.runtimeId,
+        runtimeGeneration: connection.runtime.generation,
       }),
     );
   };
@@ -1783,6 +1792,21 @@ export async function startCoreServer(
             : providerFleetSnapshot?.providers.find(
                 (provider) => provider.providerId === authority.providerId,
               );
+        const resumableEvidence =
+          connection === undefined ||
+          authority === undefined ||
+          authority.providerSessionId === null
+            ? null
+            : nativeSessionEvidence.resumable(
+                authority.providerId,
+                authority.accountId,
+                authority.providerSessionId,
+                {
+                  bootId: connection.bootId,
+                  runtimeId: connection.runtime.runtimeId,
+                  runtimeGeneration: connection.runtime.generation,
+                },
+              );
         const preconditionError =
           connection?.socket.readyState !== WebSocket.OPEN ||
           connection.runtime.status !== "ready"
@@ -1803,6 +1827,7 @@ export async function startCoreServer(
           accountEvidence.authentication !== "authenticated" ||
           connection.activeProviderId !== authority.providerId ||
           connection.activeAccountId !== authority.accountId ||
+          resumableEvidence === null ||
           !accountEvidence.capabilities.some(
             (capability) =>
               capability.key === "resume_session" &&
@@ -1811,7 +1836,7 @@ export async function startCoreServer(
               ? {
                   code: "SESSION_NOT_CONTROLLABLE",
                   detail:
-                    "The stored provider binding is not resumable by the active account.",
+                    "The stored provider binding is not proven idle and resumable in the current Connector generation.",
                 }
               : undefined;
         const result = await store.acceptSessionRuntimeResume({
@@ -2440,6 +2465,95 @@ export async function startCoreServer(
         );
         return;
       }
+      case "turn.steer": {
+        const prior = store.priorCommand(message);
+        if (prior?.kind === "same") {
+          send(socket, prior.result);
+          return;
+        }
+        if (prior?.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        const connection = connectorConnection;
+        if (connection?.socket.readyState !== WebSocket.OPEN) {
+          await recordOfflineRejection(socket, message);
+          return;
+        }
+        const snapshot = store.snapshot(message.payload.sessionId);
+        const turn = snapshot.turns.find(
+          (candidate) => candidate.turnId === message.payload.turnId,
+        );
+        const settings = store.sessionSettings(message.payload.sessionId);
+        const authority = store.sessionProviderAuthority(message.payload.sessionId);
+        const accountEvidence =
+          settings?.settings.accountId == null
+            ? undefined
+            : providerAccountSnapshots.get(
+                nativeSnapshotKey(
+                  settings.settings.providerId,
+                  settings.settings.accountId,
+                ),
+              )?.snapshot;
+        const controlError = validateTurnMutationCapability(
+          "steer_turn",
+          settings?.settings,
+          authority,
+          providerFleetSnapshot,
+          accountEvidence,
+          connection.runtime,
+        );
+        if (
+          snapshot.activeTurnId !== message.payload.turnId ||
+          snapshot.providerSessionId === null ||
+          turn?.providerTurnId == null ||
+          controlError !== undefined
+        ) {
+          const invalid = await store.recordRejectedCommand(
+            message,
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code: controlError?.code ?? "TURN_NOT_ACCEPTING_INPUT",
+              message:
+                controlError?.message ??
+                "The Turn is not bound to an active provider runtime.",
+            }),
+          );
+          if (invalid.kind === "conflict") sendConflict(socket, message);
+          else send(socket, invalid.result);
+          return;
+        }
+        const accepted = validatedServerEnvelope(
+          makeEnvelope("command.accepted", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            turnId: message.payload.turnId,
+          }),
+        );
+        const result = await store.acceptTurnControlCommand({ message, accepted });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        if (result.kind !== "new" || result.result.type !== "command.accepted") return;
+        await store.markDispatched(message.payload.commandId);
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.turn.steer", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            turnId: message.payload.turnId,
+            providerSessionId: snapshot.providerSessionId,
+            providerTurnId: turn.providerTurnId,
+            instruction: message.payload.instruction.trim(),
+            runtimeId: connection.runtime.runtimeId,
+            runtimeGeneration: connection.runtime.generation,
+          }),
+        );
+        return;
+      }
       case "turn.interrupt": {
         const prior = store.priorCommand(message);
         if (prior?.kind === "same") {
@@ -2459,18 +2573,40 @@ export async function startCoreServer(
         const turn = snapshot.turns.find(
           (candidate) => candidate.turnId === message.payload.turnId,
         );
+        const settings = store.sessionSettings(message.payload.sessionId);
+        const authority = store.sessionProviderAuthority(message.payload.sessionId);
+        const accountEvidence =
+          settings?.settings.accountId == null
+            ? undefined
+            : providerAccountSnapshots.get(
+                nativeSnapshotKey(
+                  settings.settings.providerId,
+                  settings.settings.accountId,
+                ),
+              )?.snapshot;
+        const controlError = validateTurnMutationCapability(
+          "interrupt_turn",
+          settings?.settings,
+          authority,
+          providerFleetSnapshot,
+          accountEvidence,
+          connection.runtime,
+        );
         if (
           snapshot.activeTurnId !== message.payload.turnId ||
           snapshot.providerSessionId === null ||
-          turn?.providerTurnId == null
+          turn?.providerTurnId == null ||
+          controlError !== undefined
         ) {
           const invalid = await store.recordRejectedCommand(
             message,
             rejection({
               commandId: message.payload.commandId,
               sessionId: message.payload.sessionId,
-              code: "TURN_NOT_ACCEPTING_INPUT",
-              message: "The Turn is not bound to an active provider runtime.",
+              code: controlError?.code ?? "TURN_NOT_ACCEPTING_INPUT",
+              message:
+                controlError?.message ??
+                "The Turn is not bound to an active provider runtime.",
             }),
           );
           if (invalid.kind === "conflict") sendConflict(socket, message);
@@ -2484,7 +2620,7 @@ export async function startCoreServer(
             turnId: message.payload.turnId,
           }),
         );
-        const result = await store.acceptInterrupt({ message, accepted });
+        const result = await store.acceptTurnControlCommand({ message, accepted });
         if (result.kind === "conflict") {
           sendConflict(socket, message);
           return;
@@ -2500,6 +2636,8 @@ export async function startCoreServer(
             turnId: message.payload.turnId,
             providerSessionId: snapshot.providerSessionId,
             providerTurnId: turn.providerTurnId,
+            runtimeId: connection.runtime.runtimeId,
+            runtimeGeneration: connection.runtime.generation,
           }),
         );
         return;
@@ -3459,6 +3597,7 @@ function publicConnectorError(code: string) {
   const messages: Record<string, string> = {
     IDEMPOTENCY_KEY_REUSE: "Connector command identity was reused.",
     STALE_RUNTIME_GENERATION: "Command belongs to an inactive runtime generation.",
+    STEER_DELIVERY_UNKNOWN: "Provider steering delivery could not be confirmed.",
     INTERRUPT_FAILED: "Provider interrupt delivery could not be confirmed.",
     APPROVAL_DELIVERY_FAILED: "Provider approval delivery could not be confirmed.",
   };
@@ -3657,6 +3796,7 @@ function validateTurnControlAuthority(
   );
   const requiredCapabilities = [
     "remote_control",
+    "submit_turn",
     "text_input",
     "execution_modes",
     "approval_policies",
@@ -3708,6 +3848,38 @@ function validateTurnControlAuthority(
     return {
       code: "NETWORK_POLICY_UNAVAILABLE",
       message: "The requested network policy is not supported.",
+    };
+  }
+  return undefined;
+}
+
+function validateTurnMutationCapability(
+  capability: "steer_turn" | "interrupt_turn",
+  settings: SessionSettings | undefined,
+  authority: ReturnType<CoreDatabase["sessionProviderAuthority"]>,
+  snapshot: ProviderFleetSnapshot | undefined,
+  accountEvidence: ProviderAccountCapabilitySnapshot | undefined,
+  currentRuntime: Runtime | undefined,
+): { code: string; message: string } | undefined {
+  const authorityError = validateTurnControlAuthority(
+    settings,
+    authority,
+    snapshot,
+    accountEvidence,
+    currentRuntime,
+  );
+  if (authorityError !== undefined) return authorityError;
+  if (
+    accountEvidence?.capabilities.some(
+      (item) => item.key === capability && item.state === "supported",
+    ) !== true
+  ) {
+    return {
+      code: "PROVIDER_CAPABILITY_UNAVAILABLE",
+      message:
+        capability === "steer_turn"
+          ? "The current provider adapter does not support active-Turn steering."
+          : "The current provider adapter does not support Turn interruption.",
     };
   }
   return undefined;

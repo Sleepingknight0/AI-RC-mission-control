@@ -42,7 +42,7 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 15;
+export const CORE_SCHEMA_VERSION = 16;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -67,6 +67,7 @@ type MutatingClientEnvelope = Extract<
   {
     type:
       | "turn.submit"
+      | "turn.steer"
       | "turn.interrupt"
       | "approval.resolve"
       | "session.rename"
@@ -3023,8 +3024,8 @@ export class CoreDatabase {
     });
   }
 
-  async acceptInterrupt(input: {
-    message: Extract<ClientEnvelope, { type: "turn.interrupt" }>;
+  async acceptTurnControlCommand(input: {
+    message: Extract<ClientEnvelope, { type: "turn.steer" | "turn.interrupt" }>;
     accepted: ServerEnvelope;
   }): Promise<MutationResult> {
     return this.#write(() => {

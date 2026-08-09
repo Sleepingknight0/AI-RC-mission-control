@@ -8,6 +8,8 @@ export function MobileComposer({
   modeLabel,
   busy,
   canSubmit,
+  canAbort = false,
+  canSteer = false,
   disabledReason,
   canAttachText,
   canAttachImage,
@@ -15,6 +17,7 @@ export function MobileComposer({
   attachmentChips,
   onChange,
   onSubmit,
+  onSteer,
   onAbort,
   onOpenModelMode,
   onPickFiles,
@@ -24,6 +27,8 @@ export function MobileComposer({
   modeLabel: string;
   busy: boolean;
   canSubmit: boolean;
+  canAbort?: boolean;
+  canSteer?: boolean;
   disabledReason: string;
   canAttachText: boolean;
   canAttachImage: boolean;
@@ -31,6 +36,7 @@ export function MobileComposer({
   attachmentChips: ReactNode;
   onChange: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
+  onSteer?: (event: FormEvent) => void;
   onAbort: () => void;
   onOpenModelMode: () => void;
   onPickFiles: (files: FileList) => void;
@@ -53,7 +59,11 @@ export function MobileComposer({
     inputRef.current?.click();
   };
   return (
-    <form className="mobile-composer" data-testid="mobile-composer" onSubmit={onSubmit}>
+    <form
+      className="mobile-composer"
+      data-testid="mobile-composer"
+      onSubmit={busy ? onSteer : onSubmit}
+    >
       {attachmentChips}
       {plusOpen && (
         <div className="mobile-plus-menu" role="menu" aria-label="Add to prompt">
@@ -64,8 +74,8 @@ export function MobileComposer({
           ) : <p>No attachment actions are supported.</p>}
         </div>
       )}
-      <div className="mobile-composer-input-row">
-        <button
+      <div className={`mobile-composer-input-row${busy ? " mobile-composer-active" : ""}${busy && canAbort ? " mobile-composer-can-abort" : ""}`}>
+        {!busy && <button
           type="button"
           className="mobile-icon-button mobile-plus-button"
           data-testid="mobile-attachment-trigger"
@@ -76,8 +86,8 @@ export function MobileComposer({
           onClick={() => setPlusOpen((open) => !open)}
         >
           <PlusIcon />
-        </button>
-        <input
+        </button>}
+        {!busy && <input
           ref={inputRef}
           type="file"
           hidden
@@ -90,14 +100,15 @@ export function MobileComposer({
             event.currentTarget.value = "";
             setPlusOpen(false);
           }}
-        />
+        />}
         <label className="mobile-prompt-field">
           <span className="sr-only">Prompt</span>
           <textarea
             value={value}
             rows={1}
-            placeholder="Message…"
+            placeholder={busy ? "Add instruction…" : "Message…"}
             aria-describedby="mobile-composer-help"
+            disabled={busy && !canSteer}
             onChange={(event) => {
               onChange(event.target.value);
               const target = event.currentTarget;
@@ -107,16 +118,25 @@ export function MobileComposer({
             onKeyDown={handleKeyDown}
           />
         </label>
-        <button
-          type={busy ? "button" : "submit"}
-          className="mobile-send-button"
-          data-testid={busy ? "mobile-abort" : "mobile-send"}
-          disabled={busy ? false : !canSubmit || value.trim() === ""}
-          aria-label={busy ? "Abort active Turn" : "Send prompt"}
-          title={busy ? "Abort" : "Send"}
-          onClick={busy ? onAbort : undefined}
+        {busy && canAbort && <button
+          type="button"
+          className="mobile-send-button mobile-abort-button"
+          data-testid="mobile-abort"
+          aria-label="Abort active Turn"
+          title="Abort"
+          onClick={onAbort}
         >
-          {busy ? <StopIcon /> : <SendIcon />}
+          <StopIcon />
+        </button>}
+        <button
+          type="submit"
+          className="mobile-send-button"
+          data-testid={busy ? "mobile-steer" : "mobile-send"}
+          disabled={(busy ? !canSteer : !canSubmit) || value.trim() === ""}
+          aria-label={busy ? "Add instruction to active Turn" : "Send prompt"}
+          title={busy ? "Add instruction" : "Send"}
+        >
+          <SendIcon />
         </button>
       </div>
       <div className="mobile-composer-settings">

@@ -454,6 +454,20 @@ lines.on("line", (line) => {
       }
       break;
     }
+    case "turn/steer": {
+      if (
+        active === undefined ||
+        message.params.threadId !== active.threadId ||
+        message.params.expectedTurnId !== active.turnId ||
+        message.params.input?.[0]?.type !== "text" ||
+        String(message.params.input[0].text).trim() === ""
+      ) {
+        send({ id: message.id, error: { code: -32602, message: "invalid steer" } });
+        break;
+      }
+      send({ id: message.id, result: { turnId: active.turnId } });
+      break;
+    }
     case "turn/interrupt":
       if (active?.timer) clearInterval(active.timer);
       send({ id: message.id, result: {} });

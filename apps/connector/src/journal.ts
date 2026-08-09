@@ -140,6 +140,7 @@ export class ConnectorJournal {
       {
         type:
           | "connector.turn.start"
+          | "connector.turn.steer"
           | "connector.turn.interrupt"
           | "connector.approval.resolve"
           | "connector.session.create"

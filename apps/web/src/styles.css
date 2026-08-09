@@ -2416,6 +2416,12 @@ button:active:not(:disabled) { transform: translateY(0); }
     border-radius: 0;
     background: var(--surface-1);
   }
+  .mobile-composer-input-row.mobile-composer-active {
+    grid-template-columns: minmax(0, 1fr) var(--touch);
+  }
+  .mobile-composer-input-row.mobile-composer-active.mobile-composer-can-abort {
+    grid-template-columns: minmax(0, 1fr) var(--touch) var(--touch);
+  }
   .mobile-prompt-field { min-width: 0; }
   .mobile-prompt-field textarea {
     display: block;
@@ -2443,6 +2449,11 @@ button:active:not(:disabled) { transform: translateY(0); }
     background: var(--signal);
   }
   .mobile-send-button:disabled { opacity: 0.28; }
+  .mobile-abort-button {
+    color: var(--danger);
+    border: 1px solid var(--danger);
+    background: transparent;
+  }
   .mobile-composer-settings {
     display: flex;
     align-items: center;
