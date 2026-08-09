@@ -109,6 +109,17 @@ rather than idle. Compiled Mobile acceptance covers 375×812, 390×844, 430×932
 provider thread exposed no command item. Evidence is in
 `reviews/codex/M10.2-NATIVE-LIVE-SESSION-MIRROR.md`.
 
+Final production review hardened the observation boundary at reviewed code
+`8d6d7b3e9f2a9031667dbee42556fa656907eb2d`: exact whole-projection 600 KiB
+validation, fail-closed command metadata, Connector-side retention of Codex's
+unstructured aggregate output, complete observer cleanup/error ownership, and
+stable Return-to-live signaling across unchanged polling revisions. The final
+gate passed 322 automated tests with one normal opt-in skip, all compiled
+operational gates, and the separately enabled exact-account Real Codex
+stream/interrupt/loss/resume/no-replay lifecycle. Read-only compiled acceptance
+restored 177 exact-account native entries across refresh with zero observation
+mutation deltas and browser console 0 errors / 0 warnings.
+
 The completed M10.1 provider refinement remains preserved on the final SpaceX
 V2 lineage. The historical `codex/m10-mobile-account-session-shell` branch is
 unchanged; its four commits were semantically integrated without restoring

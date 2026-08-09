@@ -2514,3 +2514,80 @@ running harmless Session and sent no prompt.
 - Claude Code, Cursor Agent, Grok Build, and Antigravity report Remote activity
   unavailable until measured adapters exist.
 - Next single milestone: none selected; M8.5 remains operator-deferred.
+
+---
+
+### 2026-08-10 — Codex — final M10.1 + M10.2 production acceptance
+
+**Scope**
+
+Run the compiled-production, Mobile, live-observation, security, automated, and
+operational integration gates for SpaceX V2, M10.1, and M10.2, repair only
+reproducible blockers, and prepare an exact fast-forward candidate for master.
+
+**Reviewed lineage**
+
+- Master base: `f600040829e8bfd03f9ce234ef3a36873e7d1822`
+- M10.1 integration checkpoint: `5e62cfc6f6755a360874f09611ec988a3f4f1cc6`
+- Original M10.2 review head: `bd988fd2c3ee3cd95e451ab46b6a0ee8bc4bd5f1`
+- Final reviewed code: `8d6d7b3e9f2a9031667dbee42556fa656907eb2d`
+- Historical M10.1 branch, original seven-file dirty worktree, and external
+  lineage-recovery evidence remained unchanged.
+
+**Acceptance repairs**
+
+- Enforced the exact 600 KiB complete projection bound in both Connector and
+  protocol validation.
+- Failed command metadata closed for environment/credential-bearing forms and
+  kept Codex's unstructured aggregate command output Connector-side.
+- Retained observer ownership and surfaced aggregate cleanup failures; provider
+  disablement now verifies observer shutdown before the durable manifest flip.
+- Aligned restored native identity bounds with protocol validation and made
+  Return to live sensitive to complete rendered item changes but insensitive to
+  unchanged 1.5-second polling revisions.
+- Made the opt-in Real Codex lifecycle wait for exact-account capability
+  evidence before its first mutation, removing a deterministic test-order race.
+
+**Compiled evidence**
+
+- Normal drawer: Antigravity CLI, Claude Code, Cursor Agent, Grok Build, OpenAI
+  Codex; Codex retained BWCX BLUEWHALEX, EASY BLUEWHALEX, and NOT BLUEWHALEX.
+- Manage Providers: ten disabled/available providers. Amp retained its stored
+  account through enable/disable, browser refresh, and application restart, and
+  ended disabled.
+- Exact native selection: `codex` / `not-bluewhalex` /
+  `019fe3af-c0d6-7340-b25a-9d11a45022a2`.
+- Existing history rendered and refreshed at 177 entries before/after. A real
+  progress update appeared without refresh as `LIVE · Thinking`; unchanged
+  polls produced no false unread count; Return to live reached zero remaining
+  scroll distance.
+- 375×812, 390×844, and 430×932 had no horizontal overflow. At 200% text,
+  client/scroll width remained 390 px. Reduced motion used 0.01 ms durations and
+  `scroll-behavior: auto`. Fresh console: 0 errors, 0 warnings.
+- Observation mutation delta: zero Sessions, Turns, Core commands, provider
+  account/enablement commands, approvals, settings, attachments, Connector inbox
+  commands, provider starts/resumes, and prompt submissions. The two existing
+  enablement/inbox rows were the M10.1 optional-provider toggle baseline.
+
+**Commands and tests**
+
+```text
+pnpm install --frozen-lockfile                         PASS
+pnpm migrate (isolated schema 15/3, twice)            PASS / idempotent
+Protocol                                               PASS (41 tests)
+Connector                                              PASS (79 tests)
+Core                                                   PASS (75 tests; 1 opt-in skip)
+Web                                                    PASS (94 tests)
+pnpm build                                             PASS
+pnpm check                                             PASS (322 tests; 1 opt-in skip)
+production lifecycle / backup-restore / clean install PASS
+Tailscale automation                                   PASS
+AICL_REAL_CODEX=1 exact-account lifecycle             PASS (69.92 s)
+git diff --check                                       PASS
+```
+
+The sampled real provider thread exposed historical progress and file changes
+but no real `commandExecution` item. Command cards remain deterministic
+regression evidence. Codex remains the only native observation adapter;
+unsupported providers truthfully report Remote activity unavailable. No next
+milestone is selected.

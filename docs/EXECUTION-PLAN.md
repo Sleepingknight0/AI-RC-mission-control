@@ -543,4 +543,15 @@ next post-M10 milestone.
    unavailable. Read-only observation grants none of the existing remote-control
    capabilities.
 
+Final production acceptance reviewed code
+`8d6d7b3e9f2a9031667dbee42556fa656907eb2d`. Security/lifecycle remediation
+keeps unstructured Codex aggregate output Connector-side, enforces the complete
+600 KiB snapshot bound, surfaces observer cleanup failures without losing
+ownership, and suppresses false Return-to-live updates from observation-only
+polling revisions. `pnpm check` passed 322 tests plus production lifecycle,
+maintenance/restore, clean-install, and Tailscale gates; the separately enabled
+exact-account Real Codex lifecycle also passed. Final compiled observation
+restored 177 entries across refresh with zero mutation-table deltas, console
+0/0, three required phone sizes, 200% text, and reduced motion.
+
 Durable evidence: `reviews/codex/M10.2-NATIVE-LIVE-SESSION-MIRROR.md`.
