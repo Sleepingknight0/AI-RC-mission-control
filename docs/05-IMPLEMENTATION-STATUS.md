@@ -83,21 +83,37 @@ Codex must execute the first incomplete milestone unless the operator explicitly
 - [x] disabled-provider process, discovery, activation, capability, and Session gates
 - [x] real-registry Mobile acceptance and resource measurement
 
+## M10.2 — Provider-native live remote Session mirror
+
+- [x] installed Codex `thread/read` history capability measured
+- [x] provider-neutral, bounded, sanitized observation projection
+- [x] exact account/Session Core relay with runtime fencing
+- [x] read-only history bootstrap, live delta following, and reconnect rebuild
+- [x] final compiled Mobile acceptance and repository gate
+
 ## Current milestone
 
-**The post-M10 M10.1 provider refinement is complete on the M10 review
-branch.** This machine keeps Antigravity CLI, Claude Code, Cursor Agent, Grok
-Build, and OpenAI Codex active; the other ten discovered providers remain
-disabled and recoverable. The normal Mobile drawer no longer promotes a
-disabled provider from stored account data. A normalized, command-ID-backed
-Core/Connector CAS updates the existing manifest `enabled` field, while Core
-schema 15 records the durable audit/result. Disabled inventory is limited to
-bounded manifest and account-directory counting; no installation/authentication,
-model, usage, native-Session, activation, or Session-authority work runs. The
-compiled real-registry acceptance passed 375×812, 390×844, 430×932, 200% text,
-focus/Escape, restart/reconnect persistence, toggle retention, no overflow, and
-console 0/0. No disabled-provider process or isolated Connector child remained.
-Evidence is in `reviews/codex/M10.1-PROVIDER-VISIBILITY.md`.
+**M10.2 provider-native live remote Session observation is complete on the
+dedicated integration branch.** Installed Codex 0.146.0 supports bounded
+`thread/read` history with existing Turns/items but exposes no stable
+cross-process subscribe request; a separate app-server reports an externally
+running thread as `notLoaded`. AICL therefore takes fresh, exact-account,
+read-only snapshots and detects only real normalized item changes between
+reads. Connector sanitizes and bounds provider data before Core relays it under
+provider/account/Session and Runtime fences. Web rebuilds and deduplicates the
+mirrored timeline on refresh without creating, resuming, or submitting a Turn.
+Unsupported providers and provider loss report remote activity unavailable
+rather than idle. Compiled Mobile acceptance covers 375×812, 390×844, 430×932,
+200% text, reduced motion, Return to live, no horizontal overflow, and console
+0/0; expandable command activity is component-tested because the sampled
+provider thread exposed no command item. Evidence is in
+`reviews/codex/M10.2-NATIVE-LIVE-SESSION-MIRROR.md`.
+
+The completed M10.1 provider refinement remains preserved on the final SpaceX
+V2 lineage. The historical `codex/m10-mobile-account-session-shell` branch is
+unchanged; its four commits were semantically integrated without restoring
+stale Web implementations, and the seven pre-existing dirty Web files remain
+preserved in the original worktree plus external binary-safe evidence.
 
 **M10 recovery and acceptance are complete.** Thirteen local M10 commits were
 preserved on `codex/m10-mobile-account-session-shell` from base `50e2d90`.
@@ -121,6 +137,14 @@ Google/Cloudflare identity, and a product retention policy remain deferred.
 
 ## Last verified demo
 
+- M10.2 native observation: the compiled isolated stack opened the exact
+  configured Codex account/thread, reconstructed existing operator, assistant,
+  progress, file-change, and terminal-turn history, and followed newly appended
+  provider work without refresh or prompt dispatch. Refresh rebuilt the same
+  provider-native projection without duplicates. The installed provider's
+  sampled external thread exposed file/progress changes but no command-execution
+  item; normalized command rendering and terminal replacement are covered by
+  deterministic adapter/Web regressions.
 - M10.1 provider visibility: the compiled isolated stack read the machine's real
   15-provider registry. The drawer showed exactly the five operator-selected
   providers and Codex exposed all three accounts. Manage Providers showed ten

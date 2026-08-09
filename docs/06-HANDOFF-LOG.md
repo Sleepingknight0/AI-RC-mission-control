@@ -2432,3 +2432,85 @@ account remains. Refresh and full application restarts preserve both states.
 
 M8.5 real second-device acceptance only if the operator removes its deferral;
 otherwise define the next post-M10 milestone.
+
+---
+
+### 2026-08-09 08:00 — Codex — M10.2 provider-native live Session mirror
+
+**Scope**
+
+Recover M10.1 onto the final SpaceX V2 base without touching the historical
+branch or original dirty worktree, then add provider-native read-only history
+and live activity observation for the installed Codex adapter.
+
+**Lineage and preservation**
+
+- Verified master `f600040829e8bfd03f9ce234ef3a36873e7d1822`, historical
+  M10.1 `a19e9a4ad4f3a3c871391a374d3e498ac6c2aef8`, merge base
+  `2420d744813881803b2c89f6001804dc63300bc2`, and 11/4 divergence.
+- Preserved binary-safe dirty patches, hashes, status, and diff statistics at
+  `C:\Projects\AI-RC-m10-lineage-recovery-evidence`.
+- Ported all four M10.1 commits semantically onto final V2 and committed the
+  clean checkpoint as `5e62cfc6f6755a360874f09611ec988a3f4f1cc6`.
+- The original seven dirty Web files, master, and historical M10.1 branch remain
+  unchanged.
+
+**Implemented behavior**
+
+- Added strict `provider.session.projection.read` / `.snapshot` messages and a
+  bounded provider-neutral item union for operator/assistant/progress/activity/
+  file-change/Turn-state history.
+- Verified installed Codex 0.146.0 `thread/read` with `includeTurns: true`
+  returns existing history. Connector maps only supported item types, preserves
+  stable provider identities, sanitizes/limits content, and never emits raw
+  provider JSON.
+- Added an exact-account observer per Codex profile. A second app-server sees an
+  externally active thread as process-local `notLoaded`, so live following uses
+  bounded repeat reads and labels a 15-second live freshness interval only after
+  a real normalized item change. No synthetic provider start time is exposed.
+- Core fences the response by requesting browser, provider/account/thread,
+  enabled-provider state, Connector boot, Runtime generation, and freshness.
+- Web observes rather than resumes native Sessions, rebuilds/deduplicates on
+  refresh, shows provider-native history and live activity, disables mutations,
+  and reports unavailable support truthfully.
+
+**Verification**
+
+```text
+Protocol                                               PASS (40 tests)
+Connector                                              PASS (64 tests)
+Core                                                   PASS (75 tests; 1 opt-in skip)
+Web                                                    PASS (91 tests)
+pnpm build                                             PASS
+pnpm check                                             PASS (303 tests; 1 opt-in skip)
+git diff --check                                       PASS
+Compiled Mobile 375×812 / 390×844 / 430×932           PASS (console 0/0)
+```
+
+The opt-in Real Codex mutation/lifecycle test was not rerun. Empirical provider
+acceptance used only read-only thread/list/read behavior against the already
+running harmless Session and sent no prompt.
+
+**Evidence and demo**
+
+- Technical and acceptance record:
+  `reviews/codex/M10.2-NATIVE-LIVE-SESSION-MIRROR.md`.
+- Start compiled production, choose OpenAI Codex → the exact account → an
+  existing native Session, and select Observe. Existing provider history
+  replaces the old empty state and new provider file/progress activity advances
+  without refresh. Scrolling up exposes Return to live.
+- Refresh restored 102 provider-native entries before/after with the same exact
+  provider/account/thread. The isolated Core/Connector databases retained zero
+  Sessions, Turns, and command inbox rows.
+
+**Known limits / next action**
+
+- Installed Codex has no stable cross-process `thread/subscribe`. Live state for
+  externally owned threads is change-detected by bounded `thread/read`, while
+  native notifications remain available only for threads loaded in AICL's own
+  app-server process.
+- The sampled active thread exposed progress and file changes but no command
+  item. Command cards and final replacement are covered deterministically.
+- Claude Code, Cursor Agent, Grok Build, and Antigravity report Remote activity
+  unavailable until measured adapters exist.
+- Next single milestone: none selected; M8.5 remains operator-deferred.

@@ -257,3 +257,19 @@ The visual baseline at `grok/spacex-ui` commit `c2f1d481` is preserved in its
 own worktree. Codex owns all non-visual M9 contracts and implementation but does
 not edit or merge the frozen Web visual files until the operator authorizes the
 final integration pass.
+
+## AD-029 — Provider-native observation is a read-only projection
+
+An externally originated provider Session is observed through a distinct,
+provider-neutral projection. The Connector reads only provider-supported
+history/activity APIs, bounds and sanitizes their contents, and sends the
+normalized projection through Core's exact provider/account/Session and Runtime
+fences. Raw provider events, PTY streams, environment values, credentials, and
+unrestricted command output never cross into Web.
+
+Provider-native mirrored items keep provider identities and are not represented
+as AICL durable Turn or Event IDs. Refresh and reconnect replace the bounded
+projection from a fresh provider read and deduplicate stable provider item IDs;
+they never replay a prompt. Observation grants no submit, interrupt, steer,
+approval, settings, or model authority. Providers without an implemented and
+measured history/activity API report `Remote activity unavailable`.

@@ -513,3 +513,34 @@ Durable evidence: `reviews/codex/M10.1-PROVIDER-VISIBILITY.md`.
 The next single milestone remains M8.5 real second-device acceptance only if
 the operator removes its deferral; otherwise the operator should define the
 next post-M10 milestone.
+
+## M10.2 provider-native live remote Session mirror — 2026-08-09
+
+1. Read-only Codex observation uses the installed app-server's exact
+   `thread/read` method with `includeTurns: true`; it never starts or resumes a
+   provider Turn.
+2. Connector converts supported provider history into a bounded, sanitized,
+   provider-neutral projection before Core or Web can receive it.
+3. Core relays only the exact requested provider/account/Session projection and
+   rejects stale or Runtime-generation-mismatched evidence.
+4. Existing operator/assistant messages, commentary, reasoning summaries,
+   commands, file changes, tool activity, plans, and Turn state retain stable
+   provider identities and remain separate from AICL's durable Turn/Event IDs.
+5. Installed Codex 0.146.0 has stable `thread/read`,
+   `thread/loaded/list`, and `thread/unsubscribe` requests plus live item/Turn
+   notifications for threads loaded by that app-server. It has no stable
+   `thread/subscribe`; a second process reads an active external thread as
+   `notLoaded`, so reconnect/live following uses bounded repeat reads and only
+   reports activity when normalized provider content actually changes.
+6. Web refreshes the exact provider/account/thread projection without
+   `turn.submit`, deduplicates provider item IDs, preserves chronological order,
+   distinguishes progress from final output, and offers Return to live while
+   the operator is scrolled up.
+7. Command and file previews use existing output bounds plus secret, control,
+   ANSI, path, and project-label sanitation. Raw provider JSON and PTY output
+   are not protocol members.
+8. Unsupported providers and provider loss fail closed as Remote activity
+   unavailable. Read-only observation grants none of the existing remote-control
+   capabilities.
+
+Durable evidence: `reviews/codex/M10.2-NATIVE-LIVE-SESSION-MIRROR.md`.
