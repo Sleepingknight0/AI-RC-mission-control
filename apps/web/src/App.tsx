@@ -11,6 +11,7 @@ import {
   type ProviderAccountCapabilitySnapshot,
   type ProviderRecord,
   type ProviderSessionProjectionItem,
+  type RemoteSessionRef,
   type Runtime,
   type SessionSettings,
   type SessionSnapshot,
@@ -18,6 +19,7 @@ import {
   type ToolActivity,
 } from "@aicl/protocol";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -103,6 +105,12 @@ import {
   type NativeProjectionUiState,
 } from "./mobile/native-projection.js";
 import {
+  remoteSessionRefFromSearch,
+  remoteSessionSelectionPlan,
+  setRemoteSessionRefInUrl,
+} from "./mobile/remote-session.js";
+import { buildUnifiedTimeline } from "./mobile/unified-timeline.js";
+import {
   activationResponseMatches,
   nativeResumeRefreshDecision,
   type PendingNativeResumeRefresh,
@@ -137,13 +145,21 @@ function readStoredId(key: string, pattern = SESSION_PATTERN) {
   return value !== null && pattern.test(value) ? value : null;
 }
 
+const requestedRemoteSession = remoteSessionRefFromSearch(
+  window.location.search,
+);
 const requestedSessionId = new URLSearchParams(window.location.search).get("session");
 const HAS_REQUESTED_SESSION =
   requestedSessionId !== null && SESSION_PATTERN.test(requestedSessionId);
 const restoredSessionId = readStoredId(SELECTED_SESSION_KEY);
-const restoredProviderId = readStoredId(SELECTED_PROVIDER_KEY);
-const restoredAccountId = readStoredId(SELECTED_ACCOUNT_KEY);
+const restoredProviderId =
+  requestedRemoteSession?.providerId ?? readStoredId(SELECTED_PROVIDER_KEY);
+const restoredAccountId =
+  requestedRemoteSession?.accountId ?? readStoredId(SELECTED_ACCOUNT_KEY);
 const restoredNativeSelection: NativeProjectionSelection | null = (() => {
+  if (requestedRemoteSession !== null) {
+    return remoteSessionSelectionPlan(requestedRemoteSession).nativeProjection;
+  }
   if (HAS_REQUESTED_SESSION) return null;
   return nativeProjectionSelectionFromStoredIds({
     providerId: sessionStorage.getItem(SELECTED_NATIVE_PROVIDER_KEY),
@@ -152,9 +168,10 @@ const restoredNativeSelection: NativeProjectionSelection | null = (() => {
   });
 })();
 const INITIAL_SESSION_ID =
-  HAS_REQUESTED_SESSION
+  requestedRemoteSession?.aiclSessionId ??
+  (HAS_REQUESTED_SESSION
     ? requestedSessionId!
-    : restoredSessionId ?? "session-demo";
+    : restoredSessionId ?? "session-demo");
 const CORE_URL = resolveCoreWebSocketUrl(
   import.meta.env.VITE_CORE_WS_URL,
   window.location,
@@ -709,11 +726,15 @@ export function App() {
         const deferInitialMobileSession =
           mobileLayout && !restoredSelectionCheckedRef.current;
         if (nativeSelection !== null) {
-          send(socket, makeEnvelope("sessions.list", {}));
-          send(socket, makeEnvelope("providers.refresh", {}));
-          requestCatalog(socket, null);
+          if (SESSION_PATTERN.test(selectedSessionRef.current)) {
+            subscribe(socket, selectedSessionRef.current);
+          } else {
+            send(socket, makeEnvelope("sessions.list", {}));
+            send(socket, makeEnvelope("providers.refresh", {}));
+            requestCatalog(socket, null);
+          }
           requestNativeProjection(socket, nativeSelection);
-          setNotice("Loading provider-native Session history.");
+          setNotice("Loading unified Session history.");
         } else if (
           SESSION_PATTERN.test(selectedSessionRef.current) &&
           !deferInitialMobileSession
@@ -1190,8 +1211,11 @@ export function App() {
       : null;
   const nativeTimelineItems: ProviderSessionProjectionItem[] =
     visibleNativeSnapshot?.items ?? [];
-  const timelineLength =
-    selectedNative === null ? timelineItems.length : nativeTimelineItems.length;
+  const unifiedTimelineItems = useMemo(
+    () => buildUnifiedTimeline(timelineItems, nativeTimelineItems),
+    [nativeTimelineItems, timelineItems],
+  );
+  const timelineLength = unifiedTimelineItems.length;
   const timelineVirtualized =
     timelineLength > TIMELINE_VIRTUALIZATION_THRESHOLD;
   const timelineWindow = useMemo(
@@ -1203,18 +1227,18 @@ export function App() {
       ),
     [timelineLength, timelineViewport.height, timelineViewport.scrollTop],
   );
-  const renderedTimelineItems = timelineVirtualized
-    ? timelineItems.slice(timelineWindow.start, timelineWindow.end)
-    : timelineItems;
-  const renderedNativeTimelineItems = timelineVirtualized
-    ? nativeTimelineItems.slice(timelineWindow.start, timelineWindow.end)
-    : nativeTimelineItems;
+  const renderedUnifiedTimelineItems = timelineVirtualized
+    ? unifiedTimelineItems.slice(timelineWindow.start, timelineWindow.end)
+    : unifiedTimelineItems;
+  const aiclTimelineSignal = `${snapshot?.lastEventSeq ?? 0}:${snapshot?.messages
+    .map((message) => message.content.length)
+    .join(",")}:${snapshot?.activities
+    .map((activity) => activity.outputPreview.length)
+    .join(",")}`;
   const timelineSignal =
     selectedNative === null
-      ? `${snapshot?.lastEventSeq ?? 0}:${snapshot?.messages
-          .map((message) => message.content.length)
-          .join(",")}:${snapshot?.activities.map((activity) => activity.outputPreview.length).join(",")}`
-      : nativeProjectionSignal(visibleNativeSnapshot);
+      ? aiclTimelineSignal
+      : `${aiclTimelineSignal}:${nativeProjectionSignal(visibleNativeSnapshot)}`;
 
   useEffect(() => {
     const container = timelineRef.current;
@@ -1283,13 +1307,59 @@ export function App() {
       return;
     }
     restoredSelectionCheckedRef.current = true;
-    selectedNativeRef.current = null;
-    nativeProjectionRef.current = initialNativeProjectionState();
-    setSelectedNative(null);
-    setNativeProjection(initialNativeProjectionState());
-    sessionStorage.removeItem(SELECTED_NATIVE_PROVIDER_KEY);
-    sessionStorage.removeItem(SELECTED_NATIVE_ACCOUNT_KEY);
-    sessionStorage.removeItem(SELECTED_NATIVE_SESSION_KEY);
+    const catalogSession = catalog.sessions.find(
+      (candidate) => candidate.sessionId === sessionId,
+    );
+    const reference: RemoteSessionRef | null =
+      catalogSession?.accountId !== null && catalogSession?.accountId !== undefined
+        ? {
+            providerId: catalogSession.providerId,
+            accountId: catalogSession.accountId,
+            providerSessionId: catalogSession.providerSessionId,
+            aiclSessionId: catalogSession.sessionId,
+          }
+        : selectedProviderId !== null && selectedAccountId !== null
+          ? {
+              providerId: selectedProviderId,
+              accountId: selectedAccountId,
+              providerSessionId: null,
+              aiclSessionId: sessionId,
+            }
+          : null;
+    const nativeSelection =
+      reference === null
+        ? null
+        : remoteSessionSelectionPlan(reference).nativeProjection;
+    selectedNativeRef.current = nativeSelection;
+    const projectionState: NativeProjectionUiState =
+      nativeSelection === null
+        ? initialNativeProjectionState()
+        : {
+            ...initialNativeProjectionState(),
+            status: "loading",
+            selection: nativeSelection,
+          };
+    nativeProjectionRef.current = projectionState;
+    setSelectedNative(nativeSelection);
+    setNativeProjection(projectionState);
+    if (nativeSelection === null) {
+      sessionStorage.removeItem(SELECTED_NATIVE_PROVIDER_KEY);
+      sessionStorage.removeItem(SELECTED_NATIVE_ACCOUNT_KEY);
+      sessionStorage.removeItem(SELECTED_NATIVE_SESSION_KEY);
+    } else {
+      sessionStorage.setItem(
+        SELECTED_NATIVE_PROVIDER_KEY,
+        nativeSelection.providerId,
+      );
+      sessionStorage.setItem(
+        SELECTED_NATIVE_ACCOUNT_KEY,
+        nativeSelection.accountId,
+      );
+      sessionStorage.setItem(
+        SELECTED_NATIVE_SESSION_KEY,
+        nativeSelection.providerSessionId,
+      );
+    }
     selectedSessionRef.current = sessionId;
     sessionStorage.setItem(SELECTED_SESSION_KEY, sessionId);
     setMobileAccountHome(false);
@@ -1304,13 +1374,22 @@ export function App() {
     timelineAtBottomRef.current = true;
     setPrompt(sessionStorage.getItem(draftKey(sessionId)) ?? "");
     const url = new URL(window.location.href);
-    url.searchParams.set("session", sessionId);
-    url.searchParams.delete("nativeSession");
+    if (reference === null) {
+      url.searchParams.set("session", sessionId);
+      url.searchParams.delete("nativeSession");
+      url.searchParams.delete("provider");
+      url.searchParams.delete("account");
+    } else {
+      setRemoteSessionRefInUrl(url, reference);
+    }
     window.history.replaceState(null, "", url);
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
       setConnection("syncing");
       subscribe(socket, sessionId);
+      if (nativeSelection !== null) {
+        requestNativeProjection(socket, nativeSelection);
+      }
     }
   };
 
@@ -1370,8 +1449,12 @@ export function App() {
       selection.providerSessionId,
     );
     const url = new URL(window.location.href);
-    url.searchParams.delete("session");
-    url.searchParams.set("nativeSession", providerSessionId);
+    setRemoteSessionRefInUrl(url, {
+      providerId: selection.providerId,
+      accountId: selection.accountId,
+      providerSessionId: selection.providerSessionId,
+      aiclSessionId: null,
+    });
     window.history.replaceState(null, "", url);
     if (socket?.readyState === WebSocket.OPEN) {
       setConnection("syncing");
@@ -1563,6 +1646,8 @@ export function App() {
     restoredSelectionCheckedRef.current = true;
     const validNative =
       restoredNativeSelection !== null &&
+      (requestedRemoteSession === null ||
+        requestedRemoteSession.aiclSessionId === null) &&
       selectedProviderId === restoredNativeSelection.providerId &&
       selectedAccountId === restoredNativeSelection.accountId &&
       selectedProvider?.accounts.some(
@@ -1587,6 +1672,9 @@ export function App() {
     const initialSessionId = HAS_REQUESTED_SESSION
       ? requestedSessionId
       : restoredSessionId;
+    const initialCatalogSession = catalog.sessions.find(
+      (candidate) => candidate.sessionId === initialSessionId,
+    );
     const valid =
       initialSessionId !== null &&
       selectedProviderId === restoredProviderId &&
@@ -1596,29 +1684,22 @@ export function App() {
         initialSessionId,
         selectedProviderId,
         selectedAccountId,
-      );
+      ) &&
+      (requestedRemoteSession?.providerSessionId === undefined ||
+        requestedRemoteSession.providerSessionId ===
+          initialCatalogSession?.providerSessionId);
     if (
       valid &&
       initialSessionId !== null &&
       selectedProviderId !== null &&
       selectedAccountId !== null
     ) {
-      selectedSessionRef.current = initialSessionId;
-      sessionStorage.setItem(SELECTED_SESSION_KEY, initialSessionId);
-      setSelectedSessionId(initialSessionId);
-      setSessionInput(initialSessionId);
-      setPrompt(sessionStorage.getItem(draftKey(initialSessionId)) ?? "");
-      setMobileAccountHome(false);
-      const socket = socketRef.current;
       catalogFiltersRef.current = accountScopedCatalogFilters(
         selectedProviderId,
         selectedAccountId,
         "",
       );
-      if (socket?.readyState === WebSocket.OPEN) {
-        setConnection("syncing");
-        subscribe(socket, initialSessionId);
-      }
+      switchSession(initialSessionId);
       return;
     }
 
@@ -1646,6 +1727,8 @@ export function App() {
     const url = new URL(window.location.href);
     url.searchParams.delete("session");
     url.searchParams.delete("nativeSession");
+    url.searchParams.delete("provider");
+    url.searchParams.delete("account");
     window.history.replaceState(null, "", url);
     if (
       initialSessionId !== null &&
@@ -1890,6 +1973,9 @@ export function App() {
   );
   const catalogEntry =
     catalog.sessions.find((item) => item.sessionId === selectedSessionId) ?? null;
+  const hasAiclSession =
+    catalogEntry !== null || snapshot?.sessionId === selectedSessionId;
+  const providerNativeOnly = selectedNative !== null && !hasAiclSession;
   const selectedNativeRow =
     selectedNative === null
       ? null
@@ -1911,7 +1997,7 @@ export function App() {
     fleetStale: fleet.status !== "ready",
   });
   const availability =
-    selectedNative !== null
+    providerNativeOnly
       ? {
           canSubmit: false,
           reason:
@@ -1924,11 +2010,10 @@ export function App() {
         reason: controlDecision.reason ?? "Session is not controllable",
       };
   const timelineBusy =
-    selectedNative === null
-      ? latest?.status === "running"
-      : nativeProjectionIsActive(visibleNativeSnapshot?.state);
+    latest?.status === "running" ||
+    (selectedNative !== null && nativeProjectionIsActive(visibleNativeSnapshot?.state));
   const recoveryRequired =
-    selectedNative === null &&
+    hasAiclSession &&
     (runtime?.status === "lost" || latest?.status === "outcome_unknown");
   const displayedDiff =
     selectedFileChange?.diff?.kind === "inline"
@@ -2089,7 +2174,7 @@ export function App() {
     runtime.status === "offline" ||
     runtime.status === "lost" ||
     runtime.status === "incompatible";
-  const attachDisabledReason = selectedNative !== null
+  const attachDisabledReason = providerNativeOnly
     ? availability.reason
     : attachmentRuntimeUnavailable
       ? baseAvailability.reason
@@ -2183,9 +2268,9 @@ export function App() {
     }
   };
 
-  const operationalAnnouncement = selectedNative === null
-    ? `${connectionLabel(connection)}. Session ${selectedSessionId} is ${formatState(sessionState)}. ${pendingApprovals.length} pending ${pendingApprovals.length === 1 ? "approval" : "approvals"}.`
-    : `${connectionLabel(connection)}. Provider-native Session ${sessionTitle} is ${visibleNativeSnapshot?.state.replaceAll("_", " ") ?? "unavailable"}. Observation is read only.`;
+  const operationalAnnouncement = providerNativeOnly
+    ? `${connectionLabel(connection)}. Provider-native Session ${sessionTitle} is ${visibleNativeSnapshot?.state.replaceAll("_", " ") ?? "unavailable"}. Observation is read only.`
+    : `${connectionLabel(connection)}. Session ${selectedSessionId} is ${formatState(sessionState)}. ${pendingApprovals.length} pending ${pendingApprovals.length === 1 ? "approval" : "approvals"}.`;
   const systemThinking =
     connection === "connecting" ||
     connection === "syncing" ||
@@ -2210,7 +2295,7 @@ export function App() {
     selectedAccountId,
     now,
   );
-  const mobileModelLabel = selectedNative !== null
+  const mobileModelLabel = providerNativeOnly
     ? "Provider managed"
     : mobileModels.find((model) => model.modelId === settingsUi.snapshot?.settings.model)
         ?.displayName ?? settingsUi.snapshot?.settings.model ?? "Model unavailable";
@@ -2224,7 +2309,9 @@ export function App() {
           tone: "offline" as const,
         };
   const mobileStatus =
-    nativeMobileStatus ?? mobileSystemStatus({
+    providerNativeOnly && nativeMobileStatus !== null
+      ? nativeMobileStatus
+      : mobileSystemStatus({
           latestTurnState: latest?.status ?? null,
           pendingApprovalCount: pendingApprovals.length,
           timelineBusy,
@@ -2246,62 +2333,58 @@ export function App() {
     { label: "Account freshness", value: selectedAccountCapability?.freshness ?? "Unavailable" },
     { label: "Authentication", value: selectedAccountCapability?.authentication ?? "Unknown" },
     { label: "Control", value: selectedAccountCapability?.control.replaceAll("_", " ") ?? "Unavailable" },
-    { label: "Provider binding", value: selectedNative === null ? catalogEntry?.providerBindingStatus.replaceAll("_", " ") ?? "No Session" : "Provider native" },
-    { label: "Session authority", value: selectedNative === null && controlDecision.ok ? "Controllable" : "View only", tone: selectedNative === null && controlDecision.ok ? "ready" as const : "warning" as const },
-    { label: "Runtime", value: selectedNative === null ? sessionState.replaceAll("_", " ") : visibleNativeSnapshot?.state.replaceAll("_", " ") ?? "Unavailable" },
+    { label: "Provider binding", value: hasAiclSession ? catalogEntry?.providerBindingStatus.replaceAll("_", " ") ?? "No Session" : "Provider native" },
+    { label: "Session authority", value: !providerNativeOnly && controlDecision.ok ? "Controllable" : "View only", tone: !providerNativeOnly && controlDecision.ok ? "ready" as const : "warning" as const },
+    { label: "Runtime", value: hasAiclSession ? sessionState.replaceAll("_", " ") : visibleNativeSnapshot?.state.replaceAll("_", " ") ?? "Unavailable" },
     { label: "Model", value: mobileModelLabel },
     { label: "Execution", value: settingsUi.snapshot?.settings.executionMode ?? "Unavailable" },
     { label: "Approval", value: settingsUi.snapshot?.settings.approvalPolicy.replaceAll("_", " ") ?? "Unavailable" },
   ];
-  const mobileTimeline = selectedNative !== null ? (
-    timelineVirtualized ? (
-      <div className="timeline-virtual-space" style={{ height: timelineWindow.totalHeight }}>
-        {renderedNativeTimelineItems.map((item, index) => {
-          const absoluteIndex = timelineWindow.start + index;
-          return (
-            <div
-              className="timeline-virtual-row"
-              key={`${item.providerTurnId}:${item.providerItemId}`}
-              style={{
-                height: TIMELINE_VIRTUAL_ROW_HEIGHT,
-                transform: `translateY(${timelineWindow.offsetTop + index * TIMELINE_VIRTUAL_ROW_HEIGHT}px)`,
-              }}
-            >
-              <NativeTimelineEntry item={item} position={absoluteIndex + 1} setSize={nativeTimelineItems.length} />
-            </div>
-          );
-        })}
-      </div>
-    ) : nativeTimelineItems.map((item, index) => (
-      <NativeTimelineEntry
-        key={`${item.providerTurnId}:${item.providerItemId}`}
-        item={item}
-        position={index + 1}
-        setSize={nativeTimelineItems.length}
-      />
-    ))
-  ) : timelineVirtualized ? (
+  const renderUnifiedEntry = (
+    entry: (typeof unifiedTimelineItems)[number],
+    position: number,
+  ) => entry.source === "provider_native" ? (
+    <NativeTimelineEntry item={entry.item} position={position} setSize={timelineLength} />
+  ) : (
+    <TimelineEntry
+      item={entry.item}
+      onInspectFileChange={inspectFileChange}
+      position={position}
+      setSize={timelineLength}
+    />
+  );
+  const mobileTimeline = timelineVirtualized ? (
     <div className="timeline-virtual-space" style={{ height: timelineWindow.totalHeight }}>
-      {renderedTimelineItems.map((item, index) => {
+      {renderedUnifiedTimelineItems.map((entry, index) => {
         const absoluteIndex = timelineWindow.start + index;
         return (
           <div
             className="timeline-virtual-row"
-            key={item.id}
+            key={entry.key}
             style={{
               height: TIMELINE_VIRTUAL_ROW_HEIGHT,
               transform: `translateY(${timelineWindow.offsetTop + index * TIMELINE_VIRTUAL_ROW_HEIGHT}px)`,
             }}
           >
-            <TimelineEntry item={item} onInspectFileChange={inspectFileChange} position={absoluteIndex + 1} setSize={timelineItems.length} />
+            {renderUnifiedEntry(entry, absoluteIndex + 1)}
           </div>
         );
       })}
     </div>
-  ) : timelineItems.map((item, index) => (
-    <TimelineEntry key={item.id} item={item} onInspectFileChange={inspectFileChange} position={index + 1} setSize={timelineItems.length} />
+  ) : unifiedTimelineItems.map((entry, index) => (
+    <Fragment key={entry.key}>{renderUnifiedEntry(entry, index + 1)}</Fragment>
   ));
-  const mobileApprovals = selectedNative !== null || pendingApprovals.length === 0 ? null : (
+  const timelineLoading = timelineLength === 0 && (
+    (hasAiclSession && snapshot === null) ||
+    (selectedNative !== null &&
+      nativeProjection.status === "loading" &&
+      visibleNativeSnapshot === null)
+  );
+  const timelineUnavailable =
+    timelineLength === 0 &&
+    selectedNative !== null &&
+    nativeProjection.status === "unavailable";
+  const mobileApprovals = providerNativeOnly || pendingApprovals.length === 0 ? null : (
     <section className="mobile-approval-list" aria-label="Pending approvals" tabIndex={-1}>
       {pendingApprovals.map((approval) => {
         const disabled = connection !== "online" || resolving.has(approval.approvalId);
@@ -2444,7 +2527,9 @@ export function App() {
         connectionNotice={connection === "online" ? null : `${connectionLabel(connection)}. Your unsent draft stays local and will not be sent on reconnect.`}
         authorityNotice={
           connection === "online" && !mobileAccountHome
-            ? selectedNative !== null
+            ? selectedNative !== null && nativeProjection.status === "unavailable"
+              ? `Provider history unavailable. ${nativeProjection.notice ?? "Remote activity could not be read."}`
+              : providerNativeOnly
               ? availability.reason
               : !controlDecision.ok
                 ? controlDecision.reason
@@ -2453,17 +2538,10 @@ export function App() {
         }
         recoveryNotice={recoveryRequired ? "The provider outcome may be ambiguous. AICL will not replay the original prompt." : null}
         timelineBusy={timelineBusy}
-        timelineLoading={
-          selectedNative === null
-            ? snapshot === null
-            : nativeProjection.status === "loading" && visibleNativeSnapshot === null
-        }
+        timelineLoading={timelineLoading}
         timelineEmpty={timelineLength === 0}
         timelineProviderNative={selectedNative !== null}
-        timelineUnavailable={
-          selectedNative !== null &&
-          nativeProjection.status === "unavailable"
-        }
+        timelineUnavailable={timelineUnavailable}
         timelineRef={timelineRef}
         unreadUpdates={unreadUpdates}
         timeline={mobileTimeline}
@@ -2474,9 +2552,9 @@ export function App() {
         evidence={mobileEvidence}
         prompt={prompt}
         modelLabel={mobileModelLabel}
-        modeLabel={selectedNative !== null ? "View only" : settingsUi.snapshot?.settings.executionMode ?? "Mode unavailable"}
+        modeLabel={providerNativeOnly ? "View only" : settingsUi.snapshot?.settings.executionMode ?? "Mode unavailable"}
         canSubmit={availability.canSubmit && settingsUi.snapshot !== null}
-        canAbort={selectedNative === null && latest?.status === "running"}
+        canAbort={!providerNativeOnly && latest?.status === "running"}
         composerReason={availability.reason}
         canAttachText={textAttach.ok}
         canAttachImage={imageAttach.ok}
@@ -2862,7 +2940,7 @@ export function App() {
             </div>
           </header>
 
-          {selectedNative === null ? (
+          {!providerNativeOnly ? (
             <label className="mobile-session-picker">
               Session
               <select value={selectedSessionId} onChange={(event) => switchSession(event.target.value)}>
@@ -2895,7 +2973,7 @@ export function App() {
             </section>
           )}
 
-          {selectedNative !== null && connection === "online" ? (
+          {providerNativeOnly && connection === "online" ? (
             <section className="state-banner connection-banner" role="status">
               <strong>Provider-native observation · View only</strong>
               <p>{availability.reason}</p>
@@ -2961,69 +3039,23 @@ export function App() {
               aria-label="Session event timeline"
               aria-describedby="timeline-help"
             >
-              {selectedNative !== null ? (
-                nativeProjection.status === "loading" && visibleNativeSnapshot === null ? (
-                  <div className="loading-state" role="status">
-                    <ThinkingOrb label="Loading provider history" />
-                    <p>Loading provider-native Session history…</p>
-                  </div>
-                ) : nativeProjection.status === "unavailable" ? (
-                  <div className="empty-state timeline-empty" role="status">
-                    <strong>Provider history unavailable</strong>
-                    <p>{nativeProjection.notice ?? "Remote activity could not be read. No prompt was sent."}</p>
-                  </div>
-                ) : nativeTimelineItems.length > 0 ? (
-                  mobileTimeline
-                ) : (
-                  <div className="empty-state timeline-empty">
-                    <strong>No provider history yet</strong>
-                    <p>The provider returned no visible history for this Session.</p>
-                  </div>
-                )
-              ) : snapshot === null ? (
+              {timelineLoading ? (
                 <div className="loading-state" role="status">
-                  <ThinkingOrb label="Loading session" />
-                  <p>Loading authoritative Session projection…</p>
+                  <ThinkingOrb label={selectedNative === null ? "Loading session" : "Loading provider history"} />
+                  <p>{selectedNative === null ? "Loading authoritative Session projection…" : "Loading provider-native Session history…"}</p>
                 </div>
-              ) : timelineItems.length > 0 ? (
-                timelineVirtualized ? (
-                  <div
-                    className="timeline-virtual-space"
-                    style={{ height: timelineWindow.totalHeight }}
-                  >
-                    {renderedTimelineItems.map((item, index) => {
-                      const absoluteIndex = timelineWindow.start + index;
-                      return (
-                        <div
-                          className="timeline-virtual-row"
-                          key={item.id}
-                          style={{
-                            height: TIMELINE_VIRTUAL_ROW_HEIGHT,
-                            transform: `translateY(${timelineWindow.offsetTop + index * TIMELINE_VIRTUAL_ROW_HEIGHT}px)`,
-                          }}
-                        >
-                          <TimelineEntry
-                            item={item}
-                            onInspectFileChange={inspectFileChange}
-                            position={absoluteIndex + 1}
-                            setSize={timelineItems.length}
-                          />
-                        </div>
-                      );
-                    })}
-                    <span className="sr-only">
-                      Showing events {timelineWindow.start + 1} through {timelineWindow.end} of {timelineItems.length}.
-                    </span>
-                  </div>
-                ) : timelineItems.map((item, index) => (
-                  <TimelineEntry
-                    key={item.id}
-                    item={item}
-                    onInspectFileChange={inspectFileChange}
-                    position={index + 1}
-                    setSize={timelineItems.length}
-                  />
-                ))
+              ) : timelineUnavailable ? (
+                <div className="empty-state timeline-empty" role="status">
+                  <strong>Provider history unavailable</strong>
+                  <p>{nativeProjection.notice ?? "Remote activity could not be read. No prompt was sent."}</p>
+                </div>
+              ) : timelineLength > 0 ? (
+                mobileTimeline
+              ) : selectedNative !== null ? (
+                <div className="empty-state timeline-empty">
+                  <strong>No provider history yet</strong>
+                  <p>The provider returned no visible history for this Session.</p>
+                </div>
               ) : (
                 <div className="empty-state timeline-empty">
                   <strong>No turns in this Session</strong>

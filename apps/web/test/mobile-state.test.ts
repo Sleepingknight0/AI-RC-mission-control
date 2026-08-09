@@ -359,7 +359,52 @@ describe("M10 mobile provider/account/session selectors", () => {
       "blue-1",
     );
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ kind: "catalog", sessionId: "managed" });
+    expect(rows[0]).toMatchObject({
+      kind: "catalog",
+      sessionId: "managed",
+      remoteRef: {
+        providerId: "codex",
+        accountId: "blue-1",
+        providerSessionId: "native-1",
+        aiclSessionId: "managed",
+      },
+    });
+  });
+
+  it("keeps the exact Catalog/native identity when control is unavailable", () => {
+    const bound = {
+      ...catalogSession(
+        "import-019fe3af-c0d6-7340-b25a-9d11a45022a2",
+        "not-bluewhalex",
+        "019fe3af-c0d6-7340-b25a-9d11a45022a2",
+      ),
+      canControl: false,
+      turnCount: 0,
+    };
+    const rows = sessionsForProviderAccount(
+      [bound],
+      [
+        nativeSession(
+          "019fe3af-c0d6-7340-b25a-9d11a45022a2",
+          "not-bluewhalex",
+          "Native history exists",
+        ),
+      ],
+      "codex",
+      "not-bluewhalex",
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: "catalog",
+      canControl: false,
+      remoteRef: {
+        providerId: "codex",
+        accountId: "not-bluewhalex",
+        providerSessionId: "019fe3af-c0d6-7340-b25a-9d11a45022a2",
+        aiclSessionId: "import-019fe3af-c0d6-7340-b25a-9d11a45022a2",
+      },
+    });
   });
 
   it("derives display periods without creating durable Session state", () => {

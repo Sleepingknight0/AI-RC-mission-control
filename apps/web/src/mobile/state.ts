@@ -5,6 +5,7 @@ import type {
   ProviderModel,
   ProviderNativeSession,
   ProviderRecord,
+  RemoteSessionRef,
   SessionCapabilitiesSnapshot,
   SessionCatalogFilter,
   SessionSettingsSnapshot,
@@ -25,6 +26,7 @@ export interface MobileSessionRow {
   accountId: string;
   sessionId: string | null;
   providerSessionId: string | null;
+  remoteRef: RemoteSessionRef;
   title: string;
   projectName: string | null;
   lastActivityAt: string;
@@ -235,6 +237,12 @@ function catalogRow(session: SessionSummaryV2): MobileSessionRow | null {
     accountId: session.accountId,
     sessionId: session.sessionId,
     providerSessionId: session.providerSessionId,
+    remoteRef: {
+      providerId: session.providerId,
+      accountId: session.accountId,
+      providerSessionId: session.providerSessionId,
+      aiclSessionId: session.sessionId,
+    },
     title: displaySessionTitle(session.title),
     projectName: session.projectName,
     lastActivityAt: session.lastActivityAt,
@@ -259,6 +267,12 @@ function nativeRow(session: ProviderNativeSession): MobileSessionRow {
     accountId: session.accountId,
     sessionId: null,
     providerSessionId: session.providerSessionId,
+    remoteRef: {
+      providerId: session.providerId,
+      accountId: session.accountId,
+      providerSessionId: session.providerSessionId,
+      aiclSessionId: null,
+    },
     title: displaySessionTitle(session.title),
     projectName: session.projectName,
     lastActivityAt: session.updatedAt,

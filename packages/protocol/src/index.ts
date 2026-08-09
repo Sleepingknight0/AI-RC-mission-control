@@ -122,6 +122,35 @@ const providerSlug = z
   .min(1)
   .max(96)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
+const remoteSessionIdentity = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine((value) => !hasControlCharacter(value), {
+    message: "Remote Session identity may not contain control characters",
+  });
+
+/**
+ * Provider-neutral identity for the one logical conversation shown by a
+ * remote workspace screen. A conversation may be AICL-only, provider-only,
+ * or explicitly bound to both authorities; title/path similarity is never an
+ * identity signal.
+ */
+export const RemoteSessionRefSchema = z
+  .object({
+    providerId: providerSlug,
+    accountId: providerSlug,
+    providerSessionId: remoteSessionIdentity.nullable(),
+    aiclSessionId: remoteSessionIdentity.nullable(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.providerSessionId !== null || value.aiclSessionId !== null,
+    { message: "Remote Session reference requires a provider or AICL Session ID" },
+  );
+export type RemoteSessionRef = z.infer<typeof RemoteSessionRefSchema>;
+
 const displayText = (maxLength: number) =>
   z
     .string()

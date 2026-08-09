@@ -467,6 +467,12 @@ describe("M10 mobile visible contracts", () => {
         accountId: "account-1",
         sessionId: "session-pinned",
         providerSessionId: "native-pinned",
+        remoteRef: {
+          providerId: "codex",
+          accountId: "account-1",
+          providerSessionId: "native-pinned",
+          aiclSessionId: "session-pinned",
+        },
         title: "Pinned Session",
         projectName: "workspace",
         lastActivityAt: observedAt,
