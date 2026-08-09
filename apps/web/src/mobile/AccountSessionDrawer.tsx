@@ -22,7 +22,7 @@ export function AccountSessionDrawer({
   onSelectAccount,
   onSearchChange,
   onSelectSession,
-  onResumeNative,
+  onObserveNative,
   onOpenActions,
   onLoadMore,
   onOpenManageProviders,
@@ -50,7 +50,7 @@ export function AccountSessionDrawer({
   onSelectAccount: (providerId: string, accountId: string) => void;
   onSearchChange: (value: string) => void;
   onSelectSession: (sessionId: string) => void;
-  onResumeNative: (providerSessionId: string) => void;
+  onObserveNative: (providerSessionId: string) => void;
   onOpenActions: (session: MobileSessionRow) => void;
   onLoadMore: () => void;
   onOpenManageProviders: () => void;
@@ -95,7 +95,7 @@ export function AccountSessionDrawer({
           selectedSessionId={selectedSessionId}
           onSearchChange={onSearchChange}
           onSelectSession={onSelectSession}
-          onResumeNative={onResumeNative}
+          onObserveNative={onObserveNative}
           onOpenActions={onOpenActions}
           onLoadMore={onLoadMore}
         />

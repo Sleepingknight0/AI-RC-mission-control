@@ -13,7 +13,7 @@ export interface MobileHeaderProps {
 
 /** Compact flight header: menu · identity · single link-state control. */
 export function MobileHeader(props: MobileHeaderProps) {
-  const route = `${props.providerLabel} / ${props.accountLabel}`;
+  const route = `${props.providerLabel} · ${props.accountLabel}`;
   const session = props.sessionTitle ?? "Account home";
   const linkLabel = compactLinkLabel(props.statusTone, props.statusLabel, props.activityLabel);
   return (
@@ -60,7 +60,7 @@ function compactLinkLabel(
   activityLabel: string,
 ): string {
   if (tone === "offline") return "OFFLINE";
-  if (tone === "working") return "LIVE";
+  if (statusLabel.startsWith("LIVE · ")) return statusLabel;
   if (tone === "warning") return "HOLD";
   if (/ready|connected/i.test(statusLabel) && /ready|idle/i.test(activityLabel)) return "LINK";
   return statusLabel.split(/\s+/)[0]?.toUpperCase() ?? "STATUS";

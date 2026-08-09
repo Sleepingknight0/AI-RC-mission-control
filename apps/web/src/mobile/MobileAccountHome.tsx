@@ -15,7 +15,7 @@ export function MobileAccountHome({
   canCreate,
   createDisabledReason,
   onOpenSession,
-  onResumeNative,
+  onObserveNative,
   onOpenDrawer,
   onCreate,
 }: {
@@ -27,7 +27,7 @@ export function MobileAccountHome({
   canCreate: boolean;
   createDisabledReason: string | null;
   onOpenSession: (sessionId: string) => void;
-  onResumeNative: (providerSessionId: string) => void;
+  onObserveNative: (providerSessionId: string) => void;
   onOpenDrawer: () => void;
   onCreate: () => void;
 }) {
@@ -79,7 +79,7 @@ export function MobileAccountHome({
                 <SessionRow
                   session={session}
                   onOpenSession={onOpenSession}
-                  onResumeNative={onResumeNative}
+                  onObserveNative={onObserveNative}
                 />
               </li>
             ))}
@@ -103,7 +103,7 @@ export function MobileAccountHome({
                     <SessionRow
                       session={session}
                       onOpenSession={onOpenSession}
-                      onResumeNative={onResumeNative}
+                      onObserveNative={onObserveNative}
                     />
                   </li>
                 ))}
@@ -135,11 +135,11 @@ export function MobileAccountHome({
 function SessionRow({
   session,
   onOpenSession,
-  onResumeNative,
+  onObserveNative,
 }: {
   session: MobileSessionRow;
   onOpenSession: (sessionId: string) => void;
-  onResumeNative: (providerSessionId: string) => void;
+  onObserveNative: (providerSessionId: string) => void;
 }) {
   const stateLabel = mobileSessionStateLabel(session.state);
   return (
@@ -148,7 +148,7 @@ function SessionRow({
       className="mobile-session-row"
       onClick={() => {
         if (session.sessionId !== null) onOpenSession(session.sessionId);
-        else if (session.providerSessionId !== null) onResumeNative(session.providerSessionId);
+        else if (session.providerSessionId !== null) onObserveNative(session.providerSessionId);
       }}
     >
       <span className="mobile-session-state" data-state={session.state} aria-hidden="true" />

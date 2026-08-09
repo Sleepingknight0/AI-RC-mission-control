@@ -10,6 +10,7 @@ import {
   type FileChange,
   type ProviderAccountCapabilitySnapshot,
   type ProviderRecord,
+  type ProviderSessionProjectionItem,
   type Runtime,
   type SessionSettings,
   type SessionSnapshot,
@@ -89,6 +90,17 @@ import {
 } from "./m9/ui.js";
 import { MobileChatShell } from "./mobile/MobileChatShell.js";
 import { MobileCreateSessionForm } from "./mobile/MobileCreateSessionForm.js";
+import { NativeTimelineEntry } from "./mobile/NativeTimelineEntry.js";
+import {
+  initialNativeProjectionState,
+  nativeProjectionHeaderStatus,
+  nativeProjectionIsActive,
+  nativeProjectionRequestStarted,
+  nativeProjectionSignal,
+  reduceNativeProjection,
+  type NativeProjectionSelection,
+  type NativeProjectionUiState,
+} from "./mobile/native-projection.js";
 import {
   activationResponseMatches,
   nativeResumeRefreshDecision,
@@ -115,6 +127,9 @@ const MAX_TEXT_INPUT_ATTACHMENT_BYTES = 1024 * 1024;
 const SELECTED_PROVIDER_KEY = "aicl:selected-provider";
 const SELECTED_ACCOUNT_KEY = "aicl:selected-account";
 const SELECTED_SESSION_KEY = "aicl:selected-session";
+const SELECTED_NATIVE_PROVIDER_KEY = "aicl:selected-native-provider";
+const SELECTED_NATIVE_ACCOUNT_KEY = "aicl:selected-native-account";
+const SELECTED_NATIVE_SESSION_KEY = "aicl:selected-native-session";
 
 function readStoredId(key: string, pattern = SESSION_PATTERN) {
   const value = sessionStorage.getItem(key);
@@ -127,6 +142,15 @@ const HAS_REQUESTED_SESSION =
 const restoredSessionId = readStoredId(SELECTED_SESSION_KEY);
 const restoredProviderId = readStoredId(SELECTED_PROVIDER_KEY);
 const restoredAccountId = readStoredId(SELECTED_ACCOUNT_KEY);
+const restoredNativeSelection: NativeProjectionSelection | null = (() => {
+  if (HAS_REQUESTED_SESSION) return null;
+  const providerId = readStoredId(SELECTED_NATIVE_PROVIDER_KEY);
+  const accountId = readStoredId(SELECTED_NATIVE_ACCOUNT_KEY);
+  const providerSessionId = readStoredId(SELECTED_NATIVE_SESSION_KEY);
+  return providerId === null || accountId === null || providerSessionId === null
+    ? null
+    : { providerId, accountId, providerSessionId };
+})();
 const INITIAL_SESSION_ID =
   HAS_REQUESTED_SESSION
     ? requestedSessionId!
@@ -411,6 +435,10 @@ export function App() {
   const socketEpochRef = useRef(0);
   const pendingMobileActionRef = useRef<PendingMobileAction | null>(null);
   const pendingNativeResumeRefreshRef = useRef<PendingNativeResumeRefresh | null>(null);
+  const selectedNativeRef = useRef<NativeProjectionSelection | null>(
+    restoredNativeSelection,
+  );
+  const nativeProjectionRef = useRef(initialNativeProjectionState());
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const inspectorRef = useRef<HTMLElement | null>(null);
   const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -451,6 +479,12 @@ export function App() {
   );
   const [catalog, setCatalog] = useState(initialCatalogState);
   const [native, setNative] = useState(initialNativeState);
+  const [selectedNative, setSelectedNative] = useState<NativeProjectionSelection | null>(
+    restoredNativeSelection,
+  );
+  const [nativeProjection, setNativeProjection] = useState(
+    initialNativeProjectionState,
+  );
   const [settingsUi, setSettingsUi] = useState(initialSettingsState);
   const [sessionCapabilitiesUi, setSessionCapabilitiesUi] = useState(
     initialSessionCapabilitiesState,
@@ -464,7 +498,7 @@ export function App() {
     restoredAccountId,
   );
   const [mobileAccountHome, setMobileAccountHome] = useState(
-    mobileLayout || !HAS_REQUESTED_SESSION,
+    restoredNativeSelection === null && (mobileLayout || !HAS_REQUESTED_SESSION),
   );
   const [mobileSearch, setMobileSearch] = useState("");
   const [mobileCreateRequest, setMobileCreateRequest] = useState(0);
@@ -551,6 +585,31 @@ export function App() {
           cursor,
           search: search.trim() === "" ? null : search.trim(),
           archived: "exclude",
+        }),
+      );
+      return requestId;
+    },
+    [send],
+  );
+
+  const requestNativeProjection = useCallback(
+    (socket: WebSocket, selection: NativeProjectionSelection) => {
+      if (nativeProjectionRef.current.requestId !== null) return null;
+      const requestId = crypto.randomUUID();
+      setNativeProjection((current) => {
+        const next = nativeProjectionRequestStarted(
+          current,
+          requestId,
+          selection,
+        );
+        nativeProjectionRef.current = next;
+        return next;
+      });
+      send(
+        socket,
+        makeEnvelope("provider.session.projection.get", {
+          requestId,
+          ...selection,
         }),
       );
       return requestId;
@@ -646,9 +705,16 @@ export function App() {
             }),
           ),
         );
+        const nativeSelection = selectedNativeRef.current;
         const deferInitialMobileSession =
           mobileLayout && !restoredSelectionCheckedRef.current;
-        if (
+        if (nativeSelection !== null) {
+          send(socket, makeEnvelope("sessions.list", {}));
+          send(socket, makeEnvelope("providers.refresh", {}));
+          requestCatalog(socket, null);
+          requestNativeProjection(socket, nativeSelection);
+          setNotice("Loading provider-native Session history.");
+        } else if (
           SESSION_PATTERN.test(selectedSessionRef.current) &&
           !deferInitialMobileSession
         ) {
@@ -692,6 +758,30 @@ export function App() {
             selectedAccountIdRef.current,
           ),
         );
+        setNativeProjection((current) => {
+          const next = reduceNativeProjection(
+            current,
+            message,
+            selectedNativeRef.current,
+          );
+          nativeProjectionRef.current = next;
+          return next;
+        });
+        if (
+          message.type === "provider.session.projection.snapshot" &&
+          selectedNativeRef.current !== null &&
+          message.payload.snapshot.providerId === selectedNativeRef.current.providerId &&
+          message.payload.snapshot.accountId === selectedNativeRef.current.accountId &&
+          message.payload.snapshot.providerSessionId ===
+            selectedNativeRef.current.providerSessionId
+        ) {
+          setConnection("online");
+          setNotice(
+            message.payload.snapshot.availability === "available"
+              ? "Provider-native Session observation is live."
+              : message.payload.snapshot.notice ?? "Provider history unavailable",
+          );
+        }
         setSettingsUi((current) =>
           reduceSettings(current, message, selectedSessionRef.current),
         );
@@ -1046,6 +1136,11 @@ export function App() {
         pendingProviderEnablementsRef.current.clear();
         setPendingProviderIds(new Set());
         setConnection("offline");
+        setNativeProjection((current) => {
+          const next = { ...current, requestId: null };
+          nativeProjectionRef.current = next;
+          return next;
+        });
         setArtifactAccessToken(null);
         setNotice("Core connection lost. Draft retained; no command will auto-send.");
         scheduleReconnect();
@@ -1063,28 +1158,63 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (selectedNative === null) return;
+    const refresh = () => {
+      const socket = socketRef.current;
+      if (
+        socket?.readyState === WebSocket.OPEN &&
+        nativeProjectionRef.current.requestId === null
+      ) {
+        requestNativeProjection(socket, selectedNative);
+      }
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 1_500);
+    return () => window.clearInterval(timer);
+  }, [requestNativeProjection, selectedNative]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
 
   const timelineItems = useMemo(() => buildTimeline(snapshot), [snapshot]);
+  const visibleNativeSnapshot =
+    selectedNative !== null &&
+    nativeProjection.snapshot !== null &&
+    nativeProjection.snapshot.providerId === selectedNative.providerId &&
+    nativeProjection.snapshot.accountId === selectedNative.accountId &&
+    nativeProjection.snapshot.providerSessionId === selectedNative.providerSessionId &&
+    Date.parse(nativeProjection.snapshot.staleAt) > now
+      ? nativeProjection.snapshot
+      : null;
+  const nativeTimelineItems: ProviderSessionProjectionItem[] =
+    visibleNativeSnapshot?.items ?? [];
+  const timelineLength =
+    selectedNative === null ? timelineItems.length : nativeTimelineItems.length;
   const timelineVirtualized =
-    timelineItems.length > TIMELINE_VIRTUALIZATION_THRESHOLD;
+    timelineLength > TIMELINE_VIRTUALIZATION_THRESHOLD;
   const timelineWindow = useMemo(
     () =>
       virtualTimelineWindow(
-        timelineItems.length,
+        timelineLength,
         timelineViewport.scrollTop,
         timelineViewport.height,
       ),
-    [timelineItems.length, timelineViewport.height, timelineViewport.scrollTop],
+    [timelineLength, timelineViewport.height, timelineViewport.scrollTop],
   );
   const renderedTimelineItems = timelineVirtualized
     ? timelineItems.slice(timelineWindow.start, timelineWindow.end)
     : timelineItems;
-  const timelineSignal = `${snapshot?.lastEventSeq ?? 0}:${snapshot?.messages
-    .map((message) => message.content.length)
-    .join(",")}:${snapshot?.activities.map((activity) => activity.outputPreview.length).join(",")}`;
+  const renderedNativeTimelineItems = timelineVirtualized
+    ? nativeTimelineItems.slice(timelineWindow.start, timelineWindow.end)
+    : nativeTimelineItems;
+  const timelineSignal =
+    selectedNative === null
+      ? `${snapshot?.lastEventSeq ?? 0}:${snapshot?.messages
+          .map((message) => message.content.length)
+          .join(",")}:${snapshot?.activities.map((activity) => activity.outputPreview.length).join(",")}`
+      : nativeProjectionSignal(visibleNativeSnapshot);
 
   useEffect(() => {
     const container = timelineRef.current;
@@ -1153,6 +1283,13 @@ export function App() {
       return;
     }
     restoredSelectionCheckedRef.current = true;
+    selectedNativeRef.current = null;
+    nativeProjectionRef.current = initialNativeProjectionState();
+    setSelectedNative(null);
+    setNativeProjection(initialNativeProjectionState());
+    sessionStorage.removeItem(SELECTED_NATIVE_PROVIDER_KEY);
+    sessionStorage.removeItem(SELECTED_NATIVE_ACCOUNT_KEY);
+    sessionStorage.removeItem(SELECTED_NATIVE_SESSION_KEY);
     selectedSessionRef.current = sessionId;
     sessionStorage.setItem(SELECTED_SESSION_KEY, sessionId);
     setMobileAccountHome(false);
@@ -1168,11 +1305,77 @@ export function App() {
     setPrompt(sessionStorage.getItem(draftKey(sessionId)) ?? "");
     const url = new URL(window.location.href);
     url.searchParams.set("session", sessionId);
+    url.searchParams.delete("nativeSession");
     window.history.replaceState(null, "", url);
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
       setConnection("syncing");
       subscribe(socket, sessionId);
+    }
+  };
+
+  const observeNativeSession = (providerSessionId: string) => {
+    if (selectedProviderId === null || selectedAccountId === null) {
+      setNotice("Select the exact provider account before observing a native Session.");
+      return;
+    }
+    const selection: NativeProjectionSelection = {
+      providerId: selectedProviderId,
+      accountId: selectedAccountId,
+      providerSessionId,
+    };
+    restoredSelectionCheckedRef.current = true;
+    pendingNativeResumeRefreshRef.current = null;
+    const socket = socketRef.current;
+    if (
+      socket?.readyState === WebSocket.OPEN &&
+      SESSION_PATTERN.test(selectedSessionRef.current)
+    ) {
+      send(
+        socket,
+        makeEnvelope("session.unsubscribe", {
+          sessionId: selectedSessionRef.current,
+        }),
+      );
+    }
+    selectedSessionRef.current = "";
+    selectedNativeRef.current = selection;
+    const projectionState: NativeProjectionUiState = {
+      ...initialNativeProjectionState(),
+      status: "loading",
+      selection,
+    };
+    nativeProjectionRef.current = projectionState;
+    setSelectedNative(selection);
+    setNativeProjection(projectionState);
+    setSelectedSessionId("");
+    setSessionInput("");
+    setSnapshot(null);
+    setSettingsUi(initialSettingsState());
+    setSessionCapabilitiesUi(initialSessionCapabilitiesState());
+    setLeaseUi(initialLeaseState());
+    setAttachmentsUi(initialAttachmentState());
+    setPendingAttachmentIds([]);
+    setPrompt("");
+    setMobileAccountHome(false);
+    setSelectedFileChangeId(null);
+    setUnreadUpdates(0);
+    previousTimelineSignalRef.current = "";
+    timelineAtBottomRef.current = true;
+    sessionStorage.removeItem(SELECTED_SESSION_KEY);
+    sessionStorage.setItem(SELECTED_NATIVE_PROVIDER_KEY, selection.providerId);
+    sessionStorage.setItem(SELECTED_NATIVE_ACCOUNT_KEY, selection.accountId);
+    sessionStorage.setItem(
+      SELECTED_NATIVE_SESSION_KEY,
+      selection.providerSessionId,
+    );
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session");
+    url.searchParams.set("nativeSession", providerSessionId);
+    window.history.replaceState(null, "", url);
+    if (socket?.readyState === WebSocket.OPEN) {
+      setConnection("syncing");
+      requestNativeProjection(socket, selection);
     }
   };
 
@@ -1192,6 +1395,10 @@ export function App() {
       }));
     }
     selectedSessionRef.current = "";
+    selectedNativeRef.current = null;
+    nativeProjectionRef.current = initialNativeProjectionState();
+    setSelectedNative(null);
+    setNativeProjection(initialNativeProjectionState());
     setSnapshot(null);
     setSettingsUi(initialSettingsState());
     setSessionCapabilitiesUi(initialSessionCapabilitiesState());
@@ -1206,6 +1413,9 @@ export function App() {
     setSelectedAccountId(accountId);
     setMobileAccountHome(true);
     sessionStorage.removeItem(SELECTED_SESSION_KEY);
+    sessionStorage.removeItem(SELECTED_NATIVE_PROVIDER_KEY);
+    sessionStorage.removeItem(SELECTED_NATIVE_ACCOUNT_KEY);
+    sessionStorage.removeItem(SELECTED_NATIVE_SESSION_KEY);
     setMobileSearch("");
     nativeSearchRef.current = "";
     catalogFiltersRef.current = {
@@ -1220,6 +1430,7 @@ export function App() {
     }));
     const url = new URL(window.location.href);
     url.searchParams.delete("session");
+    url.searchParams.delete("nativeSession");
     window.history.replaceState(null, "", url);
     if (socket?.readyState === WebSocket.OPEN) requestCatalog(socket, null);
   };
@@ -1350,6 +1561,29 @@ export function App() {
       catalog.status !== "ready"
     ) return;
     restoredSelectionCheckedRef.current = true;
+    const validNative =
+      restoredNativeSelection !== null &&
+      selectedProviderId === restoredNativeSelection.providerId &&
+      selectedAccountId === restoredNativeSelection.accountId &&
+      selectedProvider?.accounts.some(
+        (account) => account.accountId === restoredNativeSelection.accountId,
+      ) === true;
+    if (validNative && restoredNativeSelection !== null) {
+      selectedSessionRef.current = "";
+      selectedNativeRef.current = restoredNativeSelection;
+      setSelectedNative(restoredNativeSelection);
+      setSelectedSessionId("");
+      setSessionInput("");
+      setSnapshot(null);
+      setPrompt("");
+      setMobileAccountHome(false);
+      const socket = socketRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
+        setConnection("syncing");
+        requestNativeProjection(socket, restoredNativeSelection);
+      }
+      return;
+    }
     const initialSessionId = HAS_REQUESTED_SESSION
       ? requestedSessionId
       : restoredSessionId;
@@ -1392,6 +1626,10 @@ export function App() {
     // provider/account boundary. Keep its draft stored, but withdraw the
     // subscription and remove the mismatched Session from the visible shell.
     selectedSessionRef.current = "";
+    selectedNativeRef.current = null;
+    nativeProjectionRef.current = initialNativeProjectionState();
+    setSelectedNative(null);
+    setNativeProjection(initialNativeProjectionState());
     setSnapshot(null);
     setSettingsUi(initialSettingsState());
     setSessionCapabilitiesUi(initialSessionCapabilitiesState());
@@ -1402,8 +1640,12 @@ export function App() {
     setPrompt("");
     setMobileAccountHome(true);
     sessionStorage.removeItem(SELECTED_SESSION_KEY);
+    sessionStorage.removeItem(SELECTED_NATIVE_PROVIDER_KEY);
+    sessionStorage.removeItem(SELECTED_NATIVE_ACCOUNT_KEY);
+    sessionStorage.removeItem(SELECTED_NATIVE_SESSION_KEY);
     const url = new URL(window.location.href);
     url.searchParams.delete("session");
+    url.searchParams.delete("nativeSession");
     window.history.replaceState(null, "", url);
     if (
       initialSessionId !== null &&
@@ -1648,22 +1890,46 @@ export function App() {
   );
   const catalogEntry =
     catalog.sessions.find((item) => item.sessionId === selectedSessionId) ?? null;
-  const sessionTitle = displaySessionTitle(catalogEntry?.title ?? selectedSessionId);
+  const selectedNativeRow =
+    selectedNative === null
+      ? null
+      : mobileSessions.find(
+          (item) =>
+            item.providerId === selectedNative.providerId &&
+            item.accountId === selectedNative.accountId &&
+            item.providerSessionId === selectedNative.providerSessionId,
+        ) ?? null;
+  const sessionTitle = displaySessionTitle(
+    selectedNative === null
+      ? catalogEntry?.title ?? selectedSessionId
+      : visibleNativeSnapshot?.title ?? selectedNativeRow?.title ?? "Provider Session",
+  );
   const controlDecision = sessionCanControl({
     catalogEntry,
     capabilities: sessionCapabilitiesUi.snapshot,
     settingsRevision: settingsUi.snapshot?.revision ?? null,
     fleetStale: fleet.status !== "ready",
   });
-  const availability = controlDecision.ok
-    ? baseAvailability
-    : {
+  const availability =
+    selectedNative !== null
+      ? {
+          canSubmit: false,
+          reason:
+            "Provider-native observation is read-only. It does not grant submit, steer, interrupt, or approval authority.",
+        }
+      : controlDecision.ok
+        ? baseAvailability
+        : {
         canSubmit: false,
         reason: controlDecision.reason ?? "Session is not controllable",
       };
-  const timelineBusy = latest?.status === "running";
+  const timelineBusy =
+    selectedNative === null
+      ? latest?.status === "running"
+      : nativeProjectionIsActive(visibleNativeSnapshot?.state);
   const recoveryRequired =
-    runtime?.status === "lost" || latest?.status === "outcome_unknown";
+    selectedNative === null &&
+    (runtime?.status === "lost" || latest?.status === "outcome_unknown");
   const displayedDiff =
     selectedFileChange?.diff?.kind === "inline"
       ? selectedFileChange.diff.content
@@ -1823,13 +2089,15 @@ export function App() {
     runtime.status === "offline" ||
     runtime.status === "lost" ||
     runtime.status === "incompatible";
-  const attachDisabledReason = attachmentRuntimeUnavailable
-    ? baseAvailability.reason
-    : !controlDecision.ok
-    ? controlDecision.reason
-    : !textAttach.ok && !imageAttach.ok
-      ? textAttach.reason ?? imageAttach.reason
-      : null;
+  const attachDisabledReason = selectedNative !== null
+    ? availability.reason
+    : attachmentRuntimeUnavailable
+      ? baseAvailability.reason
+      : !controlDecision.ok
+        ? controlDecision.reason
+        : !textAttach.ok && !imageAttach.ok
+          ? textAttach.reason ?? imageAttach.reason
+          : null;
 
   const uploadFiles = async (files: FileList) => {
     const socket = socketRef.current;
@@ -1915,7 +2183,9 @@ export function App() {
     }
   };
 
-  const operationalAnnouncement = `${connectionLabel(connection)}. Session ${selectedSessionId} is ${formatState(sessionState)}. ${pendingApprovals.length} pending ${pendingApprovals.length === 1 ? "approval" : "approvals"}.`;
+  const operationalAnnouncement = selectedNative === null
+    ? `${connectionLabel(connection)}. Session ${selectedSessionId} is ${formatState(sessionState)}. ${pendingApprovals.length} pending ${pendingApprovals.length === 1 ? "approval" : "approvals"}.`
+    : `${connectionLabel(connection)}. Provider-native Session ${sessionTitle} is ${visibleNativeSnapshot?.state.replaceAll("_", " ") ?? "unavailable"}. Observation is read only.`;
   const systemThinking =
     connection === "connecting" ||
     connection === "syncing" ||
@@ -1940,22 +2210,33 @@ export function App() {
     selectedAccountId,
     now,
   );
-  const mobileModelLabel =
-    mobileModels.find((model) => model.modelId === settingsUi.snapshot?.settings.model)
-      ?.displayName ?? settingsUi.snapshot?.settings.model ?? "Model unavailable";
-  const mobileStatus = mobileSystemStatus({
-    latestTurnState: latest?.status ?? null,
-    pendingApprovalCount: pendingApprovals.length,
-    timelineBusy,
-    connectionOnline: connection === "online",
-    connectionLabel: connectionLabel(connection),
-    runtimeStatus: runtime?.status ?? null,
-    accountStatus: mobileAccountStatus,
-    accountHome: mobileAccountHome,
-    bindingStatus: catalogEntry?.providerBindingStatus ?? null,
-    sessionControllable: controlDecision.ok,
-    sessionControlReason: controlDecision.reason,
-  });
+  const mobileModelLabel = selectedNative !== null
+    ? "Provider managed"
+    : mobileModels.find((model) => model.modelId === settingsUi.snapshot?.settings.model)
+        ?.displayName ?? settingsUi.snapshot?.settings.model ?? "Model unavailable";
+  const nativeMobileStatus = selectedNative === null
+    ? null
+    : connection === "online"
+      ? nativeProjectionHeaderStatus(visibleNativeSnapshot, now)
+      : {
+          label: connectionLabel(connection),
+          activityLabel: "Unavailable",
+          tone: "offline" as const,
+        };
+  const mobileStatus =
+    nativeMobileStatus ?? mobileSystemStatus({
+          latestTurnState: latest?.status ?? null,
+          pendingApprovalCount: pendingApprovals.length,
+          timelineBusy,
+          connectionOnline: connection === "online",
+          connectionLabel: connectionLabel(connection),
+          runtimeStatus: runtime?.status ?? null,
+          accountStatus: mobileAccountStatus,
+          accountHome: mobileAccountHome,
+          bindingStatus: catalogEntry?.providerBindingStatus ?? null,
+          sessionControllable: controlDecision.ok,
+          sessionControlReason: controlDecision.reason,
+        });
   const mobileStatusFacts = [
     { label: "Provider", value: mobileProviderLabel },
     { label: "Account", value: mobileAccountLabel },
@@ -1965,14 +2246,41 @@ export function App() {
     { label: "Account freshness", value: selectedAccountCapability?.freshness ?? "Unavailable" },
     { label: "Authentication", value: selectedAccountCapability?.authentication ?? "Unknown" },
     { label: "Control", value: selectedAccountCapability?.control.replaceAll("_", " ") ?? "Unavailable" },
-    { label: "Provider binding", value: catalogEntry?.providerBindingStatus.replaceAll("_", " ") ?? "No Session" },
-    { label: "Session authority", value: controlDecision.ok ? "Controllable" : "View only", tone: controlDecision.ok ? "ready" as const : "warning" as const },
-    { label: "Runtime", value: sessionState.replaceAll("_", " ") },
+    { label: "Provider binding", value: selectedNative === null ? catalogEntry?.providerBindingStatus.replaceAll("_", " ") ?? "No Session" : "Provider native" },
+    { label: "Session authority", value: selectedNative === null && controlDecision.ok ? "Controllable" : "View only", tone: selectedNative === null && controlDecision.ok ? "ready" as const : "warning" as const },
+    { label: "Runtime", value: selectedNative === null ? sessionState.replaceAll("_", " ") : visibleNativeSnapshot?.state.replaceAll("_", " ") ?? "Unavailable" },
     { label: "Model", value: mobileModelLabel },
     { label: "Execution", value: settingsUi.snapshot?.settings.executionMode ?? "Unavailable" },
     { label: "Approval", value: settingsUi.snapshot?.settings.approvalPolicy.replaceAll("_", " ") ?? "Unavailable" },
   ];
-  const mobileTimeline = timelineVirtualized ? (
+  const mobileTimeline = selectedNative !== null ? (
+    timelineVirtualized ? (
+      <div className="timeline-virtual-space" style={{ height: timelineWindow.totalHeight }}>
+        {renderedNativeTimelineItems.map((item, index) => {
+          const absoluteIndex = timelineWindow.start + index;
+          return (
+            <div
+              className="timeline-virtual-row"
+              key={`${item.providerTurnId}:${item.providerItemId}`}
+              style={{
+                height: TIMELINE_VIRTUAL_ROW_HEIGHT,
+                transform: `translateY(${timelineWindow.offsetTop + index * TIMELINE_VIRTUAL_ROW_HEIGHT}px)`,
+              }}
+            >
+              <NativeTimelineEntry item={item} position={absoluteIndex + 1} setSize={nativeTimelineItems.length} />
+            </div>
+          );
+        })}
+      </div>
+    ) : nativeTimelineItems.map((item, index) => (
+      <NativeTimelineEntry
+        key={`${item.providerTurnId}:${item.providerItemId}`}
+        item={item}
+        position={index + 1}
+        setSize={nativeTimelineItems.length}
+      />
+    ))
+  ) : timelineVirtualized ? (
     <div className="timeline-virtual-space" style={{ height: timelineWindow.totalHeight }}>
       {renderedTimelineItems.map((item, index) => {
         const absoluteIndex = timelineWindow.start + index;
@@ -1993,7 +2301,7 @@ export function App() {
   ) : timelineItems.map((item, index) => (
     <TimelineEntry key={item.id} item={item} onInspectFileChange={inspectFileChange} position={index + 1} setSize={timelineItems.length} />
   ));
-  const mobileApprovals = pendingApprovals.length === 0 ? null : (
+  const mobileApprovals = selectedNative !== null || pendingApprovals.length === 0 ? null : (
     <section className="mobile-approval-list" aria-label="Pending approvals" tabIndex={-1}>
       {pendingApprovals.map((approval) => {
         const disabled = connection !== "online" || resolving.has(approval.approvalId);
@@ -2131,14 +2439,31 @@ export function App() {
         )}
         statusLabel={mobileStatus.label}
         statusTone={mobileStatus.tone}
-        activityLabel={timelineBusy ? "Working" : pendingApprovals.length > 0 ? `${pendingApprovals.length} pending` : "Ready"}
+        activityLabel={nativeMobileStatus?.activityLabel ?? (timelineBusy ? "Working" : pendingApprovals.length > 0 ? `${pendingApprovals.length} pending` : "Ready")}
         statusFacts={mobileStatusFacts}
         connectionNotice={connection === "online" ? null : `${connectionLabel(connection)}. Your unsent draft stays local and will not be sent on reconnect.`}
-        authorityNotice={connection === "online" && !controlDecision.ok && !mobileAccountHome ? controlDecision.reason : null}
+        authorityNotice={
+          connection === "online" && !mobileAccountHome
+            ? selectedNative !== null
+              ? availability.reason
+              : !controlDecision.ok
+                ? controlDecision.reason
+                : null
+            : null
+        }
         recoveryNotice={recoveryRequired ? "The provider outcome may be ambiguous. AICL will not replay the original prompt." : null}
         timelineBusy={timelineBusy}
-        timelineLoading={snapshot === null}
-        timelineEmpty={timelineItems.length === 0}
+        timelineLoading={
+          selectedNative === null
+            ? snapshot === null
+            : nativeProjection.status === "loading" && visibleNativeSnapshot === null
+        }
+        timelineEmpty={timelineLength === 0}
+        timelineProviderNative={selectedNative !== null}
+        timelineUnavailable={
+          selectedNative !== null &&
+          nativeProjection.status === "unavailable"
+        }
         timelineRef={timelineRef}
         unreadUpdates={unreadUpdates}
         timeline={mobileTimeline}
@@ -2149,8 +2474,9 @@ export function App() {
         evidence={mobileEvidence}
         prompt={prompt}
         modelLabel={mobileModelLabel}
-        modeLabel={settingsUi.snapshot?.settings.executionMode ?? "Mode unavailable"}
+        modeLabel={selectedNative !== null ? "View only" : settingsUi.snapshot?.settings.executionMode ?? "Mode unavailable"}
         canSubmit={availability.canSubmit && settingsUi.snapshot !== null}
+        canAbort={selectedNative === null && latest?.status === "running"}
         composerReason={availability.reason}
         canAttachText={textAttach.ok}
         canAttachImage={imageAttach.ok}
@@ -2169,7 +2495,7 @@ export function App() {
         onSelectAccount={selectMobileAccount}
         onSearchChange={updateMobileSearch}
         onSelectSession={switchSession}
-        onResumeNative={(providerSessionId) => beginMobileAction({ kind: "resume_native", providerSessionId })}
+        onObserveNative={observeNativeSession}
         onLoadMore={() => {
           const socket = socketRef.current;
           if (socket?.readyState !== WebSocket.OPEN || !selectedProviderId || !selectedAccountId) return;
@@ -2404,45 +2730,7 @@ export function App() {
               }),
             );
           }}
-          onResumeNative={(providerSessionId) => {
-            const socket = socketRef.current;
-            if (!socket || !selectedProviderId || !selectedAccountId) return;
-            if (
-              native.status !== "ready" ||
-              !(
-                (native.page?.freshness === "live" &&
-                  native.page.providerId === selectedProviderId &&
-                  native.page.accountId === selectedAccountId) ||
-                (native.snapshot?.freshness === "live" &&
-                  native.snapshot.providerId === selectedProviderId &&
-                  native.snapshot.accountId === selectedAccountId)
-              )
-            ) {
-              setNotice("Native Session snapshot is not current for this provider/account");
-              return;
-            }
-            // Resume always creates a new AICL Session ID; Core rejects existing IDs.
-            const suffix = providerSessionId
-              .replace(/[^A-Za-z0-9._-]/g, "-")
-              .slice(0, 48);
-            const sessionId = `import-${suffix || crypto.randomUUID().slice(0, 8)}`.slice(
-              0,
-              100,
-            );
-            send(
-              socket,
-              makeEnvelope("session.resume", {
-                commandId: crypto.randomUUID(),
-                sessionId,
-                deviceId: deviceIdRef.current,
-                providerId: selectedProviderId,
-                accountId: selectedAccountId,
-                providerSessionId,
-              }),
-            );
-            setNotice(`Resuming native Session into ${sessionId}`);
-            switchSession(sessionId);
-          }}
+          onObserveNative={observeNativeSession}
           onRefreshNative={() => {
             const socket = socketRef.current;
             if (!socket || !selectedProviderId || !selectedAccountId) return;
@@ -2546,35 +2834,49 @@ export function App() {
           <header className="console-header">
             <div className="console-title-block">
               <p className="eyebrow">FLIGHT CONSOLE</p>
-              <h2 title={`${sessionTitle} · ${selectedSessionId}`}>{sessionTitle}</h2>
-              <p className="console-path" title={catalogEntry?.projectPath ?? currentSummary?.cwd ?? undefined}>
-                <span className="mono-meta">{selectedSessionId}</span>
+              <h2 title={`${sessionTitle} · ${selectedNative?.providerSessionId ?? selectedSessionId}`}>{sessionTitle}</h2>
+              <p className="console-path" title={selectedNative === null ? catalogEntry?.projectPath ?? currentSummary?.cwd ?? undefined : undefined}>
+                <span className="mono-meta">{selectedNative?.providerSessionId ?? selectedSessionId}</span>
                 {" · "}
-                {catalogEntry?.projectName ??
-                  catalogEntry?.projectPath ??
-                  currentSummary?.cwd ??
-                  "Project path unavailable"}
+                {selectedNative === null
+                  ? catalogEntry?.projectName ??
+                    catalogEntry?.projectPath ??
+                    currentSummary?.cwd ??
+                    "Project path unavailable"
+                  : visibleNativeSnapshot?.projectLabel ?? selectedNativeRow?.projectName ?? "Project unavailable"}
               </p>
             </div>
             <div className="console-state">
-              <StatusPill value={sessionState} />
+              {selectedNative === null ? (
+                <StatusPill value={sessionState} />
+              ) : (
+                <span className="status-pill" data-state={visibleNativeSnapshot?.state ?? "unavailable"}>
+                  {mobileStatus.label}
+                </span>
+              )}
               <span className="mono-meta">
-                RT G{runtime?.generation ?? "—"} · T+{formatElapsed(latest?.startedAt, now)}
+                {selectedNative === null
+                  ? `RT G${runtime?.generation ?? "—"} · T+${formatElapsed(latest?.startedAt, now)}`
+                  : nativeMobileStatus?.activityLabel ?? "Unavailable"}
               </span>
             </div>
           </header>
 
-          <label className="mobile-session-picker">
-            Session
-            <select value={selectedSessionId} onChange={(event) => switchSession(event.target.value)}>
-              {sessions.map((session) => (
-                <option key={session.sessionId} value={session.sessionId}>{session.sessionId}</option>
-              ))}
-              {!sessions.some((session) => session.sessionId === selectedSessionId) && (
-                <option value={selectedSessionId}>{selectedSessionId}</option>
-              )}
-            </select>
-          </label>
+          {selectedNative === null ? (
+            <label className="mobile-session-picker">
+              Session
+              <select value={selectedSessionId} onChange={(event) => switchSession(event.target.value)}>
+                {sessions.map((session) => (
+                  <option key={session.sessionId} value={session.sessionId}>{session.sessionId}</option>
+                ))}
+                {!sessions.some((session) => session.sessionId === selectedSessionId) && (
+                  <option value={selectedSessionId}>{selectedSessionId}</option>
+                )}
+              </select>
+            </label>
+          ) : (
+            <p className="mobile-session-picker">Provider-native Session · Read-only observation</p>
+          )}
 
           {connection !== "online" && (
             <section className="state-banner connection-banner" role="status">
@@ -2593,12 +2895,17 @@ export function App() {
             </section>
           )}
 
-          {!controlDecision.ok && connection === "online" && (
+          {selectedNative !== null && connection === "online" ? (
+            <section className="state-banner connection-banner" role="status">
+              <strong>Provider-native observation · View only</strong>
+              <p>{availability.reason}</p>
+            </section>
+          ) : !controlDecision.ok && connection === "online" ? (
             <section className="state-banner connection-banner" role="status">
               <strong>Session not controllable</strong>
               <p>{controlDecision.reason}</p>
             </section>
-          )}
+          ) : null}
 
           {recoveryRequired && (
             <section className="state-banner recovery-banner" role="alert">
@@ -2640,7 +2947,9 @@ export function App() {
                 </span>
               </div>
               <span className="mono-meta">
-                SEQ {String(snapshot?.lastEventSeq ?? 0).padStart(4, "0")}
+                {selectedNative === null
+                  ? `SEQ ${String(snapshot?.lastEventSeq ?? 0).padStart(4, "0")}`
+                  : `PROVIDER REV ${visibleNativeSnapshot?.providerRevision ?? visibleNativeSnapshot?.revision ?? "—"}`}
               </span>
             </div>
             <div
@@ -2652,7 +2961,26 @@ export function App() {
               aria-label="Session event timeline"
               aria-describedby="timeline-help"
             >
-              {snapshot === null ? (
+              {selectedNative !== null ? (
+                nativeProjection.status === "loading" && visibleNativeSnapshot === null ? (
+                  <div className="loading-state" role="status">
+                    <ThinkingOrb label="Loading provider history" />
+                    <p>Loading provider-native Session history…</p>
+                  </div>
+                ) : nativeProjection.status === "unavailable" ? (
+                  <div className="empty-state timeline-empty" role="status">
+                    <strong>Provider history unavailable</strong>
+                    <p>{nativeProjection.notice ?? "Remote activity could not be read. No prompt was sent."}</p>
+                  </div>
+                ) : nativeTimelineItems.length > 0 ? (
+                  mobileTimeline
+                ) : (
+                  <div className="empty-state timeline-empty">
+                    <strong>No provider history yet</strong>
+                    <p>The provider returned no visible history for this Session.</p>
+                  </div>
+                )
+              ) : snapshot === null ? (
                 <div className="loading-state" role="status">
                   <ThinkingOrb label="Loading session" />
                   <p>Loading authoritative Session projection…</p>

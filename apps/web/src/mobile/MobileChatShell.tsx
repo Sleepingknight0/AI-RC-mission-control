@@ -51,6 +51,8 @@ export interface MobileChatShellProps {
   timelineBusy: boolean;
   timelineLoading: boolean;
   timelineEmpty: boolean;
+  timelineProviderNative: boolean;
+  timelineUnavailable: boolean;
   timelineRef: RefObject<HTMLDivElement | null>;
   unreadUpdates: number;
   timeline: ReactNode;
@@ -63,6 +65,7 @@ export interface MobileChatShellProps {
   modelLabel: string;
   modeLabel: string;
   canSubmit: boolean;
+  canAbort: boolean;
   composerReason: string;
   canAttachText: boolean;
   canAttachImage: boolean;
@@ -77,7 +80,7 @@ export interface MobileChatShellProps {
   onSelectAccount: (providerId: string, accountId: string) => void;
   onSearchChange: (value: string) => void;
   onSelectSession: (sessionId: string) => void;
-  onResumeNative: (providerSessionId: string) => void;
+  onObserveNative: (providerSessionId: string) => void;
   onLoadMore: () => void;
   onCreate: () => void;
   activationPrompt: { actionLabel: string; busy: boolean } | null;
@@ -142,7 +145,7 @@ export function MobileChatShell(props: MobileChatShellProps) {
           canCreate={props.canCreate}
           createDisabledReason={props.createDisabledReason}
           onOpenSession={props.onSelectSession}
-          onResumeNative={props.onResumeNative}
+          onObserveNative={props.onObserveNative}
           onOpenDrawer={() => setDrawerOpen(true)}
           onCreate={() => {
             props.onCreate();
@@ -160,9 +163,11 @@ export function MobileChatShell(props: MobileChatShellProps) {
             <section className="mobile-state-banner warning" role="alert"><strong>Operator review required</strong><p>{props.recoveryNotice}</p></section>
           )}
           <MobileChatTimeline
-            busy={props.timelineBusy}
+            busy={props.canAbort}
             loading={props.timelineLoading}
             empty={props.timelineEmpty}
+            providerNative={props.timelineProviderNative}
+            unavailable={props.timelineUnavailable}
             unreadUpdates={props.unreadUpdates}
             timelineRef={props.timelineRef}
             onScroll={props.onTimelineScroll}
@@ -211,8 +216,8 @@ export function MobileChatShell(props: MobileChatShellProps) {
           props.onSelectSession(sessionId);
           setDrawerOpen(false);
         }}
-        onResumeNative={(providerSessionId) => {
-          props.onResumeNative(providerSessionId);
+        onObserveNative={(providerSessionId) => {
+          props.onObserveNative(providerSessionId);
           setDrawerOpen(false);
         }}
         onOpenActions={(session) => closeAnd(() => setActionSession(session))}

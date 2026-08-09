@@ -4,6 +4,8 @@ export function MobileChatTimeline({
   busy,
   loading,
   empty,
+  providerNative,
+  unavailable,
   unreadUpdates,
   timelineRef,
   onScroll,
@@ -13,6 +15,8 @@ export function MobileChatTimeline({
   busy: boolean;
   loading: boolean;
   empty: boolean;
+  providerNative: boolean;
+  unavailable: boolean;
   unreadUpdates: number;
   timelineRef: RefObject<HTMLDivElement | null>;
   onScroll: UIEventHandler<HTMLDivElement>;
@@ -35,10 +39,19 @@ export function MobileChatTimeline({
             <span className="mobile-loading-mark" aria-hidden="true" />
             <p>Loading authoritative Session…</p>
           </div>
+        ) : unavailable ? (
+          <div className="mobile-chat-empty" role="status">
+            <h2>Provider history unavailable</h2>
+            <p>Remote activity could not be read. AICL did not send or replay a prompt.</p>
+          </div>
         ) : empty ? (
           <div className="mobile-chat-empty">
-            <h2>Start a conversation</h2>
-            <p>This Session has no turns yet. Your draft stays on this device until you send it.</p>
+            <h2>{providerNative ? "No provider history yet" : "Start a conversation"}</h2>
+            <p>
+              {providerNative
+                ? "The provider returned no visible history for this Session."
+                : "This Session has no turns yet. Your draft stays on this device until you send it."}
+            </p>
           </div>
         ) : children}
       </div>

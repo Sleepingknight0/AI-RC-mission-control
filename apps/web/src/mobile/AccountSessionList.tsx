@@ -24,7 +24,7 @@ export function AccountSessionList({
   selectedSessionId,
   onSearchChange,
   onSelectSession,
-  onResumeNative,
+  onObserveNative,
   onOpenActions,
   onLoadMore,
 }: {
@@ -37,7 +37,7 @@ export function AccountSessionList({
   selectedSessionId: string;
   onSearchChange: (value: string) => void;
   onSelectSession: (sessionId: string) => void;
-  onResumeNative: (providerSessionId: string) => void;
+  onObserveNative: (providerSessionId: string) => void;
   onOpenActions: (session: MobileSessionRow) => void;
   onLoadMore: () => void;
 }) {
@@ -78,7 +78,7 @@ export function AccountSessionList({
                       title={session.title}
                       onClick={() => {
                         if (session.sessionId !== null) onSelectSession(session.sessionId);
-                        else if (session.providerSessionId !== null) onResumeNative(session.providerSessionId);
+                        else if (session.providerSessionId !== null) onObserveNative(session.providerSessionId);
                       }}
                     >
                       <span className="mobile-session-state" data-state={session.state} aria-hidden="true" />

@@ -178,7 +178,7 @@ describe("M10 mobile visible contracts", () => {
       onSelectAccount: () => undefined,
       onSearchChange: () => undefined,
       onSelectSession: () => undefined,
-      onResumeNative: () => undefined,
+      onObserveNative: () => undefined,
       onOpenActions: () => undefined,
       onLoadMore: () => undefined,
       onOpenManageProviders: () => undefined,
@@ -244,7 +244,7 @@ describe("M10 mobile visible contracts", () => {
       onSelectAccount: () => undefined,
       onSearchChange: () => undefined,
       onSelectSession: () => undefined,
-      onResumeNative: () => undefined,
+      onObserveNative: () => undefined,
       onOpenActions: () => undefined,
       onLoadMore: () => undefined,
       onOpenManageProviders: () => undefined,
@@ -380,9 +380,23 @@ describe("M10 mobile visible contracts", () => {
       onOpenStatus: () => undefined,
     }));
     expect(html).toContain("mobile-header-identity");
-    expect(html).toContain("Codex / Account 1");
+    expect(html).toContain("Codex · Account 1");
     expect(html).toContain("LINK");
     expect(html).not.toMatch(/Core online|Connector ready/i);
+  });
+
+  it("keeps the active provider-native state visible in the compact header", () => {
+    const html = renderToStaticMarkup(createElement(MobileHeader, {
+      providerLabel: "Codex",
+      accountLabel: "Account 1",
+      sessionTitle: "Mission Control",
+      statusLabel: "LIVE · Running command",
+      statusTone: "working",
+      activityLabel: "Running command",
+      onOpenDrawer: () => undefined,
+      onOpenStatus: () => undefined,
+    }));
+    expect(html).toContain("LIVE · Running command");
   });
 
   it("contracts scroll containers to primary timeline, drawer, and sheet only", () => {
@@ -471,7 +485,7 @@ describe("M10 mobile visible contracts", () => {
       canCreate: true,
       createDisabledReason: null,
       onOpenSession: () => undefined,
-      onResumeNative: () => undefined,
+      onObserveNative: () => undefined,
       onOpenDrawer: () => undefined,
       onCreate: () => undefined,
     }));

@@ -146,7 +146,7 @@ export function SessionCatalogPanel({
   onFiltersChange,
   onLoadMore,
   onCreate,
-  onResumeNative,
+  onObserveNative,
   onRename,
   onPin,
   onArchive,
@@ -164,7 +164,7 @@ export function SessionCatalogPanel({
   onFiltersChange: (patch: Partial<SessionCatalogFilter>) => void;
   onLoadMore: () => void;
   onCreate: () => void;
-  onResumeNative: (providerSessionId: string) => void;
+  onObserveNative: (providerSessionId: string) => void;
   onRename: (session: SessionSummaryV2, title: string) => void;
   onPin: (session: SessionSummaryV2) => void;
   onArchive: (session: SessionSummaryV2) => void;
@@ -434,15 +434,15 @@ export function SessionCatalogPanel({
                 <button
                   type="button"
                   className="text-button"
-                  disabled={!nativeIsCurrent || !session.canResume}
+                  disabled={!nativeIsCurrent}
                   title={
-                    nativeIsCurrent && session.canResume
-                      ? "Import/resume into a new AICL Session"
-                      : "Resume requires a current live snapshot for this provider/account"
+                    nativeIsCurrent
+                      ? "Observe this provider-native Session without sending a prompt"
+                      : "Observation requires a current snapshot for this provider/account"
                   }
-                  onClick={() => onResumeNative(session.providerSessionId)}
+                  onClick={() => onObserveNative(session.providerSessionId)}
                 >
-                  Resume
+                  Observe
                 </button>
               </li>
             ))}
