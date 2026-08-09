@@ -4,6 +4,7 @@ import {
   type ProviderNativeSession,
   type ProviderNativeSessionPage,
   type ProviderNativeSessionSnapshot,
+  type ProviderSessionProjectionSnapshot,
 } from "@aicl/protocol";
 
 import {
@@ -14,9 +15,14 @@ import {
   StaleNativeSessionCursorError,
   type ManagedProviderAccount,
   type NativeSessionPageInput,
+  type NativeSessionProjectionInput,
   type ProviderAccountController,
 } from "../provider.js";
 import { CodexProvider } from "./adapter.js";
+import {
+  reconcileCodexNativeObservation,
+  type CodexNativeObservationContinuity,
+} from "./native-projection.js";
 
 const CURSOR_TTL_MS = 5 * 60_000;
 const MAX_CURSOR_STATES = 500;
@@ -43,6 +49,11 @@ export class CodexAccountController implements ProviderAccountController {
   readonly #profiles: Map<string, ProviderAccountProfile>;
   readonly #identityOwners = new Map<string, string>();
   readonly #pager = new OpaqueNativeSessionPager();
+  readonly #observers = new Map<string, CodexProvider>();
+  readonly #observationContinuity = new Map<
+    string,
+    CodexNativeObservationContinuity
+  >();
   #nativeRevision = 0;
 
   constructor(options: CodexAccountControllerOptions) {
@@ -113,6 +124,73 @@ export class CodexAccountController implements ProviderAccountController {
         archived: input.archived,
       }),
     );
+  }
+
+  async nativeSessionProjection(
+    input: NativeSessionProjectionInput,
+  ): Promise<ProviderSessionProjectionSnapshot> {
+    if (input.providerId !== "codex") {
+      throw new Error("Provider does not support native Session observation");
+    }
+    const profile = this.#profiles.get(this.#key(input.providerId, input.accountId));
+    if (profile === undefined) {
+      throw new Error("Provider account is unavailable");
+    }
+    const key = this.#key(input.providerId, input.accountId);
+    let provider = this.#observers.get(key);
+    if (provider === undefined) {
+      provider = new CodexProvider({
+        cwd: this.#options.cwd,
+        allowedRoots: this.#options.allowedRoots,
+        accountId: input.accountId,
+        codexHome: profile.profilePath,
+        ...(this.#options.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: this.#options.timeoutMs }),
+      });
+      this.#observers.set(key, provider);
+    }
+    try {
+      const snapshot = await provider.readNativeSessionProjection(input);
+      const observationKey = `${key}\u0000${input.providerSessionId}`;
+      const reconciled = reconcileCodexNativeObservation(
+        snapshot,
+        this.#observationContinuity.get(observationKey) ?? null,
+      );
+      this.#observationContinuity.set(observationKey, reconciled.continuity);
+      return reconciled.snapshot;
+    } catch (error) {
+      this.#observers.delete(key);
+      this.#deleteObservationContinuity(key);
+      await provider.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async close(): Promise<void> {
+    const providers = [...this.#observers.values()];
+    this.#observers.clear();
+    this.#observationContinuity.clear();
+    await Promise.allSettled(providers.map((provider) => provider.close()));
+  }
+
+  async closeProvider(providerId: string): Promise<void> {
+    const prefix = `${providerId}\u0000`;
+    const providers: CodexProvider[] = [];
+    for (const [key, provider] of this.#observers) {
+      if (!key.startsWith(prefix)) continue;
+      this.#observers.delete(key);
+      providers.push(provider);
+    }
+    this.#deleteObservationContinuity(prefix.slice(0, -1));
+    await Promise.allSettled(providers.map((provider) => provider.close()));
+  }
+
+  #deleteObservationContinuity(accountKey: string) {
+    const prefix = `${accountKey}\u0000`;
+    for (const key of this.#observationContinuity.keys()) {
+      if (key.startsWith(prefix)) this.#observationContinuity.delete(key);
+    }
   }
 
   #key(providerId: string, accountId: string) {

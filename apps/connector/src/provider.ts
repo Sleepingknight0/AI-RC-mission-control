@@ -3,6 +3,7 @@ import type {
   CoreToConnectorEnvelope,
   ProviderAccountCapabilitySnapshot,
   ProviderNativeSessionPage,
+  ProviderSessionProjectionSnapshot,
 } from "@aicl/protocol";
 
 export type TurnStartCommand = Extract<
@@ -86,6 +87,15 @@ export interface NativeSessionPageInput {
   archived: "exclude" | "include" | "only";
 }
 
+export interface NativeSessionProjectionInput {
+  providerId: string;
+  accountId: string;
+  providerSessionId: string;
+  runtimeId: string;
+  runtimeGeneration: number;
+  revision: number;
+}
+
 export interface ProviderAccountController {
   open(providerId: string, accountId: string): ManagedProviderAccount | null;
   rememberIdentity(
@@ -97,6 +107,11 @@ export interface ProviderAccountController {
     account: ManagedProviderAccount,
     input: NativeSessionPageInput,
   ): Promise<ProviderNativeSessionPage>;
+  nativeSessionProjection?(
+    input: NativeSessionProjectionInput,
+  ): Promise<ProviderSessionProjectionSnapshot>;
+  closeProvider?(providerId: string): Promise<void>;
+  close?(): Promise<void>;
 }
 
 export class StaleNativeSessionCursorError extends Error {

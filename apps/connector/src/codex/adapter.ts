@@ -17,6 +17,7 @@ import {
   type ProviderAccountCapabilitySnapshot,
   type ProviderFleetSnapshot,
   type ProviderNativeSessionSnapshot,
+  type ProviderSessionProjectionSnapshot,
   type ToolActivity,
 } from "@aicl/protocol";
 import { z } from "zod";
@@ -43,6 +44,7 @@ import {
   probeCodexCapabilities,
   type CodexCapabilityProbe,
 } from "./discovery.js";
+import { readCodexNativeSessionProjection } from "./native-projection.js";
 
 const ThreadResponseSchema = z.object({
   thread: z.object({ id: z.string().min(1) }),
@@ -470,6 +472,26 @@ export class CodexProvider implements ConnectorProvider {
       timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
       search: input.search ?? null,
       archived: input.archived ?? "include",
+    });
+  }
+
+  async readNativeSessionProjection(input: {
+    providerSessionId: string;
+    runtimeId: string;
+    runtimeGeneration: number;
+    revision: number;
+    now?: () => Date;
+  }): Promise<ProviderSessionProjectionSnapshot> {
+    return readCodexNativeSessionProjection(await this.#ensureProcess(), {
+      providerId: "codex",
+      accountId: this.#options.accountId ?? "default",
+      providerSessionId: input.providerSessionId,
+      runtimeId: input.runtimeId,
+      runtimeGeneration: input.runtimeGeneration,
+      revision: input.revision,
+      allowedRoots: this.#options.allowedRoots ?? [this.#options.cwd],
+      timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
+      ...(input.now === undefined ? {} : { now: input.now }),
     });
   }
 

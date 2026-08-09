@@ -9,9 +9,11 @@ import {
   MAX_INLINE_ENVELOPE_BYTES,
   MAX_WEBSOCKET_MESSAGE_BYTES,
   ProviderAccountCapabilitySnapshotSchema,
+  ProviderSessionProjectionSnapshotSchema,
   RuntimeSchema,
   decodeJson,
   makeEnvelope,
+  redactSensitiveText,
   utf8ByteLength,
   websocketCapability,
   type ConnectorEnvelope,
@@ -122,6 +124,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
   let nativeSessionRevision = 0;
   let nativeSessionRefreshInFlight: Promise<void> | undefined;
   let accountCapabilityRevision = 0;
+  let nativeProjectionRevision = 0;
   const accountCapabilities = new Map<
     string,
     ProviderAccountCapabilitySnapshot
@@ -248,7 +251,8 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       envelope.type === "connector.providers.snapshot" ||
       envelope.type === "connector.sessions.native.snapshot" ||
       envelope.type === "connector.provider.account.capabilities.snapshot" ||
-      envelope.type === "connector.sessions.native.page"
+      envelope.type === "connector.sessions.native.page" ||
+      envelope.type === "connector.provider.session.projection.snapshot"
     ) {
       sendRaw(decorateEphemeral(envelope));
       return;
@@ -644,6 +648,93 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
     }
   };
 
+  const readNativeSessionProjection = async (
+    command: Extract<
+      CoreToConnectorEnvelope,
+      { type: "connector.provider.session.projection.get" }
+    >,
+  ) => {
+    const { providerId, accountId, providerSessionId, requestId } =
+      command.payload;
+    const observedAt = new Date();
+    const unavailable = (
+      availability: "unsupported" | "unavailable",
+      notice: string,
+    ) =>
+      ProviderSessionProjectionSnapshotSchema.parse({
+        projectionId: `projection-${crypto.randomUUID()}`,
+        revision: ++nativeProjectionRevision,
+        providerId,
+        accountId,
+        providerSessionId,
+        providerRevision: null,
+        providerCursor: null,
+        observedAt: observedAt.toISOString(),
+        staleAt: new Date(observedAt.getTime() + 5_000).toISOString(),
+        freshness: "unavailable",
+        availability,
+        runtimeId: journal.runtimeId,
+        runtimeGeneration: journal.runtimeGeneration,
+        title: null,
+        projectLabel: null,
+        state: "unavailable",
+        activeSince: null,
+        truncated: false,
+        notice,
+        items: [],
+      });
+
+    if (!providerWorkEnabled(providerId)) {
+      emit(
+        makeEnvelope("connector.provider.session.projection.snapshot", {
+          requestId,
+          snapshot: unavailable("unavailable", "Remote activity unavailable"),
+        }),
+      );
+      return;
+    }
+    const controller = options.providerAccountController;
+    if (
+      providerId !== "codex" ||
+      controller?.nativeSessionProjection === undefined
+    ) {
+      emit(
+        makeEnvelope("connector.provider.session.projection.snapshot", {
+          requestId,
+          snapshot: unavailable("unsupported", "Remote activity unavailable"),
+        }),
+      );
+      return;
+    }
+    try {
+      const snapshot = await controller.nativeSessionProjection({
+        providerId,
+        accountId,
+        providerSessionId,
+        runtimeId: journal.runtimeId,
+        runtimeGeneration: journal.runtimeGeneration,
+        revision: ++nativeProjectionRevision,
+      });
+      emit(
+        makeEnvelope("connector.provider.session.projection.snapshot", {
+          requestId,
+          snapshot,
+        }),
+      );
+    } catch (error) {
+      console.error(
+        "Connector provider Session observation failed:",
+        redactSensitiveText(error instanceof Error ? error.message : error),
+      );
+      emit(
+        makeEnvelope("connector.provider.session.projection.snapshot", {
+          requestId,
+          snapshot: unavailable("unavailable", "Provider history unavailable"),
+        }),
+      );
+    }
+  };
+
   const handleCommand = async (
     command: CoreToConnectorEnvelope,
   ) => {
@@ -676,6 +767,10 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         return;
       }
       await refreshNativeSessions();
+      return;
+    }
+    if (command.type === "connector.provider.session.projection.get") {
+      await readNativeSessionProjection(command);
       return;
     }
     if (
@@ -786,6 +881,11 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
       }
       try {
         await options.setProviderEnabled(command.payload);
+        if (!command.payload.enabled) {
+          await options.providerAccountController?.closeProvider?.(
+            command.payload.providerId,
+          );
+        }
         journal.markCommand(command.payload.commandId, "completed");
         await refreshProviderInventory();
         emit(
@@ -1300,6 +1400,7 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
         if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
         socket?.close();
         await provider.close();
+        await options.providerAccountController?.close?.();
         await Promise.allSettled([...inFlightCommands]);
         inputAttachments.close();
         if (healthServer !== undefined) {
