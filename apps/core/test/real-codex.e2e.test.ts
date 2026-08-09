@@ -1,6 +1,13 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { startConnector, type ConnectorHandle } from "@aicl/connector";
 import { CodexProvider } from "@aicl/connector/codex";
@@ -11,6 +18,7 @@ import {
   ServerEnvelopeSchema,
   makeEnvelope,
   websocketCapability,
+  type Approval,
   type ServerEnvelope,
 } from "@aicl/protocol";
 import WebSocket from "ws";
@@ -30,15 +38,25 @@ afterEach(async () => {
 });
 
 describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
-  it("streams, interrupts, classifies death, and resumes without replay", async () => {
+  it("streams, steers, interrupts, writes, and fails closed after ownership loss", async () => {
     const core: CoreServerHandle = await startCoreServer({
       port: 0,
       dbPath: ":memory:",
     });
     handles.push(core);
-    const directory = temporaryDirectory();
+    const disposableParent = process.env.AICL_REAL_CODEX_PROJECT_PARENT;
+    if (disposableParent === undefined) {
+      throw new Error(
+        "AICL_REAL_CODEX_PROJECT_PARENT must name an existing non-temporary disposable parent",
+      );
+    }
+    const directory = temporaryDirectory(disposableParent);
     const journalPath = join(directory, "connector.db");
-    const projectPath = resolve("../../spikes/fixture-project");
+    const projectPath = join(directory, "project");
+    mkdirSync(projectPath);
+    const readmePath = join(projectPath, "README.md");
+    const readmeContents = "# AICL remote fixture\n\nA disposable remote-control acceptance project.\n";
+    writeFileSync(readmePath, readmeContents, "utf8");
     const config = loadAiclConfig({ repositoryRoot: resolve("../..") }).config;
     const compatibility = probeInstalledCodex();
     if (!compatibility.compatible || compatibility.installedVersion === null) {
@@ -96,7 +114,7 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
         candidate.control === "remote_control",
     );
     if (account === undefined) throw new Error("No controllable Codex account");
-    await waitFor(
+    const accountCapabilities = await waitFor(
       browser,
       "provider.account.capabilities.snapshot",
       (message) =>
@@ -127,6 +145,8 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
       (message) => message.payload.commandId === "real-codex-session-create",
     );
     expect(prepared.payload.status).toBe("ready");
+    expect(prepared.payload.providerSessionId).not.toBeNull();
+    const providerSessionId = prepared.payload.providerSessionId!;
 
     send(
       browser,
@@ -136,13 +156,18 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
       }),
     );
     await waitFor(browser, "session.snapshot");
+    const initialSettings = await waitFor(
+      browser,
+      "session.settings.snapshot",
+      (message) => message.payload.snapshot.sessionId === "real-codex-session",
+    );
 
     send(
       browser,
       makeEnvelope("turn.submit", {
         commandId: "real-complete-1",
         sessionId: "real-codex-session",
-        prompt: "Do not use tools. Reply with exactly: AICL_REAL_OK",
+        prompt: "Inspect README.md and summarize its contents.\nDo not modify files.",
       }),
     );
     const accepted = await waitFor(browser, "command.accepted", (message) =>
@@ -160,75 +185,208 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
       message.payload.error.code === "TURN_ALREADY_ACTIVE",
     );
     await waitForTurnDelta(browser, accepted.payload.turnId);
-    const completedMessage = await waitFor(
+    const readResult = await settleTurnWithApprovals(
       browser,
-      "assistant.message.completed",
-      (message) => message.payload.turnId === accepted.payload.turnId,
+      accepted.payload.turnId,
+      projectPath,
+      "approved_once",
     );
-    expect(completedMessage.payload.content).toContain("AICL_REAL_OK");
-    await waitFor(browser, "turn.completed", (message) =>
-      message.payload.turnId === accepted.payload.turnId,
-    );
-
+    expect(readResult.terminal.type).toBe("turn.completed");
+    expect(readResult.approvals.length).toBeGreaterThanOrEqual(1);
+    const resolvedApproval = readResult.approvals[0]!;
     send(
       browser,
-      makeEnvelope("turn.submit", {
-        commandId: "real-interrupt-turn",
+      makeEnvelope("approval.resolve", {
+        commandId: "real-approval-stale-duplicate",
         sessionId: "real-codex-session",
-        prompt:
-          "Do not use tools. Write 400 numbered lines in the format NNN AICL_INTERRUPT_TEST.",
-      }),
-    );
-    const interruptTurn = await waitFor(
-      browser,
-      "command.accepted",
-      (message) => message.payload.commandId === "real-interrupt-turn",
-    );
-    await waitForTurnDelta(browser, interruptTurn.payload.turnId);
-    send(
-      browser,
-      makeEnvelope("turn.interrupt", {
-        commandId: "real-interrupt-command",
-        sessionId: "real-codex-session",
-        turnId: interruptTurn.payload.turnId,
-      }),
-    );
-    await waitFor(browser, "turn.interrupted", (message) =>
-      message.payload.turnId === interruptTurn.payload.turnId,
-    );
-
-    send(
-      browser,
-      makeEnvelope("turn.submit", {
-        commandId: "real-kill-turn",
-        sessionId: "real-codex-session",
-        prompt:
-          "Do not use tools. Write 600 numbered lines in the format NNN AICL_KILL_TEST.",
-      }),
-    );
-    const killTurn = await waitFor(browser, "command.accepted", (message) =>
-      message.payload.commandId === "real-kill-turn",
-    );
-    await waitForTurnDelta(browser, killTurn.payload.turnId);
-    await provider.killForTest();
-    await waitFor(browser, "turn.outcome_unknown", (message) =>
-      message.payload.turnId === killTurn.payload.turnId,
-    );
-    await waitFor(browser, "runtime.status", (message) =>
-      message.payload.runtime.status === "lost",
-    );
-
-    send(
-      browser,
-      makeEnvelope("turn.submit", {
-        commandId: "real-lost-runtime-rejection",
-        sessionId: "real-codex-session",
-        prompt: "This prompt must not be accepted by the lost Runtime.",
+        approvalId: resolvedApproval.approvalId,
+        expectedRevision: resolvedApproval.revision,
+        decision: "approved_once",
+        deviceId: "real-codex-device-b",
       }),
     );
     await waitFor(browser, "command.rejected", (message) =>
-      message.payload.commandId === "real-lost-runtime-rejection" &&
-      message.payload.error.code === "RUNTIME_NOT_READY",
+      message.payload.commandId === "real-approval-stale-duplicate" &&
+      message.payload.error.code === "APPROVAL_NOT_PENDING",
+    );
+    expect(completedTurnText(browser, accepted.payload.turnId)).toMatch(
+      /disposable|remote-control|fixture/i,
+    );
+    expect(readFileSync(readmePath, "utf8")).toBe(readmeContents);
+    expect(readdirSync(projectPath).sort()).toEqual(["README.md"]);
+
+    const selectedModel =
+      accountCapabilities.payload.snapshot.models.find(
+        (model) => model.isDefault && !model.hidden,
+      ) ??
+      accountCapabilities.payload.snapshot.models.find((model) => !model.hidden);
+    if (selectedModel === undefined) {
+      throw new Error("The exact Codex account advertised no usable model");
+    }
+    const selectedReasoning =
+      selectedModel.reasoningEfforts.find(
+        (option) => option.value === selectedModel.defaultReasoningEffort,
+      ) ??
+      selectedModel.reasoningEfforts.find((option) =>
+        ["low", "medium", "high", "xhigh"].includes(option.value),
+      );
+    if (selectedReasoning === undefined) {
+      throw new Error("The selected Codex model advertised no supported reasoning effort");
+    }
+    const acceptedSettings = {
+      ...initialSettings.payload.snapshot.settings,
+      model: selectedModel.modelId,
+      reasoningLevel: selectedReasoning.value,
+      sandboxPolicy: "workspace_write" as const,
+    };
+    send(
+      browser,
+      makeEnvelope("session.settings.update", {
+        commandId: "real-settings-update",
+        sessionId: "real-codex-session",
+        deviceId: "real-codex-device-a",
+        expectedRevision: initialSettings.payload.snapshot.revision,
+        settings: acceptedSettings,
+      }),
+    );
+    const updatedSettings = await waitFor(
+      browser,
+      "session.settings.snapshot",
+      (message) =>
+        message.payload.snapshot.sessionId === "real-codex-session" &&
+        message.payload.snapshot.revision === initialSettings.payload.snapshot.revision + 1,
+    );
+    expect(updatedSettings.payload.snapshot.settings).toMatchObject({
+      model: selectedModel.modelId,
+      reasoningLevel: selectedReasoning.value,
+      sandboxPolicy: "workspace_write",
+    });
+    send(
+      browser,
+      makeEnvelope("session.settings.update", {
+        commandId: "real-settings-stale",
+        sessionId: "real-codex-session",
+        deviceId: "real-codex-device-b",
+        expectedRevision: initialSettings.payload.snapshot.revision,
+        settings: initialSettings.payload.snapshot.settings,
+      }),
+    );
+    await waitFor(browser, "command.rejected", (message) =>
+      message.payload.commandId === "real-settings-stale" &&
+      message.payload.error.code === "SESSION_SETTINGS_CONFLICT",
+    );
+
+    send(
+      browser,
+      makeEnvelope("turn.submit", {
+        commandId: "real-write-turn",
+        sessionId: "real-codex-session",
+        prompt:
+          "Create a file named remote-control-proof.txt containing exactly:\nAICL REMOTE CONTROL PASS",
+      }),
+    );
+    const writeTurn = await waitFor(browser, "command.accepted", (message) =>
+      message.payload.commandId === "real-write-turn",
+    );
+    const writeResult = await settleTurnWithApprovals(
+      browser,
+      writeTurn.payload.turnId,
+      projectPath,
+      "approved_once",
+    );
+    expect(writeResult.terminal.type).toBe("turn.completed");
+    expect(
+      readFileSync(join(projectPath, "remote-control-proof.txt"), "utf8").trim(),
+    ).toBe("AICL REMOTE CONTROL PASS");
+    expect(readdirSync(projectPath).sort()).toEqual([
+      "README.md",
+      "remote-control-proof.txt",
+    ]);
+    const fileChange = await waitFor(
+      browser,
+      "file.change.completed",
+      (message) => message.payload.fileChange.turnId === writeTurn.payload.turnId,
+    );
+    expect(fileChange.payload.fileChange.files).toEqual([
+      expect.objectContaining({ path: "remote-control-proof.txt", kind: "add" }),
+    ]);
+    expect(fileChange.payload.fileChange.diff).not.toBeNull();
+    expect(
+      browser.messages.some(
+        (message) =>
+          message.type === "activity.completed" &&
+          [accepted.payload.turnId, writeTurn.payload.turnId].includes(
+            message.payload.activity.turnId,
+          ),
+      ),
+    ).toBe(true);
+
+    const refreshedBrowser = await openBrowser(core.browserUrl, core.browserToken);
+    send(
+      refreshedBrowser,
+      makeEnvelope("session.subscribe", {
+        sessionId: "real-codex-session",
+        afterSeq: 0,
+      }),
+    );
+    const refreshedSnapshot = await waitFor(
+      refreshedBrowser,
+      "session.snapshot",
+      (message) => message.payload.snapshot.sessionId === "real-codex-session",
+    );
+    expect(refreshedSnapshot.payload.snapshot.providerSessionId).toBe(
+      providerSessionId,
+    );
+    const restoredTurns = refreshedSnapshot.payload.snapshot.turns;
+    expect(new Set(restoredTurns.map((turn) => turn.turnId)).size).toBe(
+      restoredTurns.length,
+    );
+    expect(
+      restoredTurns.find((turn) => turn.turnId === writeTurn.payload.turnId),
+    ).toMatchObject({
+      settingsRevision: updatedSettings.payload.snapshot.revision,
+      effectiveSettings: {
+        model: selectedModel.modelId,
+        reasoningLevel: selectedReasoning.value,
+      },
+    });
+    refreshedBrowser.socket.close();
+
+    send(
+      browser,
+      makeEnvelope("turn.submit", {
+        commandId: "real-steer-turn",
+        sessionId: "real-codex-session",
+        prompt:
+          "Do not use tools. Begin writing 200 numbered lines in the format NNN AICL_STEER_TEST.",
+      }),
+    );
+    const steerTurn = await waitFor(browser, "command.accepted", (message) =>
+      message.payload.commandId === "real-steer-turn",
+    );
+    await waitForTurnDelta(browser, steerTurn.payload.turnId);
+    send(
+      browser,
+      makeEnvelope("turn.steer", {
+        commandId: "real-steer-command",
+        sessionId: "real-codex-session",
+        turnId: steerTurn.payload.turnId,
+        instruction: "Stop the numbered list and reply with exactly: AICL_STEERED",
+      }),
+    );
+    await waitFor(browser, "command.accepted", (message) =>
+      message.payload.commandId === "real-steer-command",
+    );
+    send(
+      browser,
+      makeEnvelope("turn.interrupt", {
+        commandId: "real-steered-turn-interrupt",
+        sessionId: "real-codex-session",
+        turnId: steerTurn.payload.turnId,
+      }),
+    );
+    await waitFor(browser, "turn.interrupted", (message) =>
+      message.payload.turnId === steerTurn.payload.turnId,
     );
 
     const firstGeneration = connector.identity.generation;
@@ -289,59 +447,110 @@ describe.skipIf(!enabled)("real Codex browser vertical slice", () => {
         expectedRuntimeGeneration: connector.identity.generation,
       }),
     );
-    await waitFor(browser, "session.command.accepted", (message) =>
-      message.payload.commandId === "real-runtime-resume",
-    );
-    await waitFor(browser, "session.provider.status", (message) =>
-      message.payload.commandId === "real-runtime-resume" &&
-      message.payload.status === "ready" &&
-      message.payload.runtimeId === connector.identity.runtimeId &&
-      message.payload.runtimeGeneration === connector.identity.generation,
-    );
     await waitFor(
       browser,
-      "session.capabilities.snapshot",
+      "command.rejected",
       (message) =>
-        message.payload.snapshot.sessionId === "real-codex-session" &&
-        message.payload.snapshot.controlAuthority.canControl,
-      90_000,
-      restartMessageIndex,
+        message.payload.commandId === "real-runtime-resume" &&
+        message.payload.error.code === "SESSION_NOT_CONTROLLABLE",
     );
-
-    send(
-      browser,
-      makeEnvelope("turn.submit", {
-        commandId: "real-resume-turn",
-        sessionId: "real-codex-session",
-        prompt: "Do not use tools. Reply with exactly: AICL_RESUMED",
-      }),
-    );
-    const resumed = await waitFor(browser, "command.accepted", (message) =>
-      message.payload.commandId === "real-resume-turn",
-    );
-    const resumedMessage = await waitFor(
-      browser,
-      "assistant.message.completed",
-      (message) => message.payload.turnId === resumed.payload.turnId,
-    );
-    expect(resumedMessage.payload.content).toContain("AICL_RESUMED");
     expect(
       browser.messages.filter(
         (message) =>
           message.type === "command.accepted" &&
-          message.payload.commandId === "real-kill-turn",
+          message.payload.commandId === "real-steer-turn",
       ),
     ).toHaveLength(1);
     expect(JSON.stringify(browser.messages)).not.toMatch(
       /item\/agentMessage\/delta|providerPayload|rawEvent/,
     );
     browser.socket.close();
-  }, 240_000);
+  }, 360_000);
 });
 
 interface BrowserHarness {
   socket: WebSocket;
   messages: ServerEnvelope[];
+}
+
+async function settleTurnWithApprovals(
+  browser: BrowserHarness,
+  turnId: string,
+  projectPath: string,
+  decision: "approved_once" | "declined",
+  timeoutMs = 120_000,
+) {
+  const handled = new Set<string>();
+  const approvals: Approval[] = [];
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const requests = browser.messages.filter(
+      (
+        message,
+      ): message is Extract<ServerEnvelope, { type: "approval.requested" }> =>
+        message.type === "approval.requested" &&
+        message.payload.approval.turnId === turnId,
+    );
+    for (const request of requests) {
+      const approval = request.payload.approval;
+      if (handled.has(approval.approvalId)) continue;
+      if (
+        approval.sessionId !== "real-codex-session" ||
+        (approval.payload.cwd !== null &&
+          !pathIsContained(projectPath, approval.payload.cwd))
+      ) {
+        throw new Error("Real Codex approval escaped its exact Session or project");
+      }
+      handled.add(approval.approvalId);
+      approvals.push(approval);
+      send(
+        browser,
+        makeEnvelope("approval.resolve", {
+          commandId: `real-approval-${turnId}-${approvals.length}`,
+          sessionId: "real-codex-session",
+          approvalId: approval.approvalId,
+          expectedRevision: approval.revision,
+          decision,
+          deviceId: "real-codex-device-a",
+        }),
+      );
+      await waitFor(browser, "approval.resolved", (message) =>
+        message.payload.approval.approvalId === approval.approvalId &&
+        message.payload.approval.state === decision,
+      );
+    }
+    const terminal = browser.messages.find(
+      (message) =>
+        (message.type === "turn.completed" ||
+          message.type === "turn.failed" ||
+          message.type === "turn.interrupted" ||
+          message.type === "turn.outcome_unknown") &&
+        message.payload.turnId === turnId,
+    );
+    if (terminal !== undefined) return { terminal, approvals };
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  throw new Error(
+    `Timed out settling real Codex Turn; approvals=${approvals.length}`,
+  );
+}
+
+function pathIsContained(rootPath: string, candidatePath: string) {
+  const child = relative(resolve(rootPath), resolve(candidatePath));
+  return child === "" || (!child.startsWith("..") && !isAbsolute(child));
+}
+
+function completedTurnText(browser: BrowserHarness, turnId: string) {
+  return browser.messages
+    .filter(
+      (
+        message,
+      ): message is Extract<ServerEnvelope, { type: "assistant.message.completed" }> =>
+        message.type === "assistant.message.completed" &&
+        message.payload.turnId === turnId,
+    )
+    .map((message) => message.payload.content)
+    .join("\n");
 }
 
 async function waitForTurnDelta(
@@ -442,8 +651,16 @@ async function waitFor<T extends ServerEnvelope["type"]>(
   );
 }
 
-function temporaryDirectory() {
-  const directory = mkdtempSync(join(tmpdir(), "aicl-real-e2e-"));
+function temporaryDirectory(parentPath: string) {
+  const parent = resolve(parentPath);
+  if (!existsSync(parent)) {
+    throw new Error("Real Codex disposable parent does not exist");
+  }
+  const directory = mkdtempSync(join(parent, "aicl-real-e2e-"));
+  const child = relative(parent, directory);
+  if (child === "" || child.startsWith("..") || isAbsolute(child)) {
+    throw new Error("Real Codex disposable project escaped its declared parent");
+  }
   temporaryDirectories.push(directory);
   return directory;
 }
