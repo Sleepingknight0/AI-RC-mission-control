@@ -22,6 +22,7 @@ import {
   ProviderFleetSnapshotSchema,
   ProviderAccountCapabilitySnapshotSchema,
   ProviderNativeSessionSnapshotSchema,
+  ProviderSessionProjectionSnapshotSchema,
   ServerEnvelopeSchema,
   decodeJson,
   makeEnvelope,
@@ -37,6 +38,7 @@ import {
   type ProviderFleetSnapshot,
   type ProviderAccountCapabilitySnapshot,
   type ProviderNativeSessionSnapshot,
+  type ProviderSessionProjectionSnapshot,
   type ProviderRecord,
   type Runtime,
   type ServerEnvelope,
@@ -434,6 +436,49 @@ export async function startCoreServer(
       archived: "exclude" | "include" | "only";
     }
   >();
+  const pendingNativeProjectionRequests = new Map<
+    string,
+    {
+      socket: WebSocket;
+      providerId: string;
+      accountId: string;
+      providerSessionId: string;
+      runtimeId: string;
+      runtimeGeneration: number;
+    }
+  >();
+  const unavailableNativeProjection = (input: {
+    providerId: string;
+    accountId: string;
+    providerSessionId: string;
+    runtime?: Runtime;
+    availability?: "unsupported" | "unavailable";
+    notice?: string;
+  }): ProviderSessionProjectionSnapshot => {
+    const observedAt = new Date();
+    return ProviderSessionProjectionSnapshotSchema.parse({
+      projectionId: `projection-${crypto.randomUUID()}`,
+      revision: 1,
+      providerId: input.providerId,
+      accountId: input.accountId,
+      providerSessionId: input.providerSessionId,
+      providerRevision: null,
+      providerCursor: null,
+      observedAt: observedAt.toISOString(),
+      staleAt: new Date(observedAt.getTime() + 5_000).toISOString(),
+      freshness: "unavailable",
+      availability: input.availability ?? "unavailable",
+      runtimeId: input.runtime?.runtimeId ?? null,
+      runtimeGeneration: input.runtime?.generation ?? null,
+      title: null,
+      projectLabel: null,
+      state: "unavailable",
+      activeSince: null,
+      truncated: false,
+      notice: input.notice ?? "Remote activity unavailable",
+      items: [],
+    });
+  };
   const clearDisabledProviderOperationalState = (
     snapshot: ProviderFleetSnapshot,
   ) => {
@@ -458,6 +503,20 @@ export async function startCoreServer(
     for (const [requestId, request] of pendingNativeSessionRequests) {
       if (disabled.has(request.providerId)) {
         pendingNativeSessionRequests.delete(requestId);
+      }
+    }
+    for (const [requestId, request] of pendingNativeProjectionRequests) {
+      if (disabled.has(request.providerId)) {
+        pendingNativeProjectionRequests.delete(requestId);
+        if (request.socket.readyState === WebSocket.OPEN) {
+          send(
+            request.socket,
+            makeEnvelope("provider.session.projection.snapshot", {
+              requestId,
+              snapshot: unavailableNativeProjection(request),
+            }),
+          );
+        }
       }
     }
   };
@@ -1379,6 +1438,69 @@ export async function startCoreServer(
         sendConnector(
           connection.socket,
           makeEnvelope("connector.sessions.native.refresh", message.payload),
+        );
+        return;
+      }
+      case "provider.session.projection.get": {
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        const account = provider?.accounts.find(
+          (candidate) => candidate.accountId === message.payload.accountId,
+        );
+        const connection = connectorConnection;
+        if (
+          connection?.socket.readyState !== WebSocket.OPEN ||
+          provider === undefined ||
+          !provider.enabled ||
+          account === undefined
+        ) {
+          send(
+            socket,
+            makeEnvelope("provider.session.projection.snapshot", {
+              requestId: message.payload.requestId,
+              snapshot: unavailableNativeProjection({
+                providerId: message.payload.providerId,
+                accountId: message.payload.accountId,
+                providerSessionId: message.payload.providerSessionId,
+              }),
+            }),
+          );
+          return;
+        }
+        const existing = pendingNativeProjectionRequests.get(
+          message.payload.requestId,
+        );
+        if (existing !== undefined) {
+          send(
+            socket,
+            makeEnvelope("provider.session.projection.snapshot", {
+              requestId: message.payload.requestId,
+              snapshot: unavailableNativeProjection({
+                providerId: message.payload.providerId,
+                accountId: message.payload.accountId,
+                providerSessionId: message.payload.providerSessionId,
+                runtime: connection.runtime,
+                notice: "Provider history unavailable",
+              }),
+            }),
+          );
+          return;
+        }
+        pendingNativeProjectionRequests.set(message.payload.requestId, {
+          socket,
+          providerId: message.payload.providerId,
+          accountId: message.payload.accountId,
+          providerSessionId: message.payload.providerSessionId,
+          runtimeId: connection.runtime.runtimeId,
+          runtimeGeneration: connection.runtime.generation,
+        });
+        sendConnector(
+          connection.socket,
+          makeEnvelope(
+            "connector.provider.session.projection.get",
+            message.payload,
+          ),
         );
         return;
       }
@@ -2664,6 +2786,48 @@ export async function startCoreServer(
       return;
     }
 
+    if (message.type === "connector.provider.session.projection.snapshot") {
+      const request = pendingNativeProjectionRequests.get(
+        message.payload.requestId,
+      );
+      pendingNativeProjectionRequests.delete(message.payload.requestId);
+      if (request === undefined) return;
+      const snapshot = message.payload.snapshot;
+      const fenced =
+        connectorConnection?.socket === socket &&
+        connectorConnection.connectorId === message.connectorId &&
+        connectorConnection.bootId === message.bootId &&
+        connectorConnection.runtime.runtimeId === message.runtimeId &&
+        connectorConnection.runtime.generation === message.runtimeGeneration &&
+        request.runtimeId === message.runtimeId &&
+        request.runtimeGeneration === message.runtimeGeneration &&
+        snapshot.runtimeId === message.runtimeId &&
+        snapshot.runtimeGeneration === message.runtimeGeneration &&
+        snapshot.providerId === request.providerId &&
+        snapshot.accountId === request.accountId &&
+        snapshot.providerSessionId === request.providerSessionId &&
+        Date.parse(snapshot.staleAt) > Date.now();
+      if (request.socket.readyState !== WebSocket.OPEN) return;
+      send(
+        request.socket,
+        makeEnvelope("provider.session.projection.snapshot", {
+          requestId: message.payload.requestId,
+          snapshot: fenced
+            ? snapshot
+            : unavailableNativeProjection({
+                providerId: request.providerId,
+                accountId: request.accountId,
+                providerSessionId: request.providerSessionId,
+                ...(connectorConnection === undefined
+                  ? {}
+                  : { runtime: connectorConnection.runtime }),
+                notice: "Provider history unavailable",
+              }),
+        }),
+      );
+      return;
+    }
+
     if (message.type === "connector.turn.delta") {
       if (
         connectorConnection?.socket === socket &&
@@ -2970,6 +3134,11 @@ export async function startCoreServer(
       for (const [requestId, request] of pendingNativeSessionRequests) {
         if (request.socket === socket) pendingNativeSessionRequests.delete(requestId);
       }
+      for (const [requestId, request] of pendingNativeProjectionRequests) {
+        if (request.socket === socket) {
+          pendingNativeProjectionRequests.delete(requestId);
+        }
+      }
     });
   };
 
@@ -3101,6 +3270,18 @@ export async function startCoreServer(
       const lost = connectorConnection;
       connectorConnection = undefined;
       if (closing) return;
+      for (const [requestId, request] of pendingNativeProjectionRequests) {
+        pendingNativeProjectionRequests.delete(requestId);
+        if (request.socket.readyState === WebSocket.OPEN) {
+          send(
+            request.socket,
+            makeEnvelope("provider.session.projection.snapshot", {
+              requestId,
+              snapshot: unavailableNativeProjection(request),
+            }),
+          );
+        }
+      }
       markProviderFleetStale();
       if (lost !== undefined) scheduleConnectorLoss(lost);
     });
