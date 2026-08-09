@@ -340,8 +340,11 @@ function normalizeThread(
       updatedAt,
       pinned: raw.isPinned ?? false,
       archived,
-      canResume:
-        raw.status.type === "idle" || raw.status.type === "notLoaded",
+      // Cross-process Codex reports both safely dormant and externally loaded
+      // threads as `notLoaded`. Without an atomic ownership transfer RPC those
+      // cases are indistinguishable, so only this app-server's explicit idle
+      // state is resumable. Unknown ownership fails closed to observation.
+      canResume: raw.status.type === "idle",
     });
   } catch {
     return null;

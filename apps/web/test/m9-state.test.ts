@@ -137,6 +137,28 @@ const support = (
   state: "supported" | "unsupported" | "unknown" = "supported",
   reason: string | null = null,
 ) => ({ state, reason });
+const remoteSupport = {
+  supported: true,
+  freshness: "live",
+  source: "provider_probe",
+  reason: null,
+} as const;
+const remoteWorkspace: SessionCapabilitiesSnapshot["remoteWorkspace"] = {
+  canDiscoverSessions: remoteSupport,
+  canReadHistory: remoteSupport,
+  canObserveLive: remoteSupport,
+  canResume: remoteSupport,
+  canSubmit: remoteSupport,
+  canSteer: remoteSupport,
+  canInterrupt: remoteSupport,
+  canApprove: remoteSupport,
+  canChangeModel: remoteSupport,
+  canChangeReasoning: remoteSupport,
+  canChangeExecutionMode: remoteSupport,
+  canAttach: remoteSupport,
+  canReadDiffs: remoteSupport,
+  canReadTerminalEvidence: remoteSupport,
+};
 
 const caps = (
   overrides: Partial<SessionCapabilitiesSnapshot> = {},
@@ -153,6 +175,7 @@ const caps = (
     bindingStatus: "ready",
     reason: null,
   },
+  remoteWorkspace,
   executionModes: [
     { mode: "ask", ...support() },
     { mode: "plan", ...support() },

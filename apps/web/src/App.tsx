@@ -1828,6 +1828,12 @@ export function App() {
   const interrupt = () => {
     const socket = socketRef.current;
     const turnId = snapshot?.activeTurnId;
+    const capability =
+      sessionCapabilitiesUi.snapshot?.remoteWorkspace.canInterrupt;
+    if (capability?.supported !== true) {
+      setNotice(capability?.reason ?? "Session interrupt capability is unavailable");
+      return;
+    }
     if (turnId == null || socket?.readyState !== WebSocket.OPEN) return;
     const commandId = crypto.randomUUID();
     socket.send(
@@ -1847,6 +1853,12 @@ export function App() {
     decision: "approved_once" | "declined",
   ) => {
     const socket = socketRef.current;
+    const capability =
+      sessionCapabilitiesUi.snapshot?.remoteWorkspace.canApprove;
+    if (capability?.supported !== true) {
+      setNotice(capability?.reason ?? "Session approval capability is unavailable");
+      return;
+    }
     if (connection !== "online" || socket?.readyState !== WebSocket.OPEN) return;
     const key = `${approval.approvalId}:${decision}`;
     const existing = approvalCommandsRef.current.get(key);
@@ -1996,6 +2008,8 @@ export function App() {
     settingsRevision: settingsUi.snapshot?.revision ?? null,
     fleetStale: fleet.status !== "ready",
   });
+  const remoteCapabilities = sessionCapabilitiesUi.snapshot?.remoteWorkspace;
+  const submitCapability = remoteCapabilities?.canSubmit ?? null;
   const availability =
     providerNativeOnly
       ? {
@@ -2003,11 +2017,14 @@ export function App() {
           reason:
             "Provider-native observation is read-only. It does not grant submit, steer, interrupt, or approval authority.",
         }
-      : controlDecision.ok
+      : controlDecision.ok && submitCapability?.supported === true
         ? baseAvailability
         : {
         canSubmit: false,
-        reason: controlDecision.reason ?? "Session is not controllable",
+        reason:
+          controlDecision.reason ??
+          submitCapability?.reason ??
+          "Session submit capability is unavailable",
       };
   const timelineBusy =
     latest?.status === "running" ||
@@ -2180,6 +2197,8 @@ export function App() {
       ? baseAvailability.reason
       : !controlDecision.ok
         ? controlDecision.reason
+        : remoteCapabilities?.canAttach.supported !== true
+          ? remoteCapabilities?.canAttach.reason ?? "Session attachment capability is unavailable"
         : !textAttach.ok && !imageAttach.ok
           ? textAttach.reason ?? imageAttach.reason
           : null;
@@ -2554,7 +2573,11 @@ export function App() {
         modelLabel={mobileModelLabel}
         modeLabel={providerNativeOnly ? "View only" : settingsUi.snapshot?.settings.executionMode ?? "Mode unavailable"}
         canSubmit={availability.canSubmit && settingsUi.snapshot !== null}
-        canAbort={!providerNativeOnly && latest?.status === "running"}
+        canAbort={
+          !providerNativeOnly &&
+          latest?.status === "running" &&
+          remoteCapabilities?.canInterrupt.supported === true
+        }
         composerReason={availability.reason}
         canAttachText={textAttach.ok}
         canAttachImage={imageAttach.ok}

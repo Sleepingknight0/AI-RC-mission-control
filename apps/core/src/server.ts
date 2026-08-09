@@ -57,6 +57,7 @@ import {
 } from "./store.js";
 import { BrowserTicketRegistry } from "./browser-tickets.js";
 import { NativeSessionEvidenceStore } from "./native-session-evidence.js";
+import { projectRemoteWorkspaceCapabilities } from "./remote-workspace-capabilities.js";
 import { isReservedHttpPath, serveWebRequest } from "./static-host.js";
 
 export const DEFAULT_CORE_DB_PATH = resolve(
@@ -137,6 +138,11 @@ export function projectSessionCapabilities(
   const account = provider?.accounts.find(
     (candidate) => candidate.accountId === settings.accountId,
   );
+  const exactAccountEvidence =
+    accountEvidence?.providerId === settings.providerId &&
+    accountEvidence.accountId === settings.accountId
+      ? accountEvidence
+      : undefined;
   const accountModels = accountEvidence?.models ?? [];
   const accountModelsState = accountEvidence?.modelsState ?? "unavailable";
   const model =
@@ -280,6 +286,33 @@ export function projectSessionCapabilities(
     settings.sandboxPolicy === "workspace_write" &&
     settings.projectPath !== null &&
     settings.accountId !== null;
+  const observationReason =
+    provider === undefined
+      ? "Provider inventory is unavailable."
+      : !provider.enabled
+        ? "Provider is disabled."
+        : settings.accountId === null
+          ? "Session has no bound provider account."
+          : exactAccountEvidence === undefined
+            ? "Exact bound account capability evidence is unavailable."
+            : exactAccountEvidence.freshness !== "live" ||
+                Date.parse(exactAccountEvidence.staleAt) <= Date.now()
+              ? "Bound provider account capability evidence is stale."
+              : exactAccountEvidence.authentication !== "authenticated"
+                ? "Bound provider account is not currently authenticated."
+                : null;
+  const remoteWorkspace = projectRemoteWorkspaceCapabilities({
+    freshness: exactAccountEvidence?.freshness ?? providerFreshness,
+    observation: {
+      allowed: observationReason === null,
+      reason: observationReason,
+    },
+    mutation: {
+      allowed: canControl,
+      reason: controlError?.message ?? null,
+    },
+    evidence: exactAccountEvidence?.capabilities ?? [],
+  });
 
   return {
     sessionId: settingsSnapshot.sessionId,
@@ -306,6 +339,7 @@ export function projectSessionCapabilities(
       bindingStatus: authority?.state ?? "unbound",
       reason: controlError?.message ?? null,
     },
+    remoteWorkspace,
     executionModes: ["ask", "plan", "auto"].map((mode) => ({
       mode: mode as "ask" | "plan" | "auto",
       ...executionSupport,

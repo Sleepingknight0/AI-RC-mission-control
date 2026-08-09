@@ -115,6 +115,12 @@ const settings: SessionSettingsSnapshot = {
 };
 
 const support = (state: "supported" | "unsupported", reason: string | null = null) => ({ state, reason });
+const remoteSupport = {
+  supported: true,
+  freshness: "live",
+  source: "provider_probe",
+  reason: null,
+} as const;
 const capabilities: SessionCapabilitiesSnapshot = {
   sessionId: "session-1",
   settingsRevision: 3,
@@ -124,6 +130,22 @@ const capabilities: SessionCapabilitiesSnapshot = {
   account: { accountId: "one", ...support("supported") },
   model: { modelId: "gpt-mobile", ...support("supported") },
   controlAuthority: { canControl: true, bindingStatus: "ready", reason: null },
+  remoteWorkspace: {
+    canDiscoverSessions: remoteSupport,
+    canReadHistory: remoteSupport,
+    canObserveLive: remoteSupport,
+    canResume: remoteSupport,
+    canSubmit: remoteSupport,
+    canSteer: remoteSupport,
+    canInterrupt: remoteSupport,
+    canApprove: remoteSupport,
+    canChangeModel: remoteSupport,
+    canChangeReasoning: remoteSupport,
+    canChangeExecutionMode: remoteSupport,
+    canAttach: remoteSupport,
+    canReadDiffs: remoteSupport,
+    canReadTerminalEvidence: remoteSupport,
+  },
   executionModes: [
     { mode: "ask", ...support("supported") },
     { mode: "plan", ...support("supported") },

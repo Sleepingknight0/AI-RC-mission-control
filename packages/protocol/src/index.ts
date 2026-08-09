@@ -167,8 +167,16 @@ export const ProviderCapabilityKeySchema = z.enum([
   "usage_collection",
   "remote_control",
   "list_sessions",
+  "read_history",
+  "observe_live",
   "create_session",
   "resume_session",
+  "submit_turn",
+  "steer_turn",
+  "interrupt_turn",
+  "resolve_approval",
+  "read_diffs",
+  "read_terminal_evidence",
   "list_models",
   "change_model",
   "reasoning_levels",
@@ -229,6 +237,47 @@ export const ProviderFreshnessSchema = z.enum([
   "offline",
   "unavailable",
 ]);
+export const RemoteWorkspaceCapabilitySourceSchema = z.enum([
+  "provider_probe",
+  "native_projection",
+  "session_authority",
+  "adapter_manifest",
+]);
+export const RemoteWorkspaceCapabilityEvidenceSchema = z
+  .object({
+    supported: z.boolean(),
+    freshness: ProviderFreshnessSchema,
+    source: RemoteWorkspaceCapabilitySourceSchema,
+    reason: displayText(200).nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.supported && value.reason === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "unsupported remote capability requires an authoritative reason",
+      });
+    }
+  });
+export const RemoteWorkspaceCapabilitiesSchema = z
+  .object({
+    canDiscoverSessions: RemoteWorkspaceCapabilityEvidenceSchema,
+    canReadHistory: RemoteWorkspaceCapabilityEvidenceSchema,
+    canObserveLive: RemoteWorkspaceCapabilityEvidenceSchema,
+    canResume: RemoteWorkspaceCapabilityEvidenceSchema,
+    canSubmit: RemoteWorkspaceCapabilityEvidenceSchema,
+    canSteer: RemoteWorkspaceCapabilityEvidenceSchema,
+    canInterrupt: RemoteWorkspaceCapabilityEvidenceSchema,
+    canApprove: RemoteWorkspaceCapabilityEvidenceSchema,
+    canChangeModel: RemoteWorkspaceCapabilityEvidenceSchema,
+    canChangeReasoning: RemoteWorkspaceCapabilityEvidenceSchema,
+    canChangeExecutionMode: RemoteWorkspaceCapabilityEvidenceSchema,
+    canAttach: RemoteWorkspaceCapabilityEvidenceSchema,
+    canReadDiffs: RemoteWorkspaceCapabilityEvidenceSchema,
+    canReadTerminalEvidence: RemoteWorkspaceCapabilityEvidenceSchema,
+  })
+  .strict();
 export const ProviderUsageStateSchema = z.enum([
   "available",
   "unavailable",
@@ -915,6 +964,7 @@ export const SessionCapabilitiesSnapshotSchema = z
         reason: displayText(200).nullable(),
       })
       .strict(),
+    remoteWorkspace: RemoteWorkspaceCapabilitiesSchema,
     executionModes: z
       .array(
         SessionCapabilitySupportSchema.extend({
@@ -2338,6 +2388,12 @@ export type ProtocolError = z.infer<typeof ProtocolErrorSchema>;
 export type ProviderCapabilityKey = z.infer<typeof ProviderCapabilityKeySchema>;
 export type ProviderCapabilityEvidence = z.infer<
   typeof ProviderCapabilityEvidenceSchema
+>;
+export type RemoteWorkspaceCapabilityEvidence = z.infer<
+  typeof RemoteWorkspaceCapabilityEvidenceSchema
+>;
+export type RemoteWorkspaceCapabilities = z.infer<
+  typeof RemoteWorkspaceCapabilitiesSchema
 >;
 export type ProviderAccount = z.infer<typeof ProviderAccountSchema>;
 export type ProviderModel = z.infer<typeof ProviderModelSchema>;

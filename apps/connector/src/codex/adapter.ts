@@ -1465,8 +1465,15 @@ function updateCodexCapabilities(
   for (const key of [
     "remote_control",
     "list_sessions",
+    "read_history",
+    "observe_live",
     "create_session",
     "resume_session",
+    "submit_turn",
+    "interrupt_turn",
+    "resolve_approval",
+    "read_diffs",
+    "read_terminal_evidence",
     "text_input",
     "execution_modes",
     "approval_policies",
@@ -1478,6 +1485,11 @@ function updateCodexCapabilities(
       controlled ? null : "Codex app-server is not authenticated",
     );
   }
+  evidence(
+    "steer_turn",
+    "unsupported",
+    "The AICL Codex adapter has not completed turn/steer acceptance",
+  );
   evidence("list_models", "supported");
   evidence(
     "change_model",

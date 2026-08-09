@@ -149,6 +149,23 @@ describe("Codex discovery", () => {
     expect(JSON.stringify(snapshot)).not.toContain("example.invalid");
   });
 
+  it("advertises observation independently from inactive mutation authority", async () => {
+    const snapshot = await adapter().accountCapabilities({
+      revision: 1,
+      active: false,
+    });
+    const state = (key: typeof snapshot.capabilities[number]["key"]) =>
+      snapshot.capabilities.find((capability) => capability.key === key)?.state;
+
+    expect(snapshot.control).toBe("inventory_only");
+    expect(state("read_history")).toBe("supported");
+    expect(state("observe_live")).toBe("supported");
+    expect(state("read_diffs")).toBe("supported");
+    expect(state("submit_turn")).toBe("supported");
+    expect(state("interrupt_turn")).toBe("supported");
+    expect(state("steer_turn")).toBe("unsupported");
+  });
+
   it("removes optimistic control authority when the live probe fails", async () => {
     const snapshot = fleet();
     const codex = snapshot.providers[0]!;
@@ -217,7 +234,7 @@ describe("Codex discovery", () => {
     expect(JSON.stringify(snapshot)).not.toContain("rollout");
   });
 
-  it("does not offer a provider-native Session that is already active", async () => {
+  it("fails resume closed for active or unknown cross-process ownership", async () => {
     const snapshot = await discoverCodexNativeSessions(
       {
         async request(method) {
@@ -233,6 +250,15 @@ describe("Codex discovery", () => {
                 updatedAt: 1_700_000_100,
                 status: { type: "active" },
               },
+              {
+                id: "native-not-loaded",
+                name: "Ownership unknown",
+                preview: "possibly loaded elsewhere",
+                cwd: process.cwd(),
+                createdAt: 1_700_000_000,
+                updatedAt: 1_700_000_100,
+                status: { type: "notLoaded" },
+              },
             ],
             nextCursor: null,
           };
@@ -246,11 +272,14 @@ describe("Codex discovery", () => {
       },
     );
 
-    expect(snapshot.sessions).toHaveLength(1);
-    expect(snapshot.sessions[0]).toMatchObject({
-      providerStatus: "active",
-      canResume: false,
-    });
+    expect(snapshot.sessions).toHaveLength(2);
+    expect(snapshot.sessions.map((session) => ({
+      providerStatus: session.providerStatus,
+      canResume: session.canResume,
+    }))).toEqual([
+      { providerStatus: "active", canResume: false },
+      { providerStatus: "not_loaded", canResume: false },
+    ]);
   });
 
   it("marks include-archive discovery truncated instead of issuing a zero-limit page", async () => {
