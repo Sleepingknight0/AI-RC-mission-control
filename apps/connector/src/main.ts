@@ -5,6 +5,8 @@ import { loadAiclConfig, webSocketOrigin } from "@aicl/config";
 
 import { startConnector } from "./client.js";
 import { CodexAccountController } from "./codex/account-controller.js";
+import { ClaudeAccountController } from "./claude/account-controller.js";
+import { readClaudeVersion } from "./claude/cli.js";
 import { probeInstalledCodex } from "./codex/compatibility.js";
 import { MockProvider } from "./mock-provider.js";
 import {
@@ -13,6 +15,7 @@ import {
   setProviderEnabled,
 } from "./provider-inventory.js";
 import { UnavailableProvider } from "./provider.js";
+import { ProviderAccountControllerRouter } from "./provider-account-router.js";
 
 const repositoryRoot =
   process.env.AICL_REPOSITORY_ROOT ??
@@ -44,6 +47,16 @@ const compatibility =
   providerName === "codex" && configuredProviderEnabled
     ? probeInstalledCodex()
     : null;
+const claudeEnabled = (() => {
+  try {
+    return providerEnabled("claude");
+  } catch {
+    return false;
+  }
+})();
+const claudeVersion = claudeEnabled
+  ? readClaudeVersion({ cwd: projectPath, profilePath: projectPath })
+  : null;
 if (compatibility !== null && !compatibility.compatible) {
   console.error(`Codex compatibility gate failed: ${compatibility.reason}`);
   process.exit(1);
@@ -51,13 +64,32 @@ if (compatibility !== null && !compatibility.compatible) {
 
 const provider =
   providerName === "mock" ? new MockProvider() : new UnavailableProvider();
-const providerAccountController =
+const codexAccountController =
   providerName === "codex" && configuredProviderEnabled
     ? new CodexAccountController({
         cwd: projectPath,
         allowedRoots: config.workspace.allowedRoots,
       })
     : undefined;
+const claudeAccountController =
+  claudeEnabled && claudeVersion !== null
+    ? new ClaudeAccountController({
+        cwd: projectPath,
+        allowedRoots: config.workspace.allowedRoots,
+      })
+    : undefined;
+const providerAccountControllerRoutes = [
+  ...(codexAccountController === undefined
+    ? []
+    : [{ providerId: "codex", controller: codexAccountController }]),
+  ...(claudeAccountController === undefined
+    ? []
+    : [{ providerId: "claude", controller: claudeAccountController }]),
+];
+const providerAccountController =
+  providerAccountControllerRoutes.length === 0
+    ? undefined
+    : new ProviderAccountControllerRouter(providerAccountControllerRoutes);
 
 const connector = startConnector({
   coreUrl,
@@ -75,18 +107,24 @@ const connector = startConnector({
             activeProviderId: active.providerId,
             activeAccountId: active.accountId,
           }),
-      ...(compatibility?.installedVersion === null || compatibility === null
-        ? {}
-        : { knownVersions: { codex: compatibility.installedVersion } }),
-      ...(compatibility === null
-        ? {}
-        : {
-            knownCompatibility: {
+      knownVersions: {
+        ...(compatibility?.installedVersion === null || compatibility === null
+          ? {}
+          : { codex: compatibility.installedVersion }),
+        ...(claudeVersion === null ? {} : { claude: claudeVersion }),
+      },
+      knownCompatibility: {
+        ...(compatibility === null
+          ? {}
+          : {
               codex: compatibility.compatible
                 ? ("compatible" as const)
                 : ("incompatible" as const),
-            },
-          }),
+            }),
+        ...(claudeVersion === null
+          ? {}
+          : { claude: "compatible" as const }),
+      },
     }),
   setProviderEnabled: (input) => {
     setProviderEnabled(input);
