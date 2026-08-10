@@ -11,6 +11,7 @@ import { useEffect, useState, type FormEvent, type ReactNode, type RefObject } f
 import { AccountActivationSheet } from "./AccountActivationSheet.js";
 import { AccountSessionDrawer } from "./AccountSessionDrawer.js";
 import { MobileAccountHome } from "./MobileAccountHome.js";
+import { MobileAuthorityBanner } from "./MobileAuthorityBanner.js";
 import { MobileChatTimeline } from "./MobileChatTimeline.js";
 import { MobileComposer } from "./MobileComposer.js";
 import { MobileHeader } from "./MobileHeader.js";
@@ -47,12 +48,17 @@ export interface MobileChatShellProps {
   statusFacts: readonly StatusFact[];
   connectionNotice: string | null;
   authorityNotice: string | null;
+  authorityLabel: string | null;
+  canRetryBinding: boolean;
+  bindingRetryPending: boolean;
   recoveryNotice: string | null;
   timelineBusy: boolean;
   timelineLoading: boolean;
   timelineEmpty: boolean;
   timelineProviderNative: boolean;
   timelineUnavailable: boolean;
+  timelineEmptyTitle: string | undefined;
+  timelineEmptyDetail: string | undefined;
   timelineRef: RefObject<HTMLDivElement | null>;
   unreadUpdates: number;
   timeline: ReactNode;
@@ -96,6 +102,7 @@ export interface MobileChatShellProps {
   onCloseEvidence: () => void;
   onPromptChange: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
+  onRetryBinding: () => void;
   onSteer: (event: FormEvent) => void;
   onAbort: () => void;
   onPickFiles: (files: FileList) => void;
@@ -159,7 +166,13 @@ export function MobileChatShell(props: MobileChatShellProps) {
             <section className="mobile-state-banner" role="status"><strong>Connection</strong><p>{props.connectionNotice}</p></section>
           )}
           {props.authorityNotice !== null && (
-            <section className="mobile-state-banner" role="status"><strong>View only</strong><p>{props.authorityNotice}</p></section>
+            <MobileAuthorityBanner
+              label={props.authorityLabel ?? "View only"}
+              reason={props.authorityNotice}
+              canRetry={props.canRetryBinding}
+              retryPending={props.bindingRetryPending}
+              onRetry={props.onRetryBinding}
+            />
           )}
           {props.recoveryNotice !== null && (
             <section className="mobile-state-banner warning" role="alert"><strong>Operator review required</strong><p>{props.recoveryNotice}</p></section>
@@ -174,6 +187,12 @@ export function MobileChatShell(props: MobileChatShellProps) {
             timelineRef={props.timelineRef}
             onScroll={props.onTimelineScroll}
             onReturnToLive={props.onReturnToLive}
+            {...(props.timelineEmptyTitle === undefined
+              ? {}
+              : { emptyTitle: props.timelineEmptyTitle })}
+            {...(props.timelineEmptyDetail === undefined
+              ? {}
+              : { emptyDetail: props.timelineEmptyDetail })}
           >
             {props.timeline}
           </MobileChatTimeline>

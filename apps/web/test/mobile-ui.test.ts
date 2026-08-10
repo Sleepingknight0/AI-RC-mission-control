@@ -6,13 +6,15 @@ import type {
   SessionCapabilitiesSnapshot,
   SessionSettingsSnapshot,
 } from "@aicl/protocol";
-import { createElement } from "react";
+import { createElement, createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { AccountSessionDrawer } from "../src/mobile/AccountSessionDrawer.js";
 import { MobileAccountHome } from "../src/mobile/MobileAccountHome.js";
+import { MobileAuthorityBanner } from "../src/mobile/MobileAuthorityBanner.js";
 import { MobileComposer } from "../src/mobile/MobileComposer.js";
+import { MobileChatTimeline } from "../src/mobile/MobileChatTimeline.js";
 import { MobileHeader } from "../src/mobile/MobileHeader.js";
 import { ModelModeSheet } from "../src/mobile/ModelModeSheet.js";
 import { ProviderManagementSheet } from "../src/mobile/ProviderManagementSheet.js";
@@ -165,6 +167,48 @@ const capabilities: SessionCapabilitiesSnapshot = {
 };
 
 describe("M10 mobile visible contracts", () => {
+  it("shows one bounded retry action only for safely retryable binding failures", () => {
+    const retryable = renderToStaticMarkup(createElement(MobileAuthorityBanner, {
+      label: "Binding failed",
+      reason: "Project is unavailable or outside the configured workspace.",
+      canRetry: true,
+      retryPending: false,
+      onRetry: () => undefined,
+    }));
+    const unsafe = renderToStaticMarkup(createElement(MobileAuthorityBanner, {
+      label: "Binding failed",
+      reason: "Provider rejected Session creation.",
+      canRetry: false,
+      retryPending: false,
+      onRetry: () => undefined,
+    }));
+
+    expect(retryable).toContain("Retry binding");
+    expect(retryable).toContain("Project is unavailable");
+    expect(unsafe).not.toContain("Retry binding");
+  });
+
+  it("replaces the generic empty conversation copy with authoritative binding failure", () => {
+    const html = renderToStaticMarkup(createElement(MobileChatTimeline, {
+      busy: false,
+      loading: false,
+      empty: true,
+      providerNative: false,
+      unavailable: false,
+      unreadUpdates: 0,
+      timelineRef: createRef<HTMLDivElement>(),
+      onScroll: () => undefined,
+      onReturnToLive: () => undefined,
+      emptyTitle: "Binding failed",
+      emptyDetail: "No provider thread was created. Fix the project availability, then retry binding.",
+      children: null,
+    }));
+
+    expect(html).toContain("Binding failed");
+    expect(html).toContain("No provider thread was created");
+    expect(html).not.toContain("This Session has no turns yet");
+  });
+
   it("exposes deterministic accessible header controls", () => {
     const html = renderToStaticMarkup(createElement(MobileHeader, {
       providerLabel: "Codex",

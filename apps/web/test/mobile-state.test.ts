@@ -24,6 +24,7 @@ import {
   displaySessionTitle,
   groupAccountsByProvider,
   mobileSystemStatus,
+  mobileBindingPresentation,
   recentSessionsByPeriod,
   sessionBelongsToProviderAccount,
   sessionsForProviderAccount,
@@ -176,6 +177,63 @@ const accountCapabilities = (
 });
 
 describe("M10 mobile provider/account/session selectors", () => {
+  it("renders terminal binding failures instead of an endless pending empty Session", () => {
+    expect(mobileBindingPresentation({
+      state: "failed",
+      failureCode: "PROJECT_UNAVAILABLE",
+      failureReason: "Project is unavailable or outside the configured workspace.",
+      canRetry: true,
+    })).toEqual({
+      state: "failed",
+      label: "Binding failed",
+      reason: "Project is unavailable or outside the configured workspace.",
+      canRetry: true,
+      emptyTitle: "Binding failed",
+      emptyDetail: "No provider thread was created. Fix the project availability, then retry binding.",
+    });
+
+    expect(mobileBindingPresentation({
+      state: "failed",
+      failureCode: "PROVIDER_SESSION_REJECTED",
+      failureReason: "Provider rejected Session creation.",
+      canRetry: false,
+    })).toMatchObject({
+      label: "Binding failed",
+      canRetry: false,
+      emptyTitle: "Binding failed",
+    });
+  });
+
+  it("distinguishes binding, stale, external, and unsupported Session states", () => {
+    expect(mobileBindingPresentation({
+      state: "binding",
+      failureCode: null,
+      failureReason: null,
+      canRetry: false,
+    })).toMatchObject({
+      label: "Binding…",
+      reason: "Account ready · Session binding pending",
+    });
+    expect(mobileBindingPresentation({
+      state: "stale",
+      failureCode: null,
+      failureReason: null,
+      canRetry: false,
+    }).label).toBe("Binding stale");
+    expect(mobileBindingPresentation({
+      state: "external",
+      failureCode: null,
+      failureReason: null,
+      canRetry: false,
+    }).label).toBe("LIVE · External");
+    expect(mobileBindingPresentation({
+      state: "unsupported",
+      failureCode: null,
+      failureReason: null,
+      canRetry: false,
+    }).label).toBe("Remote control unavailable");
+  });
+
   it("correlates activation results to the exact pending command", () => {
     const current = { epoch: 8, providerId: "codex", accountId: "blue-2" };
     const pending = { epoch: 8, activationCommandId: "activation-new" };

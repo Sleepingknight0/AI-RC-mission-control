@@ -6,6 +6,7 @@ import type {
   ProviderNativeSession,
   ProviderRecord,
   RemoteSessionRef,
+  RemoteSessionBindingState,
   SessionCapabilitiesSnapshot,
   SessionCatalogFilter,
   SessionSettingsSnapshot,
@@ -77,8 +78,107 @@ export interface MobileSystemStatusInput {
   accountStatus: AccountStatus;
   accountHome: boolean;
   bindingStatus: string | null;
+  bindingState?: RemoteSessionBindingState | null;
+  bindingFailureCode?: string | null;
+  bindingFailureReason?: string | null;
+  canRetryBinding?: boolean;
   sessionControllable: boolean;
   sessionControlReason: string | null;
+}
+
+export interface MobileBindingPresentation {
+  state: RemoteSessionBindingState;
+  label: string;
+  reason: string;
+  canRetry: boolean;
+  emptyTitle: string;
+  emptyDetail: string;
+}
+
+export function mobileBindingPresentation(input: {
+  state: RemoteSessionBindingState;
+  failureCode: string | null;
+  failureReason: string | null;
+  canRetry: boolean;
+}): MobileBindingPresentation {
+  switch (input.state) {
+    case "binding":
+      return {
+        state: input.state,
+        label: "Binding…",
+        reason: "Account ready · Session binding pending",
+        canRetry: false,
+        emptyTitle: "Connecting provider Session",
+        emptyDetail: "AICL is creating one provider thread. Your draft will not be sent automatically.",
+      };
+    case "ready":
+      return {
+        state: input.state,
+        label: "Connected · Controllable",
+        reason: "Session binding is ready.",
+        canRetry: false,
+        emptyTitle: "Start a conversation",
+        emptyDetail: "This Session has no turns yet. Your draft stays on this device until you send it.",
+      };
+    case "failed":
+      return {
+        state: input.state,
+        label: "Binding failed",
+        reason: input.failureReason ?? "Provider binding failed.",
+        canRetry: input.canRetry,
+        emptyTitle: "Binding failed",
+        emptyDetail:
+          input.failureCode === "PROJECT_UNAVAILABLE"
+            ? "No provider thread was created. Fix the project availability, then retry binding."
+            : "No controllable provider thread is available. AICL did not send or replay a prompt.",
+      };
+    case "stale":
+      return {
+        state: input.state,
+        label: "Binding stale",
+        reason: "Session binding belongs to a stale or uncertain Runtime generation.",
+        canRetry: false,
+        emptyTitle: "Binding unavailable",
+        emptyDetail: "Refresh authority before attempting control. AICL will not replay a prompt.",
+      };
+    case "external":
+      return {
+        state: input.state,
+        label: "LIVE · External",
+        reason: "Active elsewhere · View only",
+        canRetry: false,
+        emptyTitle: "External Session",
+        emptyDetail: "Provider history appears here when the provider exposes it.",
+      };
+    case "unsupported":
+      return {
+        state: input.state,
+        label: "Remote control unavailable",
+        reason: "This provider does not expose safe Session control.",
+        canRetry: false,
+        emptyTitle: "Remote control unavailable",
+        emptyDetail: "History remains visible when the provider safely exposes it.",
+      };
+    case "unbound":
+      return {
+        state: input.state,
+        label: "Remote control unavailable",
+        reason: "Session has no provider binding.",
+        canRetry: false,
+        emptyTitle: "No provider Session",
+        emptyDetail: "Create a new bound Session before sending a prompt.",
+      };
+  }
+}
+
+export function mobileBindingStateFromStatus(
+  status: string | null,
+): RemoteSessionBindingState {
+  if (status === "pending") return "binding";
+  if (status === "ready") return "ready";
+  if (status === "failed") return "failed";
+  if (status === "outcome_unknown") return "stale";
+  return "unbound";
 }
 
 export function accountEvidenceIsCurrent(
@@ -216,14 +316,27 @@ export function mobileSystemStatus(input: MobileSystemStatusInput): MobileSystem
       tone: input.accountStatus.state === "inventory_only" ? "warning" : "offline",
     };
   }
+  if (!input.accountHome) {
+    const binding = mobileBindingPresentation({
+      state: input.bindingState ?? mobileBindingStateFromStatus(input.bindingStatus),
+      failureCode: input.bindingFailureCode ?? null,
+      failureReason: input.bindingFailureReason ?? null,
+      canRetry: input.canRetryBinding ?? false,
+    });
+    if (binding.state !== "ready") {
+      return {
+        label: binding.label,
+        tone: binding.state === "failed" || binding.state === "stale"
+          ? "offline"
+          : "warning",
+      };
+    }
+  }
   if (!input.accountHome && !input.sessionControllable) {
     return {
       label: input.sessionControlReason ?? "Session view only",
       tone: "warning",
     };
-  }
-  if (input.bindingStatus !== "ready") {
-    return { label: input.accountHome ? "Connected" : "Binding pending", tone: "warning" };
   }
   return { label: "Connected", tone: "ready" };
 }

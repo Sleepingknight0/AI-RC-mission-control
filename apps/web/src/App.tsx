@@ -124,6 +124,8 @@ import {
   canActivateAccount,
   currentAccountStatus,
   displaySessionTitle,
+  mobileBindingPresentation,
+  mobileBindingStateFromStatus,
   mobileSystemStatus,
   sessionBelongsToProviderAccount,
   sessionsForProviderAccount,
@@ -452,6 +454,7 @@ export function App() {
   const socketEpochRef = useRef(0);
   const pendingMobileActionRef = useRef<PendingMobileAction | null>(null);
   const pendingNativeResumeRefreshRef = useRef<PendingNativeResumeRefresh | null>(null);
+  const pendingBindingRetryRef = useRef<string | null>(null);
   const selectedNativeRef = useRef<NativeProjectionSelection | null>(
     restoredNativeSelection,
   );
@@ -519,6 +522,7 @@ export function App() {
   );
   const [mobileSearch, setMobileSearch] = useState("");
   const [mobileCreateRequest, setMobileCreateRequest] = useState(0);
+  const [bindingRetryPending, setBindingRetryPending] = useState(false);
   const [activationPrompt, setActivationPrompt] = useState<{
     action: PendingMobileAction;
     busy: boolean;
@@ -1035,6 +1039,10 @@ export function App() {
           }
         }
         if (message.type === "session.provider.status") {
+          if (pendingBindingRetryRef.current === message.payload.commandId) {
+            pendingBindingRetryRef.current = null;
+            setBindingRetryPending(false);
+          }
           setNotice(
             `Provider binding ${message.payload.status}${
               message.payload.failureCode ? ` · ${message.payload.failureCode}` : ""
@@ -1047,6 +1055,10 @@ export function App() {
         if (message.type === "command.rejected") {
           const code = message.payload.error.code;
           const detail = message.payload.error.message;
+          if (pendingBindingRetryRef.current === message.payload.commandId) {
+            pendingBindingRetryRef.current = null;
+            setBindingRetryPending(false);
+          }
           if (isMaintenanceProtocolError(code)) {
             setMaintenanceNotice(maintenanceOperatorMessage(code, detail));
           }
@@ -1153,6 +1165,8 @@ export function App() {
         if (disposed) return;
         pendingMobileActionRef.current = null;
         pendingNativeResumeRefreshRef.current = null;
+        pendingBindingRetryRef.current = null;
+        setBindingRetryPending(false);
         setActivationPrompt(null);
         pendingProviderEnablementsRef.current.clear();
         setPendingProviderIds(new Set());
@@ -1306,6 +1320,8 @@ export function App() {
       setNotice("Session ID must use 1–100 letters, numbers, dots, dashes, or underscores.");
       return;
     }
+    pendingBindingRetryRef.current = null;
+    setBindingRetryPending(false);
     restoredSelectionCheckedRef.current = true;
     const catalogSession = catalog.sessions.find(
       (candidate) => candidate.sessionId === sessionId,
@@ -1466,6 +1482,8 @@ export function App() {
     // Selection is read-only: retain every Session draft and never dispatch a
     // provider command or prompt merely because the account changed.
     restoredSelectionCheckedRef.current = true;
+    pendingBindingRetryRef.current = null;
+    setBindingRetryPending(false);
     pendingNativeResumeRefreshRef.current = null;
     const socket = socketRef.current;
     const subscribedSessionId = selectedSessionRef.current;
@@ -2040,6 +2058,29 @@ export function App() {
     settingsRevision: settingsUi.snapshot?.revision ?? null,
     fleetStale: fleet.status !== "ready",
   });
+  const capabilityBinding =
+    sessionCapabilitiesUi.snapshot?.sessionId === catalogEntry?.sessionId
+      ? sessionCapabilitiesUi.snapshot?.controlAuthority ?? null
+      : null;
+  const capabilityBindingMatchesCatalog =
+    capabilityBinding !== null &&
+    capabilityBinding.bindingRevision !== undefined &&
+    capabilityBinding.bindingRevision ===
+      (catalogEntry?.providerBindingRevision ?? capabilityBinding.bindingRevision);
+  const managedBindingPresentation = mobileBindingPresentation({
+    state: capabilityBindingMatchesCatalog && capabilityBinding.bindingState !== undefined
+      ? capabilityBinding.bindingState
+      : mobileBindingStateFromStatus(catalogEntry?.providerBindingStatus ?? null),
+    failureCode: capabilityBindingMatchesCatalog
+      ? capabilityBinding.failureCode ?? null
+      : catalogEntry?.providerBindingFailureCode ?? null,
+    failureReason: capabilityBindingMatchesCatalog
+      ? capabilityBinding.failureReason ?? null
+      : catalogEntry?.providerBindingFailureReason ?? null,
+    canRetry: capabilityBindingMatchesCatalog
+      ? capabilityBinding.canRetry ?? false
+      : catalogEntry?.canRetryBinding ?? false,
+  });
   const remoteCapabilities = sessionCapabilitiesUi.snapshot?.remoteWorkspace;
   const submitCapability = remoteCapabilities?.canSubmit ?? null;
   const availability =
@@ -2054,7 +2095,9 @@ export function App() {
         : {
         canSubmit: false,
         reason:
-          controlDecision.reason ??
+          managedBindingPresentation.state !== "ready"
+            ? managedBindingPresentation.reason
+            : controlDecision.reason ??
           submitCapability?.reason ??
           "Session submit capability is unavailable",
       };
@@ -2077,6 +2120,46 @@ export function App() {
         : remoteCapabilities?.canSteer.reason ??
           "This provider cannot accept instructions during an active Turn."
     : availability.reason;
+  const canRetryBinding =
+    !providerNativeOnly &&
+    connection === "online" &&
+    runtime?.status === "ready" &&
+    catalogEntry?.providerBindingStatus === "failed" &&
+    (catalogEntry.providerBindingRevision ?? 0) > 0 &&
+    catalogEntry.accountId !== null &&
+    catalogEntry.providerId === selectedProviderId &&
+    catalogEntry.accountId === selectedAccountId &&
+    managedBindingPresentation.canRetry &&
+    capabilityBindingMatchesCatalog &&
+    capabilityBinding?.canRetry === true;
+  const retryBinding = () => {
+    const socket = socketRef.current;
+    if (
+      !canRetryBinding ||
+      socket?.readyState !== WebSocket.OPEN ||
+      runtime === null ||
+      catalogEntry === null ||
+      catalogEntry.accountId === null ||
+      catalogEntry.providerBindingRevision === undefined ||
+      bindingRetryPending
+    ) {
+      setNotice("Binding retry is unavailable until exact current authority is restored.");
+      return;
+    }
+    const commandId = crypto.randomUUID();
+    pendingBindingRetryRef.current = commandId;
+    setBindingRetryPending(true);
+    send(socket, makeEnvelope("session.binding.retry", {
+      commandId,
+      sessionId: catalogEntry.sessionId,
+      deviceId: deviceIdRef.current,
+      providerId: catalogEntry.providerId,
+      accountId: catalogEntry.accountId,
+      expectedBindingRevision: catalogEntry.providerBindingRevision,
+      expectedRuntimeId: runtime.runtimeId,
+      expectedRuntimeGeneration: runtime.generation,
+    }));
+  };
   const recoveryRequired =
     hasAiclSession &&
     (runtime?.status === "lost" || latest?.status === "outcome_unknown");
@@ -2388,9 +2471,32 @@ export function App() {
           accountStatus: mobileAccountStatus,
           accountHome: mobileAccountHome,
           bindingStatus: catalogEntry?.providerBindingStatus ?? null,
+          bindingState: capabilityBindingMatchesCatalog
+            ? capabilityBinding?.bindingState ?? null
+            : null,
+          bindingFailureCode: managedBindingPresentation.state === "failed"
+            ? capabilityBindingMatchesCatalog
+              ? capabilityBinding?.failureCode ?? null
+              : catalogEntry?.providerBindingFailureCode ?? null
+            : null,
+          bindingFailureReason: managedBindingPresentation.state === "failed"
+            ? managedBindingPresentation.reason
+            : null,
+          canRetryBinding,
           sessionControllable: controlDecision.ok,
           sessionControlReason: controlDecision.reason,
         });
+  const mobileActivityLabel =
+    !mobileAccountHome && !providerNativeOnly && managedBindingPresentation.state === "binding"
+      ? "Account ready · Session binding pending"
+      : !mobileAccountHome && !providerNativeOnly && managedBindingPresentation.state === "failed"
+        ? "Session binding failed"
+        : nativeMobileStatus?.activityLabel ??
+          (timelineBusy
+            ? "Working"
+            : pendingApprovals.length > 0
+              ? `${pendingApprovals.length} pending`
+              : "Ready");
   const mobileStatusFacts = [
     { label: "Provider", value: mobileProviderLabel },
     { label: "Account", value: mobileAccountLabel },
@@ -2589,7 +2695,7 @@ export function App() {
         )}
         statusLabel={mobileStatus.label}
         statusTone={mobileStatus.tone}
-        activityLabel={nativeMobileStatus?.activityLabel ?? (timelineBusy ? "Working" : pendingApprovals.length > 0 ? `${pendingApprovals.length} pending` : "Ready")}
+        activityLabel={mobileActivityLabel}
         statusFacts={mobileStatusFacts}
         connectionNotice={connection === "online" ? null : `${connectionLabel(connection)}. Your unsent draft stays local and will not be sent on reconnect.`}
         authorityNotice={
@@ -2598,17 +2704,36 @@ export function App() {
               ? `Provider history unavailable. ${nativeProjection.notice ?? "Remote activity could not be read."}`
               : providerNativeOnly
               ? availability.reason
-              : !controlDecision.ok
-                ? controlDecision.reason
+              : managedBindingPresentation.state !== "ready"
+                ? managedBindingPresentation.reason
+                : !controlDecision.ok
+                  ? controlDecision.reason
                 : null
             : null
         }
+        authorityLabel={
+          !providerNativeOnly && managedBindingPresentation.state !== "ready"
+            ? managedBindingPresentation.label
+            : "View only"
+        }
+        canRetryBinding={canRetryBinding}
+        bindingRetryPending={bindingRetryPending}
         recoveryNotice={recoveryRequired ? "The provider outcome may be ambiguous. AICL will not replay the original prompt." : null}
         timelineBusy={timelineBusy}
         timelineLoading={timelineLoading}
         timelineEmpty={timelineLength === 0}
         timelineProviderNative={selectedNative !== null}
         timelineUnavailable={timelineUnavailable}
+        timelineEmptyTitle={
+          !providerNativeOnly && managedBindingPresentation.state !== "ready"
+            ? managedBindingPresentation.emptyTitle
+            : undefined
+        }
+        timelineEmptyDetail={
+          !providerNativeOnly && managedBindingPresentation.state !== "ready"
+            ? managedBindingPresentation.emptyDetail
+            : undefined
+        }
         timelineRef={timelineRef}
         unreadUpdates={unreadUpdates}
         timeline={mobileTimeline}
@@ -2680,6 +2805,7 @@ export function App() {
         onCloseEvidence={closeInspector}
         onPromptChange={updateDraft}
         onSubmit={submit}
+        onRetryBinding={retryBinding}
         onSteer={steer}
         onAbort={interrupt}
         onPickFiles={(files) => void uploadFiles(files)}

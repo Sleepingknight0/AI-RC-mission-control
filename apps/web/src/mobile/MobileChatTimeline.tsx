@@ -10,6 +10,8 @@ export function MobileChatTimeline({
   timelineRef,
   onScroll,
   onReturnToLive,
+  emptyTitle,
+  emptyDetail,
   children,
 }: {
   busy: boolean;
@@ -21,6 +23,8 @@ export function MobileChatTimeline({
   timelineRef: RefObject<HTMLDivElement | null>;
   onScroll: UIEventHandler<HTMLDivElement>;
   onReturnToLive: () => void;
+  emptyTitle?: string;
+  emptyDetail?: string;
   children: ReactNode;
 }) {
   return (
@@ -46,11 +50,11 @@ export function MobileChatTimeline({
           </div>
         ) : empty ? (
           <div className="mobile-chat-empty">
-            <h2>{providerNative ? "No provider history yet" : "Start a conversation"}</h2>
+            <h2>{emptyTitle ?? (providerNative ? "No provider history yet" : "Start a conversation")}</h2>
             <p>
-              {providerNative
+              {emptyDetail ?? (providerNative
                 ? "The provider returned no visible history for this Session."
-                : "This Session has no turns yet. Your draft stays on this device until you send it."}
+                : "This Session has no turns yet. Your draft stays on this device until you send it.")}
             </p>
           </div>
         ) : children}
