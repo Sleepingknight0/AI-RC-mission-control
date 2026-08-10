@@ -580,3 +580,27 @@ Durable evidence: `reviews/codex/M10.3-FULL-REMOTE-WORKSPACE.md`.
 
 No master merge is part of this milestone. Remaining provider limitations are
 recorded rather than represented as complete features.
+
+## M10.3.1 real Session binding closure — 2026-08-10
+
+1. Reproduced the real Session `123` from a compiled isolated clone of the
+   operator data and traced its one durable create through Connector.
+2. Classified it as case B: an AICL-created Session whose binding failed before
+   provider thread creation because its project root was not allowlisted.
+3. Added explicit normalized binding states and projected revision/failure/
+   retry evidence independently from account readiness and general control.
+4. Added an exact revision/Runtime/provider/account-fenced retry command for
+   only provably pre-provider failures; ambiguous legacy rejection remains
+   non-retryable and prompts are never part of retry.
+5. Reconciled Mobile header, banner, empty state, and composer from the same
+   binding evidence. Drafts survive transitions and never auto-send.
+6. Proved one new exact-account Session reached ready in 350 ms, created one
+   provider thread, streamed/completed one safe read-only Turn, and restored
+   the same history/thread identity.
+7. Closed a real absolute-path disclosure found in command/approval evidence
+   with Connector sanitation plus Core ingestion/projection defense.
+8. Advanced Core schema expectations to 17 and passed 354 tests, two no-op
+   isolated migrations, build, all compiled operational gates, console 0/0,
+   and diff hygiene.
+
+No master merge is part of M10.3.1. No new broad milestone is selected.

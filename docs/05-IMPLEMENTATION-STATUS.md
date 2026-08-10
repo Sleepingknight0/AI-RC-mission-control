@@ -179,7 +179,7 @@ Google/Cloudflare identity, and a product retention policy remain deferred.
 - Real spikes: `.\scripts\Run-CodexSpike.ps1 -Runs 3` — batch `spikes/codex-app-server/artifacts/real-20260801-091022/` (3/3 exit 0).
 - Measurements: `docs/measurements/CODEX-SPIKE-RESULTS.md`.
 - Compatibility gate: installed Codex 0.146.0 accepted with canonical schema SHA-256 `b767c1161c2c56341f3d0e313b4f93810b4b53bdaabeff95c06e1242cfc4df03`; 275 generated schema files are adapter-internal.
-- Database schema: Core schema version 16 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings, immutable effective Turn settings, managed attachments, bounded terminal evidence, audited provider-enablement commands, and durable steering commands; Connector retains strict FIFO journal sequence.
+- Database schema: Core schema version 17 and Connector schema version 3; every migration ledger row has a SHA-256 checksum and `pnpm migrate` is idempotent. Core retains durable display order, transition guards, terminal work reconciliation, separate Session/catalog/settings revisions, fail-closed legacy settings, fenced provider-Session bindings and safe retry, immutable effective Turn settings, managed attachments, bounded terminal evidence, audited provider-enablement commands, and durable steering commands; Connector retains strict FIFO journal sequence.
 - Live production acceptance: the compiled Web, real Core/Connector, real Codex
   account, and headed Chromium completed bootstrap, authoritative Session create,
   first delta/final, approval-backed write and Diff Review, interrupt,
@@ -273,4 +273,36 @@ The gate passed 345 automated tests with one ordinary opt-in skip, the
 separately enabled Real Codex lifecycle, Core 16 / Connector 3 migrations,
 build, compiled lifecycle, backup/restore, clean install, Tailscale automation,
 seven Mobile viewports, 200% text, reduced motion, and console 0/0. Evidence:
+`reviews/codex/M10.3-FULL-REMOTE-WORKSPACE.md`.
+
+## M10.3.1 Real Session Binding Closure — completed 2026-08-10
+
+The exact Session titled `123` is an AICL-created Codex Session, not an
+imported/native or external Session. Its single Connector preparation was
+accepted once, then failed before Codex `thread/start` because the selected
+drive root was outside the configured allowlist. No provider thread ID, Turn,
+message, activity, approval, or history exists. The durable binding was
+terminal `failed` in 28 ms with a legacy generic provider-rejection code; the
+Mobile presentation incorrectly collapsed that terminal state into a
+pending/empty experience.
+
+M10.3.1 gives binding state, revision, bounded failure evidence, and safe-retry
+authority to Catalog and Session capability projections. Mobile now uses one
+authoritative reason across header, banner, empty state, and composer. The
+legacy ambiguous failure renders `Binding failed`, keeps the draft local,
+does not expose Retry, and never displays the generic no-Turn copy as if a
+provider-native history read had succeeded.
+
+A compiled exact-account acceptance created one new Session against an
+allowlisted disposable project. It produced one provider thread and reached
+ready in 350 ms, streamed and completed one approved read-only README Turn,
+and restored the same hashed thread identity and history after refresh without
+prompt replay or account fallback. A real provider command exposed absolute
+path evidence during this run; the final boundary redacts arbitrary absolute
+Windows paths in command/output/approval data and suppresses approval `cwd`.
+
+Core schema is now 17. The final gate passed 354 automated tests with one
+ordinary opt-in skip, two idempotent isolated migrations, build, compiled
+lifecycle, backup/restore, clean install, Tailscale automation, and compiled
+Mobile console 0/0. Evidence remains in
 `reviews/codex/M10.3-FULL-REMOTE-WORKSPACE.md`.

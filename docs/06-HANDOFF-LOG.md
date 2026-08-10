@@ -2654,3 +2654,66 @@ No Real Claude mutation was run.
 
 No next milestone is inferred. Durable evidence:
 `reviews/codex/M10.3-FULL-REMOTE-WORKSPACE.md`.
+
+---
+
+### 2026-08-10 — Codex — M10.3.1 real Session binding closure
+
+**Milestone result**
+
+Closed the exact `Binding pending / empty Session` operator path on
+`codex/m10.3-full-remote-workspace` without merging master. Protected dirty,
+recovery-evidence, and historical M10.2 worktrees remained untouched.
+
+**Exact classification and repair**
+
+- Session `123` is source `aicl`, exact provider/account `codex` /
+  `not-bluewhalex`, with one create command/dispatch and no provider Session ID.
+- Connector rejected the selected drive root before process/thread creation;
+  the durable binding reached `failed` in 28 ms. Codex never received
+  `thread/start`, so provider history is truthfully empty (0 items).
+- Connector previously collapsed the failure to a generic rejection, while
+  Catalog/capability/Web presentation omitted the durable failure evidence.
+  Mobile therefore appeared indefinitely pending and used generic empty copy.
+- Catalog and capabilities now carry bounded binding state/revision/failure and
+  safe-retry evidence. Mobile consistently renders `Binding failed` and a
+  bounded reason. The legacy ambiguous rejection has no Retry action.
+- Safe Retry is idempotent and fenced by exact provider/account/binding
+  revision/Runtime identity/generation; it permits no prompt and cannot create
+  a second thread after an ambiguous failure.
+
+**Real compiled acceptance**
+
+- One new AICL Session on the exact usable account and an allowlisted
+  disposable project reached ready in 350 ms.
+- One create command, one dispatch, one provider thread (recorded only as a
+  truncated SHA-256 identity), and no account fallback.
+- The read-only README prompt streamed, required one approve-once boundary,
+  completed with a final response, and modified no file.
+- Browser refresh retained the exact provider/account/AICL/provider-Session
+  identity and history; no prompt replay occurred. A later intentional
+  Core/Connector restart correctly projected the old generation as stale.
+- Real provider command evidence revealed an absolute executable/project-path
+  leak. Red tests reproduced it; Connector and Core now redact those paths and
+  remove approval `cwd`, including when projecting legacy stored activity.
+- Compiled Mobile ended with 0 console errors and 0 warnings.
+
+**Commands and results**
+
+```text
+affected targeted tests                                PASS (98)
+pnpm migrate against isolated data (twice)             PASS; Core 17 / Connector 3; no-op twice
+pnpm build                                              PASS
+pnpm check                                              PASS; 354 tests; 1 opt-in skip
+compiled lifecycle / backup-restore / clean install    PASS
+Tailscale automation                                    PASS
+compiled exact-account Real Codex lifecycle            PASS; one provider Turn
+git diff --check                                        PASS
+```
+
+Final package counts: Config 13, Protocol 48, Domain 5, Connector 85, Core 81,
+Web 107, Host 15. The ordinary suite skips the opt-in real-provider test; the
+equivalent exact-account compiled UI lifecycle passed separately.
+
+No next milestone is inferred. Review evidence:
+`reviews/codex/M10.3-FULL-REMOTE-WORKSPACE.md`.

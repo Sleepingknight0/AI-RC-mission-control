@@ -307,3 +307,26 @@ change emits no file event, faults the boundary, and produces
 Machine-readable provider inventory grants no history, live, resume, submit,
 interrupt, approval, or settings authority. Future adapters expose only
 capabilities proven from their installed official interfaces.
+
+## AD-033 — Provider binding failure is durable, classified, and retry-fenced
+
+A provider binding has an independent normalized state: `unbound`, `binding`,
+`ready`, `failed`, `stale`, `external`, or `unsupported`. Account readiness is
+not Session readiness, and a terminal binding failure must never remain
+presented as pending.
+
+Connector classifies failures that occur before a provider thread mutation,
+including project, authentication, and provider availability failures. Core
+persists only a bounded public code and reason. Unknown or potentially
+post-mutation failures remain `PROVIDER_SESSION_REJECTED` and are not
+automatically retryable.
+
+A retry is allowed only for an AICL-created Session with no provider Session
+ID, no Turn, an explicitly safe failure code, and exact provider, account,
+binding revision, Runtime ID, and Runtime generation. It reuses the same
+durable binding row and never carries or replays a prompt. A prior-generation
+ready binding projects as stale and cannot regain mutation authority.
+
+Provider command and approval evidence is also a path-disclosure boundary.
+Absolute executable/project paths are redacted at Connector and again when
+Core ingests or projects legacy rows; approval `cwd` is never sent to Web.
