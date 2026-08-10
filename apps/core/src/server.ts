@@ -58,6 +58,10 @@ import {
 import { BrowserTicketRegistry } from "./browser-tickets.js";
 import { NativeSessionEvidenceStore } from "./native-session-evidence.js";
 import { projectRemoteWorkspaceCapabilities } from "./remote-workspace-capabilities.js";
+import {
+  providerBindingFailure,
+  remoteBindingState,
+} from "./provider-binding.js";
 import { isReservedHttpPath, serveWebRequest } from "./static-host.js";
 
 export const DEFAULT_CORE_DB_PATH = resolve(
@@ -238,6 +242,22 @@ export function projectSessionCapabilities(
     currentRuntime,
   );
   const canControl = controlError === undefined;
+  const bindingFailure = providerBindingFailure(authority?.failureCode);
+  const runtimeMatches =
+    authority !== undefined &&
+    currentRuntime !== undefined &&
+    authority.runtimeId === currentRuntime.runtimeId &&
+    authority.runtimeGeneration === currentRuntime.generation;
+  const bindingState = remoteBindingState({
+    status: authority?.state,
+    runtimeMatches,
+  });
+  const controlReason = bindingFailure?.reason ??
+    (bindingState === "binding"
+      ? "Account ready · Session binding pending."
+      : bindingState === "stale"
+        ? "Session binding belongs to a stale or uncertain Runtime generation."
+        : controlError?.message ?? null);
   const featureSupport = (
     key: ProviderRecord["capabilities"][number]["key"],
     unavailableReason: string,
@@ -309,7 +329,7 @@ export function projectSessionCapabilities(
     },
     mutation: {
       allowed: canControl,
-      reason: controlError?.message ?? null,
+      reason: controlReason,
     },
     evidence: exactAccountEvidence?.capabilities ?? [],
   });
@@ -337,7 +357,12 @@ export function projectSessionCapabilities(
     controlAuthority: {
       canControl,
       bindingStatus: authority?.state ?? "unbound",
-      reason: controlError?.message ?? null,
+      bindingState,
+      bindingRevision: authority?.revision ?? 0,
+      failureCode: bindingFailure?.code ?? null,
+      failureReason: bindingFailure?.reason ?? null,
+      canRetry: bindingFailure?.canRetry ?? false,
+      reason: controlReason,
     },
     remoteWorkspace,
     executionModes: ["ask", "plan", "auto"].map((mode) => ({
@@ -911,6 +936,7 @@ export async function startCoreServer(
           | "session.archive"
           | "session.read.mark"
           | "session.create"
+          | "session.binding.retry"
           | "session.resume"
           | "session.runtime.resume"
           | "session.settings.update"
@@ -1772,6 +1798,89 @@ export async function startCoreServer(
                 runtimeId: connection.runtime.runtimeId,
                 runtimeGeneration: connection.runtime.generation,
               }),
+        );
+        return;
+      }
+      case "session.binding.retry": {
+        const connection = connectorConnection;
+        const provider = providerFleetSnapshot?.providers.find(
+          (candidate) => candidate.providerId === message.payload.providerId,
+        );
+        const account = provider?.accounts.find(
+          (candidate) => candidate.accountId === message.payload.accountId,
+        );
+        const accountEvidence = providerAccountSnapshots.get(
+          nativeSnapshotKey(message.payload.providerId, message.payload.accountId),
+        )?.snapshot;
+        const preconditionError =
+          connection?.socket.readyState !== WebSocket.OPEN ||
+          connection.runtime.status !== "ready"
+            ? {
+                code: "RUNTIME_NOT_READY",
+                detail: "Connector Runtime is not ready for binding retry.",
+              }
+            : provider === undefined ||
+                !provider.enabled ||
+                !["live", "local"].includes(provider.freshness) ||
+                account === undefined ||
+                accountEvidence === undefined ||
+                accountEvidence.freshness !== "live" ||
+                Date.parse(accountEvidence.staleAt) <= Date.now() ||
+                !accountEvidence.active ||
+                accountEvidence.authentication !== "authenticated" ||
+                accountEvidence.control !== "remote_control" ||
+                accountEvidence.providerId !== message.payload.providerId ||
+                accountEvidence.accountId !== message.payload.accountId ||
+                connection.activeProviderId !== message.payload.providerId ||
+                connection.activeAccountId !== message.payload.accountId ||
+                !accountEvidence.capabilities.some(
+                  (candidate) =>
+                    candidate.key === "create_session" &&
+                    candidate.state === "supported",
+                )
+              ? {
+                  code: "PROVIDER_CAPABILITY_UNAVAILABLE",
+                  detail:
+                    "Exact provider/account capability evidence is unavailable for binding retry.",
+                }
+              : undefined;
+        const result = await store.acceptSessionBindingRetry({
+          message,
+          runtime: connection?.runtime,
+          connectorId: connection?.connectorId,
+          bootId: connection?.bootId,
+          ...(preconditionError === undefined ? {} : { preconditionError }),
+          rejection: (code, detail) =>
+            rejection({
+              commandId: message.payload.commandId,
+              sessionId: message.payload.sessionId,
+              code,
+              message: detail,
+            }),
+        });
+        if (result.kind === "conflict") {
+          sendConflict(socket, message);
+          return;
+        }
+        send(socket, result.result);
+        if (result.kind !== "new" || result.dispatch === undefined || connection === undefined) {
+          return;
+        }
+        await store.markDispatched(message.payload.commandId);
+        publishSessionCapabilities(message.payload.sessionId);
+        sendConnector(
+          connection.socket,
+          makeEnvelope("connector.session.create", {
+            commandId: message.payload.commandId,
+            sessionId: message.payload.sessionId,
+            providerId: message.payload.providerId,
+            accountId: message.payload.accountId,
+            projectPath: result.dispatch.projectPath,
+            model: result.dispatch.model,
+            reasoningLevel: result.dispatch.reasoningLevel,
+            runtimeId: connection.runtime.runtimeId,
+            runtimeGeneration: connection.runtime.generation,
+          }),
         );
         return;
       }

@@ -56,6 +56,24 @@ export class ProviderLostError extends Error {
   }
 }
 
+export type ProviderSessionPreparationFailureCode =
+  | "PROJECT_UNAVAILABLE"
+  | "AUTHENTICATION_REQUIRED"
+  | "PROVIDER_UNAVAILABLE"
+  | "PROVIDER_MODEL_UNAVAILABLE";
+
+/** A bounded pre-thread failure whose retry safety is known by the adapter. */
+export class ProviderSessionPreparationError extends Error {
+  constructor(
+    readonly code: ProviderSessionPreparationFailureCode,
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "ProviderSessionPreparationError";
+  }
+}
+
 export interface ConnectorProvider {
   prepareSession?(
     command: SessionPrepareCommand,

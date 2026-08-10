@@ -13,6 +13,7 @@ import { CodexProvider } from "../src/codex/adapter.js";
 import {
   ProviderLostError,
   type ApprovalResolveCommand,
+  type ProviderSessionPreparationError,
   type TurnInterruptCommand,
   type TurnSteerCommand,
   type TurnStartCommand,
@@ -72,6 +73,30 @@ function startCommand(
 }
 
 describe("Codex adapter normalization", () => {
+  it("classifies an out-of-allowlist project before starting a provider thread", async () => {
+    const adapter = provider();
+    const command = CoreToConnectorEnvelopeSchema.parse(
+      makeEnvelope("connector.session.create", {
+        commandId: "prepare-invalid-project",
+        sessionId: "session-invalid-project",
+        providerId: "codex",
+        accountId: "default",
+        projectPath: resolve(process.cwd(), ".."),
+        model: null,
+        reasoningLevel: null,
+        runtimeId: "runtime-1",
+        runtimeGeneration: 1,
+      }),
+    );
+    if (command.type !== "connector.session.create") throw new Error("type");
+
+    await expect(adapter.prepareSession(command)).rejects.toMatchObject({
+      name: "ProviderSessionPreparationError",
+      code: "PROJECT_UNAVAILABLE",
+      retryable: true,
+    } satisfies Partial<ProviderSessionPreparationError>);
+  });
+
   it("starts a Turn on a Session prepared in the current provider process", async () => {
     const adapter = provider();
     const prepared = CoreToConnectorEnvelopeSchema.parse(
@@ -341,7 +366,7 @@ describe("Codex adapter normalization", () => {
     expect(completed?.type).toBe("connector.activity.completed");
     if (completed?.type === "connector.activity.completed") {
       expect(completed.payload.activity).toMatchObject({
-        command: "pnpm test",
+        command: '"[REDACTED_PATH]" -Command "pnpm test"',
         cwd: null,
         cwdLabel: ".",
         stdoutPreview: "tests passed",
@@ -486,7 +511,8 @@ describe("Codex adapter normalization", () => {
     expect(requested?.type).toBe("connector.approval.requested");
     if (requested?.type !== "connector.approval.requested") return;
     expect(JSON.stringify(requested)).not.toContain("raw-provider-request-id");
-    expect(requested.payload.approval.payload.cwd).toBe(resolve(process.cwd()));
+    expect(requested.payload.approval.payload.cwd).toBeNull();
+    expect(JSON.stringify(requested)).not.toContain(resolve(process.cwd()));
     await adapter.resolveApproval(
       CoreToConnectorEnvelopeSchema.parse(
         makeEnvelope("connector.approval.resolve", {

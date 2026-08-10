@@ -21,6 +21,7 @@ import {
   ServerEnvelopeSchema,
   ToolActivitySchema,
   makeEnvelope,
+  redactSensitiveOutput,
   utf8ByteLength,
   type Approval,
   type ApprovalLease,
@@ -42,7 +43,9 @@ import {
   type Turn,
 } from "@aicl/protocol";
 
-export const CORE_SCHEMA_VERSION = 16;
+import { providerBindingFailure } from "./provider-binding.js";
+
+export const CORE_SCHEMA_VERSION = 17;
 const migrationsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../migrations",
@@ -77,6 +80,7 @@ type MutatingClientEnvelope = Extract<
       | "session.create"
       | "session.resume"
       | "session.runtime.resume"
+      | "session.binding.retry"
       | "session.settings.update"
       | "approval.lease.create"
       | "approval.lease.revoke"
@@ -208,6 +212,8 @@ interface SessionCatalogRow {
   title: string;
   source: "aicl" | "imported";
   binding_state: SessionSummaryV2["providerBindingStatus"] | null;
+  binding_revision: number | null;
+  binding_failure_code: string | null;
   provider_session_id: string | null;
   session_revision: number;
   pinned: number;
@@ -440,6 +446,7 @@ export interface SessionProviderAuthority {
   accountId: string;
   providerSessionId: string | null;
   state: "pending" | "ready" | "failed" | "outcome_unknown";
+  failureCode: string | null;
   runtimeId: string;
   runtimeGeneration: number;
   revision: number;
@@ -1205,6 +1212,8 @@ export class CoreDatabase {
              settings.network_policy, settings.project_path, settings.branch,
              settings.revision AS settings_revision,
              binding.state AS binding_state,
+             binding.revision AS binding_revision,
+             binding.failure_code AS binding_failure_code,
              (SELECT t.id FROM turns t
                WHERE t.session_id = s.id AND t.state = 'running'
                ORDER BY t.created_at DESC, t.id DESC LIMIT 1) AS active_turn_id,
@@ -1309,7 +1318,7 @@ export class CoreDatabase {
         `SELECT provider_id, account_id,
                 COALESCE(provider_session_id, requested_provider_session_id)
                   AS provider_session_id,
-                state,
+                state, failure_code,
                 runtime_id, runtime_generation, revision
            FROM session_provider_bindings WHERE session_id = ?`,
       )
@@ -1319,6 +1328,7 @@ export class CoreDatabase {
           account_id: string;
           provider_session_id: string | null;
           state: SessionProviderAuthority["state"];
+          failure_code: string | null;
           runtime_id: string;
           runtime_generation: number;
           revision: number;
@@ -1331,6 +1341,7 @@ export class CoreDatabase {
           accountId: row.account_id,
           providerSessionId: row.provider_session_id,
           state: row.state,
+          failureCode: row.failure_code,
           runtimeId: row.runtime_id,
           runtimeGeneration: row.runtime_generation,
           revision: row.revision,
@@ -2063,6 +2074,161 @@ export class CoreDatabase {
     });
   }
 
+  async acceptSessionBindingRetry(input: {
+    message: Extract<ClientEnvelope, { type: "session.binding.retry" }>;
+    runtime: Runtime | undefined;
+    connectorId: string | undefined;
+    bootId: string | undefined;
+    preconditionError?: { code: string; detail: string };
+    rejection: (code: string, detail: string) => ServerEnvelope;
+  }): Promise<SessionPreparationResult> {
+    return this.#write(() => {
+      const payloadHash = commandHash(input.message);
+      const prior = this.#command(input.message.payload.commandId);
+      if (prior !== undefined) {
+        return prior.payload_hash === payloadHash
+          ? { kind: "same", result: parseServer(prior.result_json) }
+          : { kind: "conflict" };
+      }
+      const now = new Date().toISOString();
+      const reject = (code: string, detail: string) => {
+        const result = input.rejection(code, detail);
+        this.#insertCommand(input.message, payloadHash, "rejected", result, now);
+        return { kind: "new" as const, result };
+      };
+      if (input.preconditionError !== undefined) {
+        return reject(input.preconditionError.code, input.preconditionError.detail);
+      }
+      if (
+        input.runtime === undefined ||
+        input.connectorId === undefined ||
+        input.bootId === undefined
+      ) {
+        return reject("RUNTIME_NOT_READY", "Connector Runtime is not ready for binding retry.");
+      }
+      const binding = this.#database
+        .prepare(
+          `SELECT b.provider_id, b.account_id, b.requested_provider_session_id,
+                  b.provider_session_id, b.state, b.failure_code, b.revision,
+                  s.source,
+                  (SELECT COUNT(*) FROM turns t WHERE t.session_id = b.session_id)
+                    AS turn_count
+             FROM session_provider_bindings b
+             JOIN sessions s ON s.id = b.session_id
+            WHERE b.session_id = ?`,
+        )
+        .get(input.message.payload.sessionId) as
+        | {
+            provider_id: string;
+            account_id: string;
+            requested_provider_session_id: string | null;
+            provider_session_id: string | null;
+            state: SessionProviderAuthority["state"];
+            failure_code: string | null;
+            revision: number;
+            source: "aicl" | "imported";
+            turn_count: number;
+          }
+        | undefined;
+      if (binding === undefined) {
+        return reject("SESSION_BINDING_UNAVAILABLE", "Session has no provider binding to retry.");
+      }
+      if (
+        binding.provider_id !== input.message.payload.providerId ||
+        binding.account_id !== input.message.payload.accountId
+      ) {
+        return reject(
+          "SESSION_BINDING_MISMATCH",
+          "Retry provider/account does not match the durable Session binding.",
+        );
+      }
+      if (binding.revision !== input.message.payload.expectedBindingRevision) {
+        return reject(
+          "SESSION_BINDING_REVISION_CONFLICT",
+          "Session provider binding changed; refresh before retrying.",
+        );
+      }
+      if (
+        input.message.payload.expectedRuntimeId !== input.runtime.runtimeId ||
+        input.message.payload.expectedRuntimeGeneration !== input.runtime.generation
+      ) {
+        return reject(
+          "STALE_RUNTIME_GENERATION",
+          "Connector Runtime changed; refresh before retrying binding.",
+        );
+      }
+      const failure = providerBindingFailure(binding.failure_code);
+      if (
+        binding.state !== "failed" ||
+        binding.source !== "aicl" ||
+        binding.provider_session_id !== null ||
+        binding.requested_provider_session_id !== null ||
+        binding.turn_count !== 0 ||
+        failure?.canRetry !== true
+      ) {
+        return reject(
+          "SESSION_BINDING_RETRY_UNSAFE",
+          "This binding outcome cannot be retried without risking a duplicate provider Session.",
+        );
+      }
+      const settings = this.sessionSettings(input.message.payload.sessionId);
+      if (
+        settings === undefined ||
+        settings.settings.providerId !== binding.provider_id ||
+        settings.settings.accountId !== binding.account_id ||
+        settings.settings.projectPath === null
+      ) {
+        return reject(
+          "SESSION_BINDING_MISMATCH",
+          "Session settings do not match the durable provider binding.",
+        );
+      }
+      this.#attachRuntime(
+        input.message.payload.sessionId,
+        input.runtime,
+        input.connectorId,
+        input.bootId,
+        now,
+      );
+      const nextRevision = binding.revision + 1;
+      const result = parseServer(JSON.stringify(makeEnvelope("session.command.accepted", {
+        commandId: input.message.payload.commandId,
+        sessionId: input.message.payload.sessionId,
+        revision: nextRevision,
+      })));
+      this.#insertCommand(input.message, payloadHash, "committed", result, now);
+      const changed = this.#database
+        .prepare(
+          `UPDATE session_provider_bindings
+              SET command_id = ?, state = 'pending', failure_code = NULL,
+                  runtime_id = ?, runtime_generation = ?,
+                  revision = revision + 1, updated_at = ?
+            WHERE session_id = ? AND revision = ? AND state = 'failed'`,
+        )
+        .run(
+          input.message.payload.commandId,
+          input.runtime.runtimeId,
+          input.runtime.generation,
+          now,
+          input.message.payload.sessionId,
+          binding.revision,
+        );
+      if (changed.changes !== 1) {
+        throw new Error("Provider binding retry CAS lost after validation");
+      }
+      return {
+        kind: "new",
+        result,
+        dispatch: {
+          projectPath: settings.settings.projectPath,
+          model: settings.settings.model,
+          reasoningLevel: settings.settings.reasoningLevel,
+          providerSessionId: null,
+        },
+      };
+    });
+  }
+
   async recordSessionPreparation(
     message: Extract<
       ConnectorEnvelope,
@@ -2146,7 +2312,8 @@ export class CoreDatabase {
         }
       } else if (message.type === "connector.session.prepare.failed") {
         status = "failed";
-        failureCode = message.payload.code;
+        failureCode = providerBindingFailure(message.payload.code)?.code ??
+          "PROVIDER_SESSION_REJECTED";
       } else {
         status = "outcome_unknown";
       }
@@ -3310,15 +3477,20 @@ export class CoreDatabase {
           activity.revision,
           activity.exitCode,
           activity.durationMs,
-          activity.outputPreview,
+          sanitizeProviderEvidence(activity.outputPreview, MAX_ARTIFACT_BYTES),
           now,
           now,
-          activity.command ?? null,
+          activity.command === undefined || activity.command === null
+            ? null
+            : sanitizeProviderEvidence(activity.command, 20_000),
           activity.cwdLabel ?? null,
           activity.startedAt ?? now,
           activity.completedAt ?? null,
-          activity.stdoutPreview ?? activity.outputPreview,
-          activity.stderrPreview ?? "",
+          sanitizeProviderEvidence(
+            activity.stdoutPreview ?? activity.outputPreview,
+            MAX_ARTIFACT_BYTES,
+          ),
+          sanitizeProviderEvidence(activity.stderrPreview ?? "", MAX_ARTIFACT_BYTES),
           activity.stdoutTruncated ? 1 : 0,
           activity.stderrTruncated ? 1 : 0,
           activity.stderrAvailable ? 1 : 0,
@@ -3528,7 +3700,7 @@ export class CoreDatabase {
           approval.turnId,
           providerCorrelationId,
           approval.actionType,
-          JSON.stringify(approval.payload),
+          JSON.stringify(sanitizeApprovalPayload(approval.payload)),
           approval.expiresAt,
           now,
           now,
@@ -5443,19 +5615,22 @@ function activityFromRow(row: ActivityRow) {
     activityId: row.id,
     turnId: row.turn_id,
     kind: row.kind,
-    title: row.title,
-    cwd: row.cwd,
+    title: sanitizeProviderEvidence(row.title, 20_000),
+    cwd: null,
     status: row.state,
     revision: row.revision,
     exitCode: row.exit_code,
     durationMs: row.duration_ms,
-    outputPreview: row.output_preview,
-    command: row.command_text,
+    outputPreview: sanitizeProviderEvidence(row.output_preview, MAX_ARTIFACT_BYTES),
+    command:
+      row.command_text === null
+        ? null
+        : sanitizeProviderEvidence(row.command_text, 20_000),
     cwdLabel: row.cwd_label,
     startedAt: row.provider_started_at ?? undefined,
     completedAt: row.provider_completed_at,
-    stdoutPreview: row.stdout_preview,
-    stderrPreview: row.stderr_preview,
+    stdoutPreview: sanitizeProviderEvidence(row.stdout_preview, MAX_ARTIFACT_BYTES),
+    stderrPreview: sanitizeProviderEvidence(row.stderr_preview, MAX_ARTIFACT_BYTES),
     stdoutTruncated: row.stdout_truncated === 1,
     stderrTruncated: row.stderr_truncated === 1,
     stderrAvailable: row.stderr_available === 1,
@@ -5485,6 +5660,7 @@ function fileChangeFromRow(row: FileChangeRow) {
 }
 
 function approvalFromRow(row: ApprovalRow) {
+  const payload = ApprovalSchema.shape.payload.parse(JSON.parse(row.payload_json));
   return ApprovalSchema.parse({
     approvalId: row.id,
     sessionId: row.session_id,
@@ -5495,10 +5671,30 @@ function approvalFromRow(row: ApprovalRow) {
     state: row.state,
     revision: row.revision,
     expiresAt: row.expires_at,
-    payload: JSON.parse(row.payload_json),
+    payload: sanitizeApprovalPayload(payload),
     resolvedAt: row.resolved_at,
     resolvedByDeviceId: row.resolved_by_device_id,
   });
+}
+
+function sanitizeProviderEvidence(value: string, maxBytes: number) {
+  return redactSensitiveOutput(value, maxBytes);
+}
+
+function sanitizeApprovalPayload(payload: Approval["payload"]): Approval["payload"] {
+  return {
+    ...payload,
+    summary: sanitizeProviderEvidence(payload.summary, 20_000),
+    command:
+      payload.command === null
+        ? null
+        : sanitizeProviderEvidence(payload.command, 20_000),
+    cwd: null,
+    reason:
+      payload.reason === null
+        ? null
+        : sanitizeProviderEvidence(payload.reason, 20_000),
+  };
 }
 
 function approvalLeaseFromRow(row: ApprovalLeaseRow): ApprovalLease {
@@ -5555,6 +5751,7 @@ function sessionCatalogEntry(
   const canControl = !archived && providerControlAvailable;
   const providerBindingStatus = row.binding_state ?? "unbound";
   const bindingAllowsControl = providerBindingStatus === "ready";
+  const bindingFailure = providerBindingFailure(row.binding_failure_code);
   return {
     sessionId: row.id,
     title: sanitizeCatalogText(row.title, 160) ?? "Untitled Session",
@@ -5563,6 +5760,10 @@ function sessionCatalogEntry(
     providerSessionId: row.provider_session_id,
     source: row.source,
     providerBindingStatus,
+    providerBindingRevision: row.binding_revision ?? 0,
+    providerBindingFailureCode: bindingFailure?.code ?? null,
+    providerBindingFailureReason: bindingFailure?.reason ?? null,
+    canRetryBinding: bindingFailure?.canRetry ?? false,
     projectPath,
     projectName,
     branch: sanitizeCatalogText(row.branch, 512),

@@ -84,6 +84,29 @@ describe("normalized protocol validation", () => {
     ).toBe(false);
   });
 
+  it("validates an exact revision and Runtime-fenced provider binding retry", () => {
+    const valid = makeEnvelope("session.binding.retry", {
+      commandId: "retry-binding-1",
+      sessionId: "session-123",
+      deviceId: "device-one",
+      providerId: "codex",
+      accountId: "not-bluewhalex",
+      expectedBindingRevision: 1,
+      expectedRuntimeId: "runtime-current",
+      expectedRuntimeGeneration: 60,
+    });
+
+    expect(ClientEnvelopeSchema.safeParse(valid).success).toBe(true);
+    expect(ClientEnvelopeSchema.safeParse({
+      ...valid,
+      payload: { ...valid.payload, expectedBindingRevision: 0 },
+    }).success).toBe(false);
+    expect(ClientEnvelopeSchema.safeParse({
+      ...valid,
+      payload: { ...valid.payload, prompt: "must never be replayed" },
+    }).success).toBe(false);
+  });
+
   it("validates the normalized Session catalog without provider fields", () => {
     expect(ClientEnvelopeSchema.safeParse(makeEnvelope("sessions.list", {})).success).toBe(
       true,
@@ -281,5 +304,17 @@ describe("normalized protocol validation", () => {
       }),
     );
     expect(unicodePreview.success).toBe(false);
+  });
+
+  it("redacts absolute Windows executable and project paths from provider evidence", () => {
+    const evidence = redactSensitiveOutput(
+      '"C:\\Program Files\\WindowsApps\\pwsh.exe" -Command "rg README.md" ' +
+        "cwd=C:\\Projects\\operator-workspace\\private-project",
+      4_096,
+    );
+
+    expect(evidence).not.toMatch(/Program Files|WindowsApps|Projects|operator-workspace/u);
+    expect(evidence).toContain("[REDACTED_PATH]");
+    expect(evidence).toContain("rg README.md");
   });
 });

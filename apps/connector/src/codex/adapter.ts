@@ -25,6 +25,7 @@ import { z } from "zod";
 
 import {
   ProviderLostError,
+  ProviderSessionPreparationError,
   type ApprovalResolveCommand,
   type ConnectorEmit,
   type ConnectorProvider,
@@ -259,17 +260,32 @@ export class CodexProvider implements ConnectorProvider {
     ) {
       throw new Error("Codex provider/account selection is not active");
     }
-    const projectPath = canonicalProjectRoot(
-      command.payload.projectPath,
-      this.#options.allowedRoots ?? [this.#options.cwd],
-    );
+    let projectPath: string;
+    try {
+      projectPath = canonicalProjectRoot(
+        command.payload.projectPath,
+        this.#options.allowedRoots ?? [this.#options.cwd],
+      );
+    } catch {
+      throw new ProviderSessionPreparationError(
+        "PROJECT_UNAVAILABLE",
+        "Project path is unavailable or outside the configured allowlist",
+        true,
+      );
+    }
     this.#preparing = true;
     try {
       const rpc = await this.#ensureProcess();
       const probe = await probeCodexCapabilities(rpc, {
         timeoutMs: Math.min(this.#options.timeoutMs ?? 180_000, 2_500),
       });
-      if (!probe.authenticated) throw new Error("Codex is not authenticated");
+      if (!probe.authenticated) {
+        throw new ProviderSessionPreparationError(
+          "AUTHENTICATION_REQUIRED",
+          "Codex authentication is required for the selected profile",
+          true,
+        );
+      }
       const selectedModel =
         command.payload.model === null
           ? probe.models.find((model) => model.isDefault) ?? probe.models[0]
@@ -277,7 +293,11 @@ export class CodexProvider implements ConnectorProvider {
               (model) => model.modelId === command.payload.model,
             );
       if (command.payload.model !== null && selectedModel === undefined) {
-        throw new Error("Selected Codex model is unavailable");
+        throw new ProviderSessionPreparationError(
+          "PROVIDER_MODEL_UNAVAILABLE",
+          "Selected Codex model is unavailable",
+          false,
+        );
       }
       if (
         command.payload.reasoningLevel !== null &&
@@ -286,7 +306,11 @@ export class CodexProvider implements ConnectorProvider {
             (option) => option.value === command.payload.reasoningLevel,
           ))
       ) {
-        throw new Error("Selected Codex reasoning level is unavailable");
+        throw new ProviderSessionPreparationError(
+          "PROVIDER_MODEL_UNAVAILABLE",
+          "Selected Codex reasoning level is unavailable",
+          false,
+        );
       }
       const method =
         command.type === "connector.session.create"
@@ -1397,8 +1421,14 @@ export class CodexProvider implements ConnectorProvider {
     const fileChangeId = isCommand
       ? null
       : this.#fileChangeId(active, parsed.params.itemId);
-    const command = isCommand ? (parsed.params.command ?? null) : null;
-    const reason = parsed.params.reason ?? null;
+    const command =
+      isCommand && parsed.params.command !== null && parsed.params.command !== undefined
+        ? sanitizeTerminalText(parsed.params.command, 20_000)
+        : null;
+    const reason =
+      parsed.params.reason === null || parsed.params.reason === undefined
+        ? null
+        : sanitizeTerminalText(parsed.params.reason, 20_000);
     if (isCommand && parsed.params.cwd !== null && parsed.params.cwd !== undefined) {
       try {
         canonicalProjectRoot(parsed.params.cwd, [
@@ -1426,7 +1456,7 @@ export class CodexProvider implements ConnectorProvider {
           ? command ?? "Command execution requires approval"
           : "File changes require approval",
         command,
-        cwd: isCommand ? (parsed.params.cwd ?? null) : null,
+        cwd: null,
         reason,
         activityId,
         fileChangeId,

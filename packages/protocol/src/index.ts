@@ -897,6 +897,15 @@ export const SessionProviderBindingStatusSchema = z.enum([
   "failed",
   "outcome_unknown",
 ]);
+export const RemoteSessionBindingStateSchema = z.enum([
+  "unbound",
+  "binding",
+  "ready",
+  "failed",
+  "stale",
+  "external",
+  "unsupported",
+]);
 export const ExecutionModeSchema = z.enum(["ask", "plan", "auto"]);
 export const ApprovalPolicySchema = z.enum([
   "review",
@@ -962,6 +971,11 @@ export const SessionCapabilitiesSnapshotSchema = z
       .object({
         canControl: z.boolean(),
         bindingStatus: SessionProviderBindingStatusSchema,
+        bindingState: RemoteSessionBindingStateSchema.optional(),
+        bindingRevision: z.number().int().nonnegative().optional(),
+        failureCode: displayText(96).nullable().optional(),
+        failureReason: displayText(200).nullable().optional(),
+        canRetry: z.boolean().optional(),
         reason: displayText(200).nullable(),
       })
       .strict(),
@@ -1248,6 +1262,10 @@ export const SessionSummaryV2Schema = z
     providerSessionId: id.nullable(),
     source: SessionSourceSchema,
     providerBindingStatus: SessionProviderBindingStatusSchema,
+    providerBindingRevision: z.number().int().nonnegative().optional(),
+    providerBindingFailureCode: displayText(96).nullable().optional(),
+    providerBindingFailureReason: displayText(200).nullable().optional(),
+    canRetryBinding: z.boolean().optional(),
     projectPath: z.string().max(4_096).nullable(),
     projectName: displayText(160).nullable(),
     branch: displayText(512).nullable(),
@@ -1641,6 +1659,21 @@ export const ClientEnvelopeSchema = z.discriminatedUnion("type", [
           (value) => value.trim().length > 0,
           { message: "Steering instruction must not be empty" },
         ),
+      })
+      .strict(),
+  ),
+  envelope(
+    "session.binding.retry",
+    z
+      .object({
+        commandId: id,
+        sessionId: id,
+        deviceId: id,
+        providerId: providerSlug,
+        accountId: providerSlug,
+        expectedBindingRevision: z.number().int().positive(),
+        expectedRuntimeId: id,
+        expectedRuntimeGeneration: z.number().int().positive(),
       })
       .strict(),
   ),
@@ -2434,6 +2467,9 @@ export type RemoteWorkspaceCapabilityEvidence = z.infer<
 export type RemoteWorkspaceCapabilities = z.infer<
   typeof RemoteWorkspaceCapabilitiesSchema
 >;
+export type RemoteSessionBindingState = z.infer<
+  typeof RemoteSessionBindingStateSchema
+>;
 export type ProviderAccount = z.infer<typeof ProviderAccountSchema>;
 export type ProviderModel = z.infer<typeof ProviderModelSchema>;
 export type ProviderRecord = z.infer<typeof ProviderRecordSchema>;
@@ -2534,6 +2570,8 @@ function redactSecretsAndPrivatePaths(value: unknown) {
       "[REDACTED PRIVATE KEY]",
     )
     .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/giu, "$1[REDACTED]@")
+    .replace(/(["'])([A-Za-z]:[\\/])[^"'\r\n]*\1/gu, "$1[REDACTED_PATH]$1")
+    .replace(/\b[A-Za-z]:[\\/][^\s"'`<>|,;)}\]]*/gu, "[REDACTED_PATH]")
     .replace(/[A-Za-z]:\\Users\\[^\\\s"']+(?:\\[^\s"']*)?/gu, "[REDACTED_PATH]")
     .replace(/\/(?:home|Users)\/[^/\s"']+(?:\/[^\s"']*)?/gu, "[REDACTED_PATH]");
 }

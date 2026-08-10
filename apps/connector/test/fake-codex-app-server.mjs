@@ -180,7 +180,7 @@ lines.on("line", (line) => {
               item: {
                 type: "commandExecution",
                 id: "provider-command-item",
-                command: "pnpm test",
+                command: '"C:\\Program Files\\WindowsApps\\pwsh.exe" -Command "pnpm test"',
                 commandActions: [],
                 cwd: process.cwd(),
                 status: "inProgress",
@@ -217,7 +217,7 @@ lines.on("line", (line) => {
               item: {
                 type: "commandExecution",
                 id: "provider-command-item",
-                command: "pnpm test",
+                command: '"C:\\Program Files\\WindowsApps\\pwsh.exe" -Command "pnpm test"',
                 commandActions: [],
                 cwd: process.cwd(),
                 status: "completed",

@@ -31,6 +31,7 @@ import { InputAttachmentMaterializer } from "./input-attachments.js";
 import { MockProvider } from "./mock-provider.js";
 import {
   ProviderLostError,
+  ProviderSessionPreparationError,
   nativeSessionPageWithRecovery,
   type ConnectorProvider,
 } from "./provider.js";
@@ -1158,14 +1159,17 @@ export function startConnector(options: ConnectorOptions): ConnectorHandle {
           );
           return;
         }
+        const failureCode = error instanceof ProviderSessionPreparationError
+          ? error.code
+          : "PROVIDER_SESSION_REJECTED";
         journal.markCommand(command.payload.commandId, "completed", {
-          failureCode: "PROVIDER_SESSION_REJECTED",
+          failureCode,
         });
         emit(
           makeEnvelope("connector.session.prepare.failed", {
             commandId: command.payload.commandId,
             sessionId: command.payload.sessionId,
-            code: "PROVIDER_SESSION_REJECTED",
+            code: failureCode,
           }),
         );
         emitRuntime("ready");

@@ -1,6 +1,9 @@
 import { startConnector } from "@aicl/connector";
 import { MockProvider } from "@aicl/connector/mock-provider";
-import { ProviderLostError } from "@aicl/connector/provider";
+import {
+  ProviderLostError,
+  ProviderSessionPreparationError,
+} from "@aicl/connector/provider";
 import {
   ServerEnvelopeSchema,
   makeEnvelope,
@@ -42,6 +45,22 @@ class LostPrepareProvider extends CountingProvider {
   }
 }
 
+class RetryableFailedPrepareProvider extends CountingProvider {
+  override async prepareSession(
+    ...args: Parameters<MockProvider["prepareSession"]>
+  ): ReturnType<MockProvider["prepareSession"]> {
+    this.preparations += 1;
+    if (this.preparations === 1) {
+      throw new ProviderSessionPreparationError(
+        "PROJECT_UNAVAILABLE",
+        "Project path failed the Connector allowlist.",
+        true,
+      );
+    }
+    return MockProvider.prototype.prepareSession.apply(this, args);
+  }
+}
+
 class RacingPrepareProvider extends CountingProvider {
   #release: (() => void) | undefined;
   readonly #gate = new Promise<void>((resolve) => {
@@ -58,7 +77,264 @@ class RacingPrepareProvider extends CountingProvider {
   }
 }
 
+class HeldPrepareProvider extends CountingProvider {
+  #release: (() => void) | undefined;
+  readonly #gate = new Promise<void>((resolve) => {
+    this.#release = resolve;
+  });
+
+  release() {
+    this.#release?.();
+  }
+
+  override async prepareSession(
+    ...args: Parameters<MockProvider["prepareSession"]>
+  ) {
+    this.preparations += 1;
+    await this.#gate;
+    return MockProvider.prototype.prepareSession.apply(this, args);
+  }
+}
+
 describe("Session create and resume", () => {
+  it("restores a binding-in-progress refresh and publishes fresh ready authority", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    const provider = new HeldPrepareProvider();
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider,
+      providerName: "mock",
+      providerInventory: (revision) => fleet(revision),
+    });
+    handles.push(connector);
+    await connector.ready;
+    const first = await openBrowser(core.browserUrl, core.browserToken);
+    await waitFor(first, (message) => message.type === "providers.snapshot");
+    first.socket.send(JSON.stringify(makeEnvelope("session.create", {
+      commandId: "create-held-binding",
+      sessionId: "held-binding-session",
+      deviceId: "device-one",
+      title: "Held binding",
+      providerId: "codex",
+      accountId: "blue",
+      projectPath: process.cwd(),
+      model: null,
+      reasoningLevel: null,
+    })));
+    await waitFor(first, (message) =>
+      message.type === "session.command.accepted" &&
+      message.payload.commandId === "create-held-binding");
+    await waitUntil(() => provider.preparations === 1);
+
+    const refreshed = await openBrowser(core.browserUrl, core.browserToken);
+    await waitFor(refreshed, (message) => message.type === "providers.snapshot");
+    requestCatalog(refreshed);
+    const pendingCatalog = await waitFor(refreshed, (message) =>
+      message.type === "sessions.catalog.snapshot" &&
+      message.payload.sessions.some((session) => session.sessionId === "held-binding-session"));
+    if (pendingCatalog.type !== "sessions.catalog.snapshot") throw new Error("catalog");
+    expect(pendingCatalog.payload.sessions.find((session) =>
+      session.sessionId === "held-binding-session")).toMatchObject({
+      providerBindingStatus: "pending",
+      providerBindingRevision: 0,
+      canControl: false,
+    });
+    refreshed.socket.send(JSON.stringify(makeEnvelope("session.subscribe", {
+      sessionId: "held-binding-session",
+      afterSeq: 0,
+    })));
+    const pendingCapabilities = await waitFor(refreshed, (message) =>
+      message.type === "session.capabilities.snapshot" &&
+      message.payload.snapshot.sessionId === "held-binding-session");
+    if (pendingCapabilities.type !== "session.capabilities.snapshot") throw new Error("capabilities");
+    expect(pendingCapabilities.payload.snapshot.controlAuthority).toMatchObject({
+      canControl: false,
+      bindingState: "binding",
+      bindingRevision: 0,
+    });
+
+    provider.release();
+    await waitFor(refreshed, (message) =>
+      message.type === "session.provider.status" &&
+      message.payload.commandId === "create-held-binding" &&
+      message.payload.status === "ready");
+    await waitUntil(() => refreshed.messages.some((message) =>
+      message.type === "session.capabilities.snapshot" &&
+      message.payload.snapshot.sessionId === "held-binding-session" &&
+      message.payload.snapshot.controlAuthority.canControl &&
+      message.payload.snapshot.controlAuthority.bindingRevision === 1));
+    requestCatalog(refreshed);
+    await waitUntil(() => refreshed.messages.some((message) =>
+      message.type === "sessions.catalog.snapshot" &&
+      message.payload.sessions.some((session) =>
+        session.sessionId === "held-binding-session" &&
+        session.providerSessionId === "mock-thread-held-binding-session" &&
+        session.canControl)));
+    expect(provider.preparations).toBe(1);
+    first.socket.close();
+    refreshed.socket.close();
+  });
+
+  it("leaves a failed binding terminal and retries it once under exact CAS authority", async () => {
+    const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
+    handles.push(core);
+    const provider = new RetryableFailedPrepareProvider();
+    const connector = startConnector({
+      coreUrl: core.connectorUrl,
+      connectorToken: core.connectorToken,
+      provider,
+      providerName: "mock",
+      providerInventory: (revision) => fleet(revision),
+    });
+    handles.push(connector);
+    await connector.ready;
+    const browser = await openBrowser(core.browserUrl, core.browserToken);
+    await waitFor(browser, (message) => message.type === "providers.snapshot");
+
+    browser.socket.send(JSON.stringify(makeEnvelope("session.create", {
+      commandId: "create-failed-binding",
+      sessionId: "session-123-shape",
+      deviceId: "device-one",
+      title: "123",
+      providerId: "codex",
+      accountId: "blue",
+      projectPath: process.cwd(),
+      model: null,
+      reasoningLevel: null,
+    })));
+    const failed = await waitFor(browser, (message) =>
+      message.type === "session.provider.status" &&
+      message.payload.commandId === "create-failed-binding");
+    if (failed.type !== "session.provider.status") throw new Error("status");
+    expect(failed.payload).toMatchObject({
+      status: "failed",
+      providerSessionId: null,
+      failureCode: "PROJECT_UNAVAILABLE",
+    });
+
+    requestCatalog(browser);
+    const failedCatalog = await waitFor(browser, (message) =>
+      message.type === "sessions.catalog.snapshot" &&
+      message.payload.sessions.some((session) => session.sessionId === "session-123-shape"));
+    if (failedCatalog.type !== "sessions.catalog.snapshot") throw new Error("catalog");
+    expect(failedCatalog.payload.sessions.find((session) =>
+      session.sessionId === "session-123-shape")).toMatchObject({
+      providerSessionId: null,
+      providerBindingStatus: "failed",
+      providerBindingRevision: 1,
+      providerBindingFailureCode: "PROJECT_UNAVAILABLE",
+      canRetryBinding: true,
+      canControl: false,
+    });
+
+    browser.socket.send(JSON.stringify(makeEnvelope("session.subscribe", {
+      sessionId: "session-123-shape",
+      afterSeq: 0,
+    })));
+    const failedCapabilities = await waitFor(browser, (message) =>
+      message.type === "session.capabilities.snapshot" &&
+      message.payload.snapshot.sessionId === "session-123-shape");
+    if (failedCapabilities.type !== "session.capabilities.snapshot") throw new Error("capabilities");
+    expect(failedCapabilities.payload.snapshot.controlAuthority).toMatchObject({
+      canControl: false,
+      bindingStatus: "failed",
+      bindingState: "failed",
+      bindingRevision: 1,
+      failureCode: "PROJECT_UNAVAILABLE",
+      canRetry: true,
+    });
+
+    browser.socket.send(JSON.stringify(makeEnvelope("turn.submit", {
+      commandId: "submit-before-ready",
+      sessionId: "session-123-shape",
+      prompt: "must not dispatch",
+      settingsRevision: 0,
+    })));
+    const earlySubmit = await waitFor(browser, (message) =>
+      message.type === "command.rejected" &&
+      message.payload.commandId === "submit-before-ready");
+    if (earlySubmit.type !== "command.rejected") throw new Error("rejection");
+    expect(earlySubmit.payload.error.code).toBe("SESSION_NOT_CONTROLLABLE");
+
+    for (const [commandId, overrides, code] of [
+      [
+        "retry-wrong-account",
+        { accountId: "other-account" },
+        "PROVIDER_CAPABILITY_UNAVAILABLE",
+      ],
+      [
+        "retry-stale-revision",
+        { expectedBindingRevision: 2 },
+        "SESSION_BINDING_REVISION_CONFLICT",
+      ],
+      [
+        "retry-stale-runtime",
+        { expectedRuntimeGeneration: failed.payload.runtimeGeneration + 1 },
+        "STALE_RUNTIME_GENERATION",
+      ],
+    ] as const) {
+      const retryPayload = {
+        commandId,
+        sessionId: "session-123-shape",
+        deviceId: "device-one",
+        providerId: "codex",
+        accountId: "blue",
+        expectedBindingRevision: 1,
+        expectedRuntimeId: failed.payload.runtimeId,
+        expectedRuntimeGeneration: failed.payload.runtimeGeneration,
+      };
+      Object.assign(retryPayload, overrides);
+      browser.socket.send(JSON.stringify(makeEnvelope("session.binding.retry", retryPayload)));
+      const rejected = await waitFor(browser, (message) =>
+        message.type === "command.rejected" && message.payload.commandId === commandId);
+      if (rejected.type !== "command.rejected") throw new Error("rejection");
+      expect(rejected.payload.error.code).toBe(code);
+      expect(provider.preparations).toBe(1);
+    }
+
+    const retry = makeEnvelope("session.binding.retry", {
+      commandId: "retry-binding-once",
+      sessionId: "session-123-shape",
+      deviceId: "device-one",
+      providerId: "codex",
+      accountId: "blue",
+      expectedBindingRevision: 1,
+      expectedRuntimeId: failed.payload.runtimeId,
+      expectedRuntimeGeneration: failed.payload.runtimeGeneration,
+    });
+    browser.socket.send(JSON.stringify(retry));
+    const ready = await waitFor(browser, (message) =>
+      message.type === "session.provider.status" &&
+      message.payload.commandId === "retry-binding-once");
+    if (ready.type !== "session.provider.status") throw new Error("status");
+    expect(ready.payload).toMatchObject({
+      status: "ready",
+      providerSessionId: "mock-thread-session-123-shape",
+      failureCode: null,
+    });
+    browser.socket.send(JSON.stringify(retry));
+    await waitUntil(() => browser.messages.filter((message) =>
+      message.type === "session.command.accepted" &&
+      message.payload.commandId === "retry-binding-once").length === 2);
+    expect(provider.preparations).toBe(2);
+
+    requestCatalog(browser);
+    await waitUntil(() => browser.messages.some((message) =>
+      message.type === "sessions.catalog.snapshot" &&
+      message.payload.sessions.some((session) =>
+        session.sessionId === "session-123-shape" &&
+        session.providerSessionId === "mock-thread-session-123-shape" &&
+        session.canControl)));
+    expect(browser.messages.some((message) =>
+      message.type === "session.capabilities.snapshot" &&
+      message.payload.snapshot.sessionId === "session-123-shape" &&
+      message.payload.snapshot.controlAuthority.canControl &&
+      message.payload.snapshot.controlAuthority.bindingRevision === 3)).toBe(true);
+    browser.socket.close();
+  });
+
   it("durably prepares, binds, deduplicates, and imports verified native Sessions", async () => {
     const core = await startCoreServer({ port: 0, dbPath: ":memory:" });
     handles.push(core);
