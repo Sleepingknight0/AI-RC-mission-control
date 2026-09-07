@@ -1,15 +1,8 @@
 # AICL / AI-RC Mission Control
 
-Windows-first multi-agent control plane for AI CLI providers.
-A browser Mission Control UI talks to a local Core over WebSocket;
-Core talks to a Connector that drives Codex over stdio
-and normalizes provider events for the UI.
+A Windows-first multi-agent control plane for AI CLI providers. A browser Mission Control UI talks to a local Core over WebSocket; Core talks to a Connector that drives Codex over stdio and normalizes provider events for the UI.
 
-This repository is a pnpm TypeScript monorepo.
-Package name: aicl-mission-control, version 0.0.0-prototype.
-Prototype 0 through M10.2 is complete on master.
-Private Tailscale second-device acceptance (M8.5) remains deferred.
-Google identity plus Cloudflare redesign remain unresolved.
+This repository is a pnpm TypeScript monorepo. Package name: `aicl-mission-control`, version `0.0.0-prototype`. Prototype 0 through M10.2 is complete on `master`. Private Tailscale second-device acceptance (M8.5) remains deferred. Google identity and Cloudflare redesign remain unresolved.
 
 ## Architecture
 
@@ -22,15 +15,14 @@ React browser (apps/web)
   -> browser timeline and docks
 ```
 
-Production adds apps/host to supervise Core and Connector.
-Core can serve the compiled web build same-origin
-(default http://127.0.0.1:8787/).
+Production adds `apps/host` to supervise Core and Connector.
+Core can serve the compiled web build same-origin (default `http://127.0.0.1:8787/`).
 
-Shared libraries live under packages/ (config, domain, protocol, test-fixtures).
+Shared libraries live under `packages/` (config, domain, protocol, test-fixtures).
 
 ## Status (verified in-repo)
 
-Completed milestone tracks (see docs/05-IMPLEMENTATION-STATUS.md):
+Completed milestone tracks (see `docs/05-IMPLEMENTATION-STATUS.md`):
 
 | Track | Scope |
 | --- | --- |
@@ -45,7 +37,7 @@ Deferred:
 - Google identity + Cloudflare remote-access redesign (unresolved, unimplemented)
 - Product retention policy (explicitly deferred)
 
-Evidence and gates live under reviews/codex/.
+Evidence and gates live under `reviews/codex/`.
 
 ## Requirements
 
@@ -55,7 +47,7 @@ Evidence and gates live under reviews/codex/.
 - pnpm 10 (packageManager: pnpm@10.14.0)
 - Codex CLI installed and logged in (for real-provider paths)
 
-Optional: Grok Build / Claude Code for post-prototype review scripts only.
+Optional: Grok Build or Claude Code for post-prototype review scripts only.
 
 ## Quick start (development)
 
@@ -93,8 +85,7 @@ pnpm doctor
 pnpm stop
 ```
 
-pnpm start:production builds then starts. Operator auto-start
-(interactive logon, limited privilege — not LocalSystem):
+`pnpm start:production` builds then starts. Operator auto-start (interactive logon, limited privilege — not LocalSystem):
 
 ```powershell
 pnpm startup:install
@@ -108,10 +99,7 @@ Config is created atomically on first Core/Connector start at:
 ```
 
 Databases, logs, and backups default under the same LocalAppData tree.
-Supported environment overrides include AICL_CONFIG_PATH, AICL_CORE_HOST,
-AICL_CORE_PORT, AICL_BROWSER_ORIGINS, AICL_CONNECTOR_PORT, AICL_PROVIDER,
-AICL_CODEX_PROFILE, CODEX_HOME, AICL_PROJECT_ROOTS, AICL_PROJECT_PATH,
-AICL_CORE_DB_PATH, AICL_CONNECTOR_DB_PATH, AICL_LOG_DIR, and AICL_BACKUP_DIR.
+Supported environment overrides include `AICL_CONFIG_PATH`, `AICL_CORE_HOST`, `AICL_CORE_PORT`, `AICL_BROWSER_ORIGINS`, `AICL_CONNECTOR_PORT`, `AICL_PROVIDER`, `AICL_CODEX_PROFILE`, `CODEX_HOME`, `AICL_PROJECT_ROOTS`, `AICL_PROJECT_PATH`, `AICL_CORE_DB_PATH`, `AICL_CONNECTOR_DB_PATH`, `AICL_LOG_DIR`, and `AICL_BACKUP_DIR`.
 
 Backup / restore (do not copy live WAL files by hand):
 
@@ -160,16 +148,15 @@ pnpm run doctor
 When documents conflict, prefer this order:
 
 1. Live test results and generated schema from the installed Codex binary
-2. docs/00-PROTOTYPE-0-SCOPE.md
-3. docs/01-ARCHITECTURE-DECISIONS.md
-4. AGENTS.md
+2. `docs/00-PROTOTYPE-0-SCOPE.md`
+3. `docs/01-ARCHITECTURE-DECISIONS.md`
+4. `AGENTS.md`
 5. The task prompt currently running
-6. docs/spec/AICL-MISSION-CONTROL-SPEC-V2.2.md
+6. `docs/spec/AICL-MISSION-CONTROL-SPEC-V2.2.md`
 7. Unevidenced AI proposals
 
-Current milestone truth: docs/05-IMPLEMENTATION-STATUS.md.
+Current milestone truth: `docs/05-IMPLEMENTATION-STATUS.md`.
 
 ## Secrets / local state
 
-Treat LocalAppData config, databases, logs, backups, and Codex credentials as
-operator secrets. They are not stored in this repository.
+Treat LocalAppData config, databases, logs, backups, and Codex credentials as operator secrets. They are not stored in this repository.
