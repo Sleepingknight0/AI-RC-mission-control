@@ -16,7 +16,7 @@ React browser (apps/web)
 ```
 
 Production adds `apps/host` to supervise Core and Connector.
-Core can serve the compiled web build same-origin (default `http://127.0.0.1:8787/`).
+Core can serve the compiled web build from the same origin (default `http://127.0.0.1:8787/`).
 
 Shared libraries live under `packages/` (config, domain, protocol, test-fixtures).
 
