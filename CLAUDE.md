@@ -136,8 +136,9 @@ names) and browser-token variables that M8.2 replaced with `/runtime-config` tic
 # Milestone workflow
 
 `docs/05-IMPLEMENTATION-STATUS.md` is the live checklist and names the current milestone; execute only the first
-unchecked one unless the user names another. Prototype 0 (M0–M7.2) is complete; M8 daily-use operationalization
-is active, currently at **M8.3**. Every milestone ends by updating `docs/05-IMPLEMENTATION-STATUS.md`,
+unchecked one unless the user names another. Prototype 0 through M10.2 is complete on `master`. M8.5 Tailscale
+second-device acceptance, Google identity and Cloudflare remote-access redesign, and product retention policy
+remain deferred. Every milestone ends by updating `docs/05-IMPLEMENTATION-STATUS.md`,
 `docs/06-HANDOFF-LOG.md`, and `docs/EXECUTION-PLAN.md` with the exact commands and results that were run.
 
 Reviews live in `reviews/{codex,claude,grok}/`; `reviews/codex/M7.1-REMEDIATION-REGISTER.md` maps prior accepted
@@ -147,8 +148,8 @@ findings to the controls and regression tests that closed them.
 
 - The final clean-checkout gate must use a fully expanded path. Cloning into an 8.3 short path (`BLUEWH~1`)
   produces pnpm junctions where Vite cannot resolve `/@vite/client`.
-- `node:sqlite` needs a newer runtime than `engines.node: >=20` implies; the toolchain check only enforces 20,
-  and the verified configuration is Node 24.16.0 with Codex 0.146.0.
+- `node:sqlite` requires Node.js 24+ (`engines.node: >=24.0.0`); the verified configuration is
+  Node 24.16.0 with Codex 0.146.0.
 - The compatibility gate pins one exact Codex CLI version plus a canonical schema SHA-256. A Codex upgrade fails
   the gate by design — regenerate `codex/generated/` and re-measure rather than loosening the check.
 - Process-tree termination, stdio closure, and path handling are asserted on Windows
